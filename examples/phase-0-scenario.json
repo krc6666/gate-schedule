@@ -1,0 +1,30 @@
+{
+  "serviceDate": "2026-08-02",
+  "flights": [
+    {"id": "CX937", "flightNo": "CX937", "windowStart": "08:00", "windowEnd": "10:00"},
+    {"id": "KE0166", "flightNo": "KE0166", "windowStart": "10:00", "windowEnd": "10:30"}
+  ],
+  "members": [
+    {"id": "supervisor", "name": "督导人员", "eligibleRoleIds": ["supervisor"], "availableFrom": "08:00"},
+    {"id": "receiver", "name": "接机人员", "eligibleRoleIds": ["receive"], "availableFrom": "08:00"},
+    {"id": "baggage", "name": "大件人员", "eligibleRoleIds": ["baggage", "support"], "availableFrom": "08:00"},
+    {"id": "verifier", "name": "核验人员", "eligibleRoleIds": ["verify"], "availableFrom": "08:00"},
+    {"id": "support", "name": "支援人员", "eligibleRoleIds": ["support"], "availableFrom": "08:00"}
+  ],
+  "tasks": [
+    {"id": "cx-supervisor", "flightId": "CX937", "roleId": "supervisor", "start": "08:00", "end": "10:00", "requiredCount": 1, "taskKind": "fixed", "lockedMemberIds": ["supervisor"]},
+    {"id": "cx-receive", "flightId": "CX937", "roleId": "receive", "start": "08:00", "end": "08:30", "requiredCount": 1, "taskKind": "mobile"},
+    {"id": "cx-baggage-1", "flightId": "CX937", "roleId": "baggage", "start": "09:00", "end": "09:20", "requiredCount": 1, "taskKind": "rotation"},
+    {"id": "cx-baggage-2", "flightId": "CX937", "roleId": "baggage", "start": "09:20", "end": "09:40", "requiredCount": 1, "taskKind": "rotation"},
+    {"id": "cx-id-check", "flightId": "CX937", "roleId": "verify", "start": "09:00", "end": "10:00", "requiredCount": 1, "taskKind": "fixed", "lockedMemberIds": ["verifier"]},
+    {"id": "support-0910", "roleId": "support", "start": "09:10", "end": "09:40", "requiredCount": 1, "taskKind": "support", "lockedMemberIds": ["support"]},
+    {"id": "ke-receive", "flightId": "KE0166", "roleId": "receive", "start": "10:00", "end": "10:30", "requiredCount": 1, "taskKind": "mobile", "lockedMemberIds": ["receiver"]}
+  ],
+  "rotations": [
+    {"taskId": "cx-baggage-1", "groupId": "cx-baggage", "segmentStart": "09:00", "segmentEnd": "09:20", "requiredCount": 1, "candidateMemberIds": ["baggage"]},
+    {"taskId": "cx-baggage-2", "groupId": "cx-baggage", "segmentStart": "09:20", "segmentEnd": "09:40", "requiredCount": 1, "candidateMemberIds": ["baggage"]}
+  ],
+  "externalSupportRequirements": [
+    {"taskId": "cx-id-check", "count": 1, "sourceLabel": "值机支援"}
+  ]
+}

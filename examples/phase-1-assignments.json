@@ -1,0 +1,11 @@
+{
+  "assignments": [
+    {"taskId": "cx-supervisor", "memberId": "supervisor"},
+    {"taskId": "cx-receive", "memberId": "receiver"},
+    {"taskId": "cx-baggage-1", "memberId": "baggage"},
+    {"taskId": "cx-baggage-2", "memberId": "baggage"},
+    {"taskId": "cx-id-check", "memberId": "verifier"},
+    {"taskId": "support-0910", "memberId": "support"},
+    {"taskId": "ke-receive", "memberId": "receiver"}
+  ]
+}

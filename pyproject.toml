@@ -1,0 +1,16 @@
+[project]
+name = "gate-service-scheduling"
+version = "0.1.0"
+description = "Local gate service scheduling tool"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115", "openpyxl>=3.1.5", "ortools>=9.10", "uvicorn>=0.30"]
+
+[project.optional-dependencies]
+test = ["httpx2"]
+package = ["pyinstaller>=6.0"]
+
+[tool.unittest]
+start-directory = "tests"
+
+[tool.setuptools.packages.find]
+include = ["gate_schedule*"]
