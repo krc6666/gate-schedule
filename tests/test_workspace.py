@@ -108,9 +108,9 @@ class WorkspaceTests(unittest.TestCase):
         restored = Workbench(self.path).snapshot()["plans"][plan_id]
         self.assertEqual(1, len(restored["draft"]))
         self.assertFalse(restored["valid"])
-        with self.assertRaises(WorkspaceError):
-            self.command("adopt", {}, plan_id)
-        self.assertIsNone(self.workspace.snapshot()["plans"][plan_id]["adopted"])
+        saved=self.command("adopt", {}, plan_id)['plans'][plan_id]
+        self.assertTrue(saved['adopted']['issues'])
+        self.assertEqual(restored['draft'],saved['adopted']['assignments'])
 
     def test_preview_is_not_adoption_and_latest_manual_result_is_formal_after_restore(self):
         plan_id, people = self.complete_plan()
@@ -208,8 +208,8 @@ class WorkspaceTests(unittest.TestCase):
         forged = [{"taskId": task["id"], "memberId": p["id"]} for p in people[:2]]
         state = self.command("assign", {"assignments": forged}, plan_id)
         self.assertIn("ineligible", {i["code"] for i in state["plans"][plan_id]["issues"]})
-        with self.assertRaises(WorkspaceError):
-            self.command("adopt", {}, plan_id)
+        saved=self.command("adopt", {}, plan_id)['plans'][plan_id]
+        self.assertIn('ineligible',{i['code'] for i in saved['adopted']['issues']})
 
     def test_missing_flight_role_cell_is_not_silently_accepted_as_zero_demand(self):
         plan_id, _ = self.complete_plan()

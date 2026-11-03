@@ -6,13 +6,14 @@ from ortools.sat.python import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available
+from .domain import member_available, scarce_role_groups, half_rest_period_violation
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
     rotation = next((item for item in scenario.rotations if item.task_id == task.id), None)
     return (
         member_available(member) and has_role_qualification(member, task.role_id)
+        and half_rest_period_violation(member, task) is None
         and member.available_from <= task.start
         and (member.available_until is None or member.available_until >= task.end)
         and (rotation is None or member.id in rotation.candidate_member_ids)
@@ -50,10 +51,10 @@ def _flight_participation_variables(model, scenario, variables, *, role_id=None)
     return result
 
 
-def _priority_costs(model, scenario, variables, previous_roles, priority_counts):
+def _priority_costs(model, scenario, variables, previous_roles, priority_counts, *, role_ids=None):
     repeats, monthly, previous = [], [], []
     repeat_bound = monthly_bound = previous_bound = 0
-    for role in scenario.priority_role_ids:
+    for role in scenario.priority_role_ids if role_ids is None else role_ids:
         participation = _flight_participation_variables(model, scenario, variables, role_id=role)
         eligible_members = {member_id for member_id, _ in participation}
         # Only ordering and ties matter: arbitrary manual corrections must not
@@ -231,9 +232,36 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         - same_flight_weight * sum(same_flight_handoffs) - path_weight * sum(preferred_handoffs))
     )
     objective = base_objective
-    # Lexicographic priorities: coverage, leader use, today's priority-role spread,
-    # monthly order, previous role, then the existing handoff/rotation goals.
+    # Coverage, leader use, automatic scarcity tiers, selected priority roles,
+    # then existing handoff/rotation goals. Equal scarcity shares one cost tier.
     priority_costs = _priority_costs(model, scenario, variables, previous_roles, priority_counts)
+    scarce_costs = tuple(cost for roles in scarce_role_groups(scenario)
+                         for cost in _priority_costs(model, scenario, variables, previous_roles,
+                                                     priority_counts, role_ids=roles))
+    half_rest_costs = []
+    participation, early_end, late_end, late_count = [], [], [], []
+    end_bound = max((t.end for t in scenario.tasks), default=0)
+    for member in scenario.members:
+        if not member.half_rest or not member_available(member):
+            continue
+        choices = [(t, variables[member.id, t.id]) for t in scenario.tasks if (member.id, t.id) in variables]
+        if not choices:
+            continue
+        worked = model.new_bool_var(f'half_rest_worked_{member.id}')
+        model.add_max_equality(worked, [v for _, v in choices])
+        participation.append(1 - worked)
+        latest = model.new_int_var(0, end_bound, f'half_rest_end_{member.id}')
+        model.add_max_equality(latest, [t.end * v for t, v in choices])
+        if member.half_rest == 'early-finish':
+            early_end.append(latest)
+        else:
+            late_end.append(end_bound - latest)
+            late_count.extend(v for _, v in choices)
+    for terms, bound in ((participation, len(participation)), (early_end, len(early_end)*end_bound),
+                         (late_end, len(late_end)*end_bound), (late_count, len(late_count))):
+        if terms:
+            half_rest_costs.append((sum(terms), bound))
+    priority_costs = (*half_rest_costs, *scarce_costs, *priority_costs)
     if scenario.team_leader_last:
         leader_ids = {m.id for m in scenario.members if m.team_leader}
         leader_choices = [v for (member, _), v in variables.items() if member in leader_ids]

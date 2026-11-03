@@ -88,6 +88,60 @@ def format_minutes(value: int) -> str:
     return f"{prefix}{clock // 60:02d}:{clock % 60:02d}"
 
 
+def default_relaxed_shift_settings():
+    return {'earlyDepartureCutoffTime': '12:00', 'afternoonRestStartTime': '12:00',
+            'afternoonRestEndTime': '18:00', 'lateShiftEndTime': '23:00', 'lateFlightNos': []}
+
+
+def validate_relaxed_shift_settings(value):
+    from copy import deepcopy
+    if not isinstance(value, dict) or set(value) != set(default_relaxed_shift_settings()):
+        raise ValueError('轻松班次设置字段不完整')
+    for key in set(value) - {'lateFlightNos'}:
+        if not isinstance(value[key], str) or not re.fullmatch(r'\d{2}:\d{2}', value[key]):
+            raise ValueError('轻松班次时间须为当日HH:MM')
+        parse_minutes(value[key])
+    if parse_minutes(value['afternoonRestStartTime']) >= parse_minutes(value['afternoonRestEndTime']):
+        raise ValueError('下午无航班统计结束必须晚于开始')
+    numbers = value['lateFlightNos']
+    if not isinstance(numbers, list) or any(not isinstance(n, str) or not n.strip() or n != n.strip() for n in numbers) or len(numbers) != len(set(numbers)):
+        raise ValueError('末班航班号不能为空或重复')
+    return deepcopy(value)
+
+
+def relaxed_shift_facts(scenario, assignments, settings, duty_member_id=None):
+    """One fact per regular person/day from assigned flight tasks, never attendance alone."""
+    validate_relaxed_shift_settings(settings)
+    tasks = {t.id: t for t in scenario.tasks}
+    flights = {f.id: f for f in scenario.flights}
+    occupied = {}
+    for assignment in assignments:
+        task = tasks.get(assignment.task_id)
+        if task and task.required_count > 0 and task_flight_ids(task):
+            occupied.setdefault(assignment.member_id, {})[task.id] = task
+    cutoff = parse_minutes(settings['earlyDepartureCutoffTime'])
+    afternoon_start = parse_minutes(settings['afternoonRestStartTime'])
+    afternoon_end = parse_minutes(settings['afternoonRestEndTime'])
+    late_end = parse_minutes(settings['lateShiftEndTime'])
+    selected_late = set(settings['lateFlightNos'])
+    result = []
+    for member in scenario.members:
+        work = list(occupied.get(member.id, {}).values())
+        if not work or member.team_leader or member.status != '正常':
+            continue
+        worked_flights = {identity for t in work for identity in task_flight_ids(t)}
+        late = sorted({flights[i].flight_no for i in worked_flights if flights[i].flight_no in selected_late})
+        last = max(work, key=lambda t: (t.end, t.start, t.id))
+        last_numbers = sorted({flights[i].flight_no for i in task_flight_ids(last)})
+        result.append({'memberId': member.id, 'memberName': member.name,
+            'lastFlightNo': ' / '.join(last_numbers), 'lastEndTime': format_minutes(last.end),
+            'earlyDeparture': member.id != duty_member_id and last.end < cutoff and not late
+                and all(flights[i].window_end <= late_end for i in worked_flights),
+            'afternoonRest': all(t.end <= afternoon_start or t.start >= afternoon_end for t in work),
+            'lateFlightNos': late})
+    return result
+
+
 TaskKind = Literal["fixed", "mobile", "rotation", "support"]
 TaskServiceStage = Literal["arrival", "boarding"]
 ImportedCellSemantics = Literal["empty", "single", "simultaneous", "rotation", "external", "ambiguous"]
@@ -116,6 +170,7 @@ class Member:
     available_until: int | None = None
     team_leader: bool = False
     status: str = "正常"
+    half_rest: str | None = None
 
 
 def has_role_qualification(member: Member, role_id: str) -> bool:
@@ -250,6 +305,11 @@ class ImportedMemberAvailability:
     participating: bool = False
     available_from: str | None = None
     available_until: str | None = None
+    half_rest: str | None = None
+
+    def __post_init__(self):
+        if self.half_rest not in HALF_REST_MODES:
+            raise ValueError("半休时段必须为不半休、上午半休或下午半休")
 
 
 @dataclass(frozen=True)
@@ -318,6 +378,7 @@ class Scenario:
     priority_role_ids: tuple[str, ...] = ()
     team_leader_last: bool = True
     balance_exempt_team_leaders: bool = True
+    balance_exempt_half_rest: bool = True
 
 
 @dataclass(frozen=True, order=True)
@@ -374,7 +435,33 @@ def validate_team_leader_settings(value) -> dict:
 
 def flight_balance_members(scenario: Scenario) -> tuple[Member, ...]:
     """One owner for the hard flight-count comparison population."""
-    return tuple(m for m in scenario.members if member_available(m) and not (scenario.balance_exempt_team_leaders and m.team_leader))
+    return tuple(m for m in scenario.members if member_available(m)
+                 and not (scenario.balance_exempt_team_leaders and m.team_leader)
+                 and not (scenario.balance_exempt_half_rest and m.half_rest))
+
+
+HALF_REST_MODES = (None, "early-finish", "late-start")
+HALF_REST_LABELS = {None: "不半休", "early-finish": "下午半休", "late-start": "上午半休"}
+
+
+def default_half_rest_settings():
+    return {"exemptFlightCount": True}
+
+
+def validate_half_rest_settings(value):
+    if not isinstance(value, dict) or set(value) != {"exemptFlightCount"} or type(value['exemptFlightCount']) is not bool:
+        raise ValueError("半休设置需填写航班数豁免布尔开关")
+    return dict(value)
+
+
+def half_rest_period_violation(member: Member, task: Task) -> str | None:
+    """Check operational morning by task start, matching check-in's 06:00–12:00 rule."""
+    morning = 360 <= task.start % 1440 < 720
+    if member.half_rest == "late-start" and morning:
+        return "上午半休人员不得安排06:00至12:00前开始的岗位"
+    if member.half_rest == "early-finish" and not morning:
+        return "下午半休人员只能安排06:00至12:00前开始的岗位"
+    return None
 
 
 PERSONNEL_STATUSES = ("正常", "病假", "休假")
@@ -397,6 +484,16 @@ def personnel_states(people) -> dict[str, str]:
 
 def member_available(member: Member) -> bool:
     return member.status == "正常"
+
+
+def scarce_role_groups(scenario: Scenario) -> tuple[tuple[str, ...], ...]:
+    """Relatively scarce demanded roles, fewest attending qualified people first."""
+    roles = {task.role_id for task in scenario.tasks if task.required_count > 0 and task_flight_ids(task)}
+    counts = {role: sum(member_available(member) and has_role_qualification(member, role)
+                        for member in scenario.members) for role in roles}
+    broadest = max(counts.values(), default=0)
+    return tuple(tuple(sorted(role for role in roles if counts[role] == count))
+                 for count in sorted(set(counts.values())) if count < broadest)
 
 
 def validate_balance_settings(value, role_names, member_ids=None) -> dict:

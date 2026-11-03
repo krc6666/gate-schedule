@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sqlite3
+from zipfile import BadZipFile
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -9,6 +10,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .workbench import Workbench, WorkspaceError
 from .excel_io import export_qualifications, import_qualifications, import_complete_configuration
+from .backup_excel import export_backup_excel, import_backup
+from io import BytesIO
+from openpyxl import load_workbook
 
 
 def attach_workspace(app, database_path: Path):
@@ -63,6 +67,24 @@ def attach_workspace(app, database_path: Path):
             raise HTTPException(503, "请先恢复数据")
         try:
             return workspace.priority_statistics(month)
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get('/api/relaxed-shift-statistics')
+    def get_relaxed_shift_statistics(month: str | None = None):
+        if workspace is None:
+            raise HTTPException(503, '请先恢复数据')
+        try:
+            return workspace.relaxed_shift_statistics(month)
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get('/api/role-statistics')
+    def get_role_statistics(month: str | None = None):
+        if workspace is None:
+            raise HTTPException(503, '请先恢复数据')
+        try:
+            return workspace.role_statistics(month)
         except (ValueError, KeyError, TypeError) as error:
             raise HTTPException(422, str(error)) from error
 
@@ -132,6 +154,17 @@ def attach_workspace(app, database_path: Path):
             raise HTTPException(503, "当前处于恢复模式，请下载原始数据库")
         return workspace.backup()
 
+    @app.get('/api/workspace/backup.xlsx')
+    def backup_excel():
+        if workspace is None:
+            raise HTTPException(503, '当前处于恢复模式，请下载原始数据库')
+        try:
+            content = export_backup_excel(workspace.backup())
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(422, f'备份未导出：{error}') from error
+        return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="gate-workspace-backup.xlsx"'})
+
     @app.post("/api/workspace/configuration/preview")
     async def complete_configuration_preview(request: Request):
         if workspace is None:
@@ -140,6 +173,36 @@ def attach_workspace(app, database_path: Path):
             return workspace.preview_complete_configuration(import_complete_configuration(await request.body()))
         except (ValueError, KeyError, TypeError) as error:
             raise HTTPException(422, f"完整配置未导入：{error}") from error
+
+    @app.post('/api/workspace/data/preview')
+    async def data_preview(request: Request):
+        if workspace is None:
+            raise HTTPException(503, '当前处于恢复模式')
+        content = await request.body()
+        try:
+            is_configuration = False
+            if content.startswith(b'PK'):
+                book = load_workbook(BytesIO(content), read_only=True, data_only=False)
+                try:
+                    is_configuration = {'使用说明', '岗位资质'} <= set(book.sheetnames)
+                finally:
+                    book.close()
+            if is_configuration:
+                return {'kind': 'configuration', **workspace.preview_complete_configuration(import_complete_configuration(content))}
+            return {'kind': 'backup', **workspace.preview_restore(import_backup(content))}
+        except (ValueError, KeyError, TypeError, OSError, BadZipFile) as error:
+            raise HTTPException(422, f'文件未导入，当前数据保持：{error}') from error
+
+    @app.get('/api/workspace/configuration/export')
+    def export_configuration(serviceDate: str | None = None):
+        if workspace is None:
+            raise HTTPException(503, '当前处于恢复模式')
+        try:
+            content = workspace.export_complete_configuration(service_date=serviceDate)
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(422, str(error)) from error
+        return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="gate-configuration.xlsx"'})
 
     @app.get("/api/workspace/configuration/export/{plan_id}")
     def complete_configuration_export(plan_id: str):
@@ -156,7 +219,7 @@ def attach_workspace(app, database_path: Path):
         if workspace is None:
             raise HTTPException(503, "请在独立数据目录恢复此备份，保留损坏原文件")
         try:
-            return workspace.restore(expectedRevision, await request.json())
+            return workspace.restore(expectedRevision, import_backup(await request.body()))
         except (ValueError, KeyError, TypeError) as error:
             raise HTTPException(422, f"备份未采用，当前数据不变：{error}") from error
         except (OSError, sqlite3.Error) as error:

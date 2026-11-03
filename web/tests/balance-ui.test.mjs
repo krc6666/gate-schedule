@@ -15,7 +15,7 @@ const bundle=await build({stdin:{contents:'export {rulesPage} from "./workbench-
 const {rulesPage,scheduleExtras}=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
 test('规则页可选重点岗位和硬差距，次数修正不混在设置表里',()=>{
-  const state={personnelStatuses:["正常","病假","休假"],teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},balanceSettings:{priorityEnabled:true,priorityRoleNames:['登机主验'],flightCountGap:1,priorityAdjustments:[]},configuration:{roleConfigs:[{roleName:'接机1'},{roleName:'登机主验'}],rotationEnabled:true,rotationMinutes:60,transitionMinutes:0},newRoleDefaults:{},flightLibrary:[],handoffPreferences:[]};
+  const state={relaxedShiftSettings:{earlyDepartureCutoffTime:'12:00',afternoonRestStartTime:'12:00',afternoonRestEndTime:'18:00',lateShiftEndTime:'23:00',lateFlightNos:[]},halfRestSettings:{exemptFlightCount:true},personnelStatuses:["正常","病假","休假"],teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},balanceSettings:{priorityEnabled:true,priorityRoleNames:['登机主验'],flightCountGap:1,priorityAdjustments:[]},configuration:{roleConfigs:[{roleName:'接机1'},{roleName:'登机主验'}],rotationEnabled:true,rotationMinutes:60,transitionMinutes:0},newRoleDefaults:{},flightLibrary:[],plans:{},handoffPreferences:[]};
   const markup=rulesPage(state,null,null);
   assert.match(markup,/id="priority-enabled"[^>]*checked/);
   assert.match(markup,/data-priority-role="登机主验"[^>]*checked/);
@@ -24,13 +24,18 @@ test('规则页可选重点岗位和硬差距，次数修正不混在设置表�
   assert.match(markup,/id="save-rules"/);
   assert.match(markup,/本月.*次数|本自然月/);
   assert.match(markup,/重新排班/);
+  assert.match(markup,/稀缺岗位资质轮换（自动）/);
+  assert.match(markup,/正常参加排班且具备该岗资质/);
+  assert.match(markup,/人数相同的岗位同等优先，无需手动勾选/);
+  assert.match(markup,/只有1个合格人或无法安全换人时允许继续同人/);
   assert.doesNotMatch(markup,/data-priority-adjust/);
 });
 
 test('概览只消费memberFlights，不从matrix或任务明细重算航班',()=>{
   const schedule={members:[{id:'a',name:'甲'},{id:'b',name:'乙'}],memberFlights:[{memberId:'a',memberName:'甲',flightIds:['f1','f2'],flightNos:['CX937','KE0166'],count:2},{memberId:'b',memberName:'乙',flightIds:[],flightNos:[],count:0}],memberPaths:{a:[{task_id:'t',role_id:'不应出现在概览的岗位'}]},tasks:[{id:'t',flightId:'f1'}],flights:[{id:'f1',flightNo:'错误旧投影'}],matrix:{}};
   const markup=scheduleExtras({plans:{}},{day:{serviceDate:'2026-08-02'}},schedule);
-  const overview=markup.split('<details id="people-overview"')[1].split('<details id="previous-comparison"')[0];
+  assert.doesNotMatch(markup, /<details|<summary/);
+  const overview=markup.split('<section id="people-overview"')[1].split('<section id="previous-comparison"')[0];
   assert.match(overview,/参与航班/);
   assert.match(overview,/CX937、KE0166/);
   assert.match(overview,/<td>2<\/td>/);
@@ -46,7 +51,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   const script=app.outputFiles.find(file=>file.path.endsWith('.js')).text,css=app.outputFiles.find(file=>file.path.endsWith('.css')).text;
   const settings={flightCountGap:null,priorityEnabled:false,priorityRoleNames:['主验'],priorityAdjustments:[{month:'2026-08',memberId:'a',roleName:'主验',delta:2}]};
   const stats=month=>({revision:state.revision,month,months:['2026-08','2026-07','2026-06'],totals:[{memberId:'a',count:23},{memberId:'b',count:1}],roles:[{roleName:'主验',members:[{memberId:'a',memberName:'甲',qualified:true,historyCount:3,adjustment:state.balanceSettings.priorityAdjustments.filter(item=>item.month===month).reduce((sum,item)=>sum+item.delta,0),effectiveCount:3+state.balanceSettings.priorityAdjustments.filter(item=>item.month===month).reduce((sum,item)=>sum+item.delta,0),dates:[`${month}-02`]},{memberId:'b',memberName:'乙',qualified:false,historyCount:1,adjustment:0,effectiveCount:1,dates:[`${month}-04`]}]},{roleName:'核验',members:[{memberId:'a',memberName:'甲',qualified:true,historyCount:0,adjustment:0,effectiveCount:0,dates:[]}]}]});
-  const state={personnelStatuses:["正常","病假","休假"],teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},revision:51,selectedPlanId:null,plans:{},balanceSettings:settings,people:[{id:'a',name:'甲',active:true,eligibleRoleNames:['主验','核验']}],configuration:{roleConfigs:[{roleName:'接机1',requiredCount:1,workMode:'arrival'},{roleName:'主验',requiredCount:1,workMode:'boarding'},{roleName:'核验',requiredCount:1,workMode:'boarding'}],rotationEnabled:false,rotationMinutes:60,transitionMinutes:0},displayPreferences:{layout:'flights',zoom:100},flightLibrary:[],flightTemplates:[],weeklyFlightPresets:{},newRoleDefaults:{},workModes:{boarding:'登机环节'},handoffPreferences:[],suggestedHandoffPreferences:[],migrationReport:[]};
+  const state={relaxedShiftSettings:{earlyDepartureCutoffTime:'12:00',afternoonRestStartTime:'12:00',afternoonRestEndTime:'18:00',lateShiftEndTime:'23:00',lateFlightNos:[]},halfRestSettings:{exemptFlightCount:true},personnelStatuses:["正常","病假","休假"],teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},revision:51,selectedPlanId:null,plans:{},balanceSettings:settings,people:[{id:'a',name:'甲',active:true,eligibleRoleNames:['主验','核验']}],configuration:{roleConfigs:[{roleName:'接机1',requiredCount:1,workMode:'arrival'},{roleName:'主验',requiredCount:1,workMode:'boarding'},{roleName:'核验',requiredCount:1,workMode:'boarding'}],rotationEnabled:false,rotationMinutes:60,transitionMinutes:0},displayPreferences:{layout:'flights',zoom:100},flightLibrary:[],flightTemplates:[],weeklyFlightPresets:{},newRoleDefaults:{},workModes:{boarding:'登机环节'},handoffPreferences:[],suggestedHandoffPreferences:[],migrationReport:[]};
   const snapshot=()=>({...state,priorityStatistics:stats('2026-08')});
   let rejectSettings=false,queryMode='normal';const commands=[],held=[];
   const server=createServer((request,response)=>{
@@ -60,7 +65,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
         assert.equal(command.expectedRevision,state.revision);
         if(command.action==='save-rules') {
           state.balanceSettings=command.payload.balanceSettings;
-          state.teamLeaderSettings=command.payload.teamLeaderSettings;
+          state.teamLeaderSettings=command.payload.teamLeaderSettings;state.halfRestSettings=command.payload.halfRestSettings;
           state.configuration=command.payload.configuration;
           state.handoffPreferences=command.payload.preferences;
         }
@@ -99,7 +104,13 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await click('[data-view=rules]');
   assert.equal(await evaluate('document.querySelectorAll("#save-rules").length'),1);
-  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),6);
+  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),8);
+  await evaluate('(()=>{const el=document.querySelector("#rules-search");el.value="稀缺";el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  assert.equal(await evaluate('document.querySelector("#base-rule-settings").hidden'),false);
+  assert.equal(await evaluate('document.querySelector("#base-rule-settings").open'),true);
+  assert.match(await evaluate('document.querySelector("#base-rule-settings").textContent'),/甲岗2人、乙岗8人/);
+  assert.equal(commands.length,0,'查看自动稀缺规则不写配置');
+  await evaluate('(()=>{const el=document.querySelector("#rules-search");el.value="";el.dispatchEvent(new Event("input",{bubbles:true}));})()');
   await evaluate('document.querySelector("#priority-role-rules").open=true');
   await evaluate('(()=>{const el=document.querySelector("#rules-search");el.value="差距";el.dispatchEvent(new Event("input",{bubbles:true}));})()');
   assert.equal(await evaluate('document.querySelector("#flight-balance-rules").open'),true);
@@ -138,7 +149,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   await change('#priority-statistics-month','');
   assert.equal(await evaluate('document.querySelector("#priority-statistics-month").value'),'2026-08','清空月份时恢复当前统计月，避免空月份下误改旧月');
   assert.equal(await evaluate('document.querySelectorAll(".nav-item[data-view]").length'),6);
-  assert.match(await evaluate('document.querySelector("#priority-statistics-root").textContent'),/实际 3.*修正 \+2/);
+  assert.match(await evaluate('document.querySelector("#priority-statistics-root").textContent'),/班表 3.*修正 \+2/);
   await click('[data-priority-filter="核验"]');assert.equal(await evaluate('document.querySelectorAll(".priority-statistics-table thead th").length'),4,'筛选后仍显示合计和全部重点岗位列');
   assert.equal(await evaluate('document.querySelectorAll(".priority-statistics-table tbody tr").length'),1,'筛选只保留该岗有资质或次数的人员');
   assert.equal(await evaluate('document.querySelector(".priority-statistics-table tbody tr td strong").textContent'),'23','合计只消费后端统计');

@@ -15,7 +15,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
 from .qualification_config import validate_qualification_config
-from .domain import validate_duty_roster
+from .domain import validate_duty_roster, HALF_REST_LABELS, validate_half_rest_settings
+from .domain import validate_relaxed_shift_settings, default_relaxed_shift_settings
 from .duty_excel import write_roster_configuration, read_roster_configuration
 
 from .domain import (
@@ -38,12 +39,14 @@ def _text(value: object) -> str:
     return "" if value is None else str(value).strip()
 
 
-def import_qualifications(content: bytes):
+def import_qualifications(content: bytes, *, workbook=None, allow_empty=False):
     """Read a position-first matrix. Blank/0 never revokes existing qualifications."""
-    try:
-        workbook = load_workbook(BytesIO(content), data_only=False)
-    except (BadZipFile, KeyError, EOFError, OSError) as error:
-        raise ValueError("文件不是完整的xlsx资质表") from error
+    owns_workbook = workbook is None
+    if owns_workbook:
+        try:
+            workbook = load_workbook(BytesIO(content), data_only=False)
+        except (BadZipFile, KeyError, EOFError, OSError) as error:
+            raise ValueError("文件不是完整的xlsx资质表") from error
     try:
         if "岗位资质" not in workbook.sheetnames:
             raise ValueError("请选择资质模板，必须包含“岗位资质”工作表；日表请到航班页导入")
@@ -57,7 +60,7 @@ def import_qualifications(content: bytes):
         # Ignore unused trailing formatted columns, but reject gaps inside the header.
         last_column = max((c.column for row in rows for c in row if c.value is not None), default=1)
         people = [_text(sheet.cell(1, c).value) for c in range(2, last_column + 1)]
-        if not people:
+        if not people and not allow_empty:
             raise ValueError("请在岗位右侧的表头填写至少一位实际人员姓名")
         roles = []
         for row in rows[1:]:
@@ -81,7 +84,8 @@ def import_qualifications(content: bytes):
                     source = _text(value)
         return validate_qualification_config({"people": people, "roles": roles, "source": source})
     finally:
-        workbook.close()
+        if owns_workbook:
+            workbook.close()
 
 
 def export_qualifications(data, evidence=(), *, blank=False, source_details=""):
@@ -219,7 +223,7 @@ def _remarks(raw_text: str) -> list[ImportedRemark]:
     return [ImportedRemark("other", raw_text)]
 
 
-def import_day(content: bytes, service_date: str, previous_day: ImportedDay | None = None) -> ImportedDay:
+def import_day(content: bytes, service_date: str, previous_day: ImportedDay | None = None, *, allow_empty=False) -> ImportedDay:
     try:
         workbook = load_workbook(BytesIO(content), data_only=True)
     except (BadZipFile, KeyError, EOFError) as error:
@@ -231,7 +235,7 @@ def import_day(content: bytes, service_date: str, previous_day: ImportedDay | No
             (
                 row_index
                 for row_index, row in enumerate(candidate.iter_rows(values_only=True), start=1)
-                if _text(row[0]) == "岗位" and any(_FLIGHT_HEADER.match(_text(value)) for value in row[1:])
+                if _text(row[0]) == "岗位" and (any(_FLIGHT_HEADER.match(_text(value)) for value in row[1:]) or allow_empty and candidate.title == '保障明细')
             ),
             None,
         )
@@ -273,7 +277,7 @@ def import_day(content: bytes, service_date: str, previous_day: ImportedDay | No
         )
         flights.append(flight)
         columns.append((column_index, flight))
-    if not flights:
+    if not flights and not allow_empty:
         raise ValueError("未找到“航班号 / 起止时间”列")
 
     role_names: list[str] = []
@@ -436,7 +440,10 @@ def import_day(content: bytes, service_date: str, previous_day: ImportedDay | No
                 participating = False
             else:
                 raise ValueError(f"“当日出勤”工作表第 {row_index} 行的参加排班需填“是”或“否”")
-            attendance.append(ImportedMemberAvailability(name, participating, start, end))
+            rest = _text(attendance_sheet.cell(row_index, 5).value) if attendance_sheet.max_column >= 5 else ""
+            if rest not in ("", "不半休", "上午半休", "下午半休"):
+                raise ValueError(f"当日出勤第{row_index}行半休时段无效")
+            attendance.append(ImportedMemberAvailability(name, participating, start, end, {"上午半休":"late-start", "下午半休":"early-finish"}.get(rest)))
     extra_occupancies: list[ImportedOccupancy] = []
     if "额外占用" in workbook.sheetnames:
         occupancy_sheet = workbook["额外占用"]
@@ -711,6 +718,7 @@ def imported_day_to_dict(day: ImportedDay) -> dict:
             {
                 "memberName": entry.member_name, "participating": entry.participating,
                 "availableFrom": entry.available_from, "availableUntil": entry.available_until,
+                **({"halfRest": entry.half_rest} if entry.half_rest is not None else {}),
             }
             for entry in day.member_availability
         ],
@@ -770,7 +778,7 @@ def imported_day_from_dict(data: dict) -> ImportedDay:
         attendance_mode=data.get("attendanceMode", "bounded"),
         phase_handoffs=_phase_handoffs(data.get("phaseHandoffs", []), {f["id"] for f in data["flights"]}),
         member_availability=tuple(
-            ImportedMemberAvailability(item["memberName"], item["participating"], item.get("availableFrom"), item.get("availableUntil"))
+            ImportedMemberAvailability(item["memberName"], item["participating"], item.get("availableFrom"), item.get("availableUntil"), item.get("halfRest"))
             for item in data.get("memberAvailability", [])
         ),
         member_configs=tuple(
@@ -924,7 +932,7 @@ def export_imported_day(day: ImportedDay) -> bytes:
 
     cells_by_key = {(cell.role_name, cell.flight_id): cell for cell in day.cells}
     for role_name in day.role_names:
-        sheet.append([role_name, *[cells_by_key[(role_name, flight.id)].raw_value for flight in day.flights]])
+        sheet.append([role_name, *[cells_by_key[(role_name, flight.id)].raw_value if (role_name, flight.id) in cells_by_key else '' for flight in day.flights]])
     for remark in day.remarks:
         sheet.append([remark.raw_text])
     timed_cells = [cell for cell in day.cells if cell.work_start is not None or cell.work_end is not None]
@@ -994,9 +1002,9 @@ def export_imported_day(day: ImportedDay) -> bytes:
         member_sheet.column_dimensions["B"].width = 40
     if day.member_availability:
         attendance_sheet = workbook.create_sheet("当日出勤")
-        attendance_sheet.append(["人员", "参加排班", "到岗时间", "离岗时间"])
+        attendance_sheet.append(["人员", "参加排班", "到岗时间", "离岗时间", "半休时段"])
         for entry in day.member_availability:
-            attendance_sheet.append([entry.member_name, "是" if entry.participating else "否", entry.available_from, entry.available_until])
+            attendance_sheet.append([entry.member_name, "是" if entry.participating else "否", entry.available_from, entry.available_until, HALF_REST_LABELS[entry.half_rest]])
         for item in attendance_sheet[1]:
             item.font = Font(bold=True, color="FFFFFF")
             item.fill = header_fill
@@ -1061,11 +1069,11 @@ def export_imported_schedule(day: ImportedDay, scenario: Scenario, assignments: 
     return result.getvalue()
 
 
-def export_formal_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -> bytes:
+def export_formal_schedule(scenario: Scenario, assignments: tuple[Assignment, ...], *, retained_issues=None) -> bytes:
     """Formal first sheet and detail consume the same adopted task projection."""
     from .projections import task_matrix, member_paths
     from .validator import validate_schedule
-    if validate_schedule(scenario, assignments):
+    if validate_schedule(scenario, assignments) and retained_issues is None:
         raise ValueError("正式班表未通过独立校验")
     workbook = Workbook()
     sheet = workbook.active
@@ -1089,6 +1097,13 @@ def export_formal_schedule(scenario: Scenario, assignments: tuple[Assignment, ..
     for values in member_paths(scenario, assignments).values():
         for value in values:
             paths.append([value["member_name"], value["role_id"], value["timing_label"] if value["timing_mode"] == "phase" else format_minutes(value["start"]), "" if value["timing_mode"] == "phase" else format_minutes(value["end"]), value["task_id"]])
+    rest = workbook.create_sheet("半休人员")
+    rest.append(["人员", "半休时段", "当天任务段数", "说明"])
+    for member in scenario.members:
+        if member.half_rest:
+            count = sum(a.member_id == member.id for a in assignments)
+            rest.append([member.name, HALF_REST_LABELS[member.half_rest], count,
+                         "当天无安排，保留休息" if not count else "按岗位开始时间判断半休时段"])
     support = workbook.create_sheet("外援说明")
     support.append(["任务", "来源", "外援缺口"])
     for requirement in scenario.external_support_requirements:
@@ -1104,7 +1119,80 @@ def export_formal_schedule(scenario: Scenario, assignments: tuple[Assignment, ..
     return stream.getvalue()
 
 
-_COMPLETE_EXCEL_VERSION = "登机口完整配置-3"
+def export_archived_schedule(raw_day, scenario, assignments, issues, pending):
+    """Export a reviewed archive, retaining its original gaps and diagnostic facts."""
+    from .projections import task_matrix
+    from .domain import task_flight_ids
+    day = imported_day_from_dict(raw_day)
+    if scenario:
+        book = load_workbook(BytesIO(export_formal_schedule(scenario, assignments, retained_issues=issues)))
+    else:
+        book = load_workbook(BytesIO(export_imported_day(day)))
+    sheet = book.worksheets[0]
+    sheet.title = '正式保障班表'
+    # An input-only workbook may have merged its old title row.
+    for merged in list(sheet.merged_cells.ranges):
+        sheet.unmerge_cells(str(merged))
+    sheet.delete_rows(1, sheet.max_row)
+    sheet.append([f'登机口保障 {day.service_date} · ' + (f'带问题归档 · {len(issues)}项待处理' if issues else '已采用结果')])
+    flights = list(day.flights)
+    columns = [f.flight_no for f in flights]
+    matrix = task_matrix(scenario, assignments) if scenario else {}
+    if any('支援' in row for row in matrix.values()):
+        columns.append('支援')
+    sheet.append(['岗位', *columns])
+    roles = list(dict.fromkeys([*day.role_names, *matrix]))
+    cells = {(c.role_name,c.flight_no):c for c in day.cells}
+    tasks = {t.id:t for t in scenario.tasks} if scenario else {}
+    flight_names = {f.id:f.flight_no for f in scenario.flights} if scenario else {}
+    for role in roles:
+        row = [role]
+        for number in columns:
+            cell = cells.get((role,number))
+            segments = matrix.get(role,{}).get(number,[])
+            if cell and cell.id in pending:
+                text = pending[cell.id] + '（待完善）'
+            elif segments:
+                text = '\n'.join(f"{s['timing_label']} {' / '.join([*s['members'], *['待安排'] * max(0,tasks[s['task_id']].required_count-len(s['members']))])}" for s in segments)
+            else:
+                text = (cell.raw_value + '（待配置）' if cell and cell.raw_value else '待配置') if cell and imported_required_count(day,cell) != 0 else ''
+            row.append(text)
+        sheet.append(row)
+        for index,number in enumerate(columns,2):
+            source = cells.get((role,number))
+            relevant = []
+            for issue in issues:
+                related = set(issue.get('relatedTaskIds', [])) | {issue.get('taskId')}
+                if source and source.id in related or any(t.role_id==role and number in {flight_names[f] for f in task_flight_ids(t)} for identity,t in tasks.items() if identity in related):
+                    relevant.append(issue)
+            if relevant:
+                color = 'FFF3CD' if all(i['code']=='coverage_shortfall' for i in relevant) else 'FDE2E2'
+                sheet.cell(sheet.max_row,index).fill=PatternFill('solid',fgColor=color)
+    problems = book.create_sheet('排班问题')
+    problems.append(['状态', '带问题归档' if issues else '校验通过'])
+    problems.append(['问题代码','问题说明','岗位或任务','人员ID','关联任务'])
+    for issue in issues:
+        problems.append([issue['code'],issue['message'],issue.get('taskId'),issue.get('memberId'),' / '.join(issue.get('relatedTaskIds',[]))])
+    if pending:
+        texts = book.create_sheet('待完善姓名')
+        texts.append(['岗位格','航班','岗位','原输入'])
+        by_id={c.id:c for c in day.cells}
+        for identity,text in pending.items():
+            cell=by_id[identity]
+            texts.append([identity,cell.flight_no,cell.role_name,text])
+    for target in book:
+        for row in target:
+            for cell in row:
+                if isinstance(cell.value,str):
+                    cell.data_type='s'
+                cell.alignment=Alignment(vertical='top',wrap_text=True)
+        for column in target.columns:
+            target.column_dimensions[column[0].column_letter].width=36
+    result=BytesIO();book.save(result);book.close()
+    return result.getvalue()
+
+
+_COMPLETE_EXCEL_VERSION = "登机口完整配置-5"
 from .domain import validate_weekly_flights
 from .flight_configuration import validate_library
 
@@ -1138,7 +1226,7 @@ def validate_complete_configuration(data):
     source = data.get("source", "手动维护的完整Excel配置")
     if not isinstance(source, str):
         raise ValueError("配置来源必须是文字")
-    if not day.roster or len(day.roster) != len(set(day.roster)) or any(not isinstance(n, str) or not n.strip() for n in day.roster):
+    if len(day.roster) != len(set(day.roster)) or any(not isinstance(n, str) or not n.strip() for n in day.roster):
         raise ValueError("完整配置需要不重复的实际人员名单")
     members = {c.member_name: c for c in day.member_configs}
     validate_qualification_config({"people": list(day.roster), "roles": [{"roleName": r, "memberNames": [n for n in day.roster if n in members and r in members[n].eligible_role_names]} for r in day.role_names]})
@@ -1153,6 +1241,11 @@ def validate_complete_configuration(data):
     if issues:
         raise ValueError("；".join(i.message for i in issues))
     result = {"day": imported_day_to_dict(day), "rotationEnabled": settings.enabled, "rotationMinutes": settings.interval_minutes, "source": source}
+    if "history" in data:
+        history = data["history"]
+        if not isinstance(history, dict) or history.get("formatVersion") != 2 or not isinstance(history.get("state"), dict):
+            raise ValueError("配置历史必须包含完整的工作台快照")
+        result["history"] = deepcopy(history)
     # Preserve explicit false versus absent in older complete configuration files.
     supplied_roles = {r["roleName"]: r for r in data["day"].get("roleConfigs", [])}
     for role in result["day"]["roleConfigs"]:
@@ -1180,6 +1273,10 @@ def validate_complete_configuration(data):
             data["balanceSettings"], day.role_names,
             set(result["peopleIds"].values()) if "peopleIds" in result else None,
         )
+    if "relaxedShiftSettings" in data:
+        result["relaxedShiftSettings"] = validate_relaxed_shift_settings(data["relaxedShiftSettings"])
+    if "halfRestSettings" in data:
+        result["halfRestSettings"] = validate_half_rest_settings(data["halfRestSettings"])
     if "teamLeaderSettings" in data:
         result["teamLeaderSettings"] = validate_team_leader_settings(data["teamLeaderSettings"])
     if "dutyRoster" in data:
@@ -1241,7 +1338,7 @@ def validate_complete_configuration(data):
     return result
 
 
-def export_complete_configuration(data):
+def export_complete_configuration(data, *, history_schedules=None):
     """One visible workbook, one editable cell source per input fact."""
     data = validate_complete_configuration(data)
     day = imported_day_from_dict(data["day"])
@@ -1255,23 +1352,27 @@ def export_complete_configuration(data):
         ["项目", "内容"], ["模板版本", _COMPLETE_EXCEL_VERSION], ["排班日期", day.service_date], ["计划标题", day.title], ["资质来源", data["source"]],
         ["日常维护", "同一文件维护人员、岗位资质、岗位性质、工作环节、航班、人数、出勤与衔接；保存xlsx后到配置页导入完整Excel，核对预览并确认，再点重新排班。"],
         ["资质更新", "岗位为行、人员为列。1=有资质，0或空白=取消该资质。以本表列出的人员×岗位范围为准更新基础配置；范围外资料保留。新增姓名新增人员，不自动启用已停用人员。"],
-        ["既有排班", "每次确认新增日计划；旧计划、草稿及历史正式班表保留。Excel维护输入，不含自动分配/正式快照/全库历史。全量备份仍用JSON。"],
+        ["既有排班", "每次确认新增当天维护方案；文件附带的全部日计划、航班、草稿和正式班表同时补入历史。已有同ID方案保留设备上的版本，不重复导入。"],
         ["新增人员", "在岗位资质末尾添加姓名列，并在当日出勤添加对应姓名；资质填1或0。"],
         ["新增岗位或航班", "岗位在岗位资质增加一行，填写岗位配置人数和岗位性质（常规/可兼任、工作环节）；航班在航班表增加一行；人数例外可按航班覆盖。可兼任只对同航班生效，两个常规岗位的冲突不会因此消失。"],
         ["同航班专岗专人", "在岗位性质的同航班专岗专人列填是或否。是表示做该岗的人不能兼做同一航班其他岗位，优先于可兼任/接续许可；其他航班仍按时间和冲突检查。同名岗位共用开关，当天不同可在当天岗位例外表覆盖。旧文件缺此列保留现有设置，空库默认关闭。"],
         ["时段与出勤", "环节岗位无需逐格时间。特殊情况在岗位方式例外设置该航班该岗为特殊实际时段，再在岗位时间填写起止；次日明确写次日00:10。日常出勤勾选参加即可，到离岗仅作特殊限制且起止一起填；旧方案直接点重新排班。大件按有需求航班窗口共享覆盖。"],
         ["跨航班衔接", "支援释放选择本人任务完成；航班衔接表填来源/目标航班和是，表示接机完成确实能接上目标登机。未确认不会自动复用；仍检查此人的其他任务。正数走动预留需实际时段来验证。"],
         ["固定与原文", "固定人员只有明确填写才锁定。岗位原文只保留旧名单/外援和已确认斜杠含义，不等同于新排班或资质。备注需核对，0910不猜占用。"],
-        ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。草稿与正式历史使用完整备份迁移。"],
+        ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。全部日期的航班、草稿与正式历史随本文件迁移，在历史页查看。"],
         ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）、重点岗位轮换启用及重点岗位名单（顿号分隔，留空清空）。重点次数修正按月份、人员ID和岗位维护增减次数；可填负整数，有效次数按正式历史加修正计算，最低为0。姓名只供核对，不授予资质。两张表应一起保留；旧文件两表均无时保留已有设置。"],
-        ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。已有草稿、正式历史及实际累计次数仍用完整备份迁移，配置Excel只迁移设置和人工修正。"],
+        ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。历史附表保留全部草稿、正式班表和累计次数依据；请勿手改历史数据，历史班表应在工作台维护。"],
         ["分队长维护", "人员状态表的分队长列填是/否。分队长设置表维护最后使用和不参与航班数比较，默认都是。先补齐岗位，再尽量少用分队长，之后考虑重点轮换/接续。豁免只影响航班数比较，其他人员硬差距不放松，分队长仍须有资质、出勤且无冲突。旧文件无新列/表时保留当前值，新设备默认不标记任何分队长；显式否取消。"],
-        ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，完整Excel只导出现有名单，不包含已删除人员。全量历史迁移请用完整备份。"],
+        ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，可编辑名单只列现有人员；历史附表保留已删除人员的身份和旧班表。"],
         ["接续偏好维护", "适用范围填写通用，所有航班共用。旧航班号表导入时按来源岗合并目标、初始同等优先。优先登机岗位用顿号分隔。按顺序优先填是时，从左到右为第一、第二等优先；否或空白表示同等优先。启用填是/否；可在规则页勾选、上下移调整。旧四列表保持同等优先；不满足偏好仍可合法排班。表存在则以表更新，空表清空；旧文件无此表保留当前偏好。"],
         ["每航班岗位", "航班模板的本航班岗位用顿号分隔，可添加或移除名称，空白表示无岗位；模板岗位维护相应人数/工作方式例外。删除单个航班岗位不删除通用资质，新增通用岗位不会自动加入其他已配置航班。旧文件缺清单列时，已有库保留当前选择，空库沿用通用岗位。"],
         ["当天例外", "长期岗位人数/性质/资质及轮换设置保存在通用表；当天不同的设置在当天岗位例外、当天资质例外、当天设置例外三表中，仅覆盖导入的新日计划，不改长期默认。空表表示当天沿用长期配置，三表应一起保留。"],
+        ["上午下午半休", "当日出勤的半休时段填写不半休、上午半休或下午半休。06:00至12:00前开始算早班；上午休不排早班，下午休只排早班，12点及凌晨归其他时段，跨午按开始判断。半休设置表默认不参与航班数比较，仍按实际岗位计次；无岗保留休息。旧四列出勤默认不半休，旧文件无设置表保留当前开关。新日默认清空当天半休，同日重排保留。"],
+        ["末班与轻松班次", "轻松班次设置表维护提前下班节点、下午统计开始/结束、晚航班结束界线（当日HH:MM）；末班航班范围表逐行填写航班号，空表清空。两表一起保留或一起缺失，旧文件均无时保留当前设置，空库默认12:00/12:00/18:00/23:00及空末班。只用于名单识别和次数统计，历史按最新设置重算；实际班表与历史次数依据随本文件的历史附表迁移。"],
     ]:
         guide.append(row)
+    guide.append(["携带历史", "是" if "history" in data else "否"])
+    guide.append(["历史附表", "历史目录、历史航班和历史排班可核对每天班表；历史附表和隐藏快照请完整保留。日常小改使用前面的人员、资质、航班、规则等维护表；导入预览会显示补入和保留的历史数量。"])
     qualifications = book.create_sheet("岗位资质", 1)
     if "handoffPreferences" in data:
         paths = book.create_sheet("岗位接续偏好")
@@ -1300,6 +1401,21 @@ def export_complete_configuration(data):
         names_by_id = {identity: name for name, identity in data.get("peopleIds", {}).items()}
         for item in balance["priorityAdjustments"]:
             adjustments.append([item["month"], item["memberId"], names_by_id.get(item["memberId"], ""), item["roleName"], item["delta"]])
+    if "relaxedShiftSettings" in data:
+        relaxed = book.create_sheet("轻松班次设置")
+        relaxed.append(["项目", "内容"])
+        for key in default_relaxed_shift_settings():
+            if key != 'lateFlightNos':
+                relaxed.append([{'earlyDepartureCutoffTime': '提前下班节点', 'afternoonRestStartTime': '下午统计开始',
+                    'afternoonRestEndTime': '下午统计结束', 'lateShiftEndTime': '晚航班结束界线'}[key], data['relaxedShiftSettings'][key]])
+        late = book.create_sheet('末班航班范围')
+        late.append(['航班号'])
+        for number in data['relaxedShiftSettings']['lateFlightNos']:
+            late.append([number])
+    if "halfRestSettings" in data:
+        rest = book.create_sheet("半休设置")
+        rest.append(["项目", "内容"])
+        rest.append(["半休人员不参与航班数比较", "是" if data["halfRestSettings"]["exemptFlightCount"] else "否"])
     if "teamLeaderSettings" in data:
         leaders = book.create_sheet("分队长设置")
         leaders.append(["项目", "内容"])
@@ -1362,7 +1478,8 @@ def export_complete_configuration(data):
     selection.showErrorMessage = True
     selection.error = "1表示有资质，0或空白表示取消该资质。"
     qualifications.add_data_validation(selection)
-    selection.add(f"B2:{get_column_letter(len(day.roster)+1)}{len(day.role_names)+1}")
+    if day.roster and day.role_names:
+        selection.add(f"B2:{get_column_letter(len(day.roster)+1)}{len(day.role_names)+1}")
     flights = book.create_sheet("航班", 2)
     flights.append(["航班号", "保障开始", "保障结束"])
     for flight in day.flights:
@@ -1412,6 +1529,9 @@ def export_complete_configuration(data):
     for row in range(2, guide.max_row+1):
         guide.row_dimensions[row].height = 44
     book["备注"].column_dimensions["B"].width = 100
+    if "history" in data:
+        from .configuration_archive import append_configuration_history
+        append_configuration_history(book, data["history"], history_schedules or {})
     result = BytesIO()
     book.save(result)
     book.close()
@@ -1444,7 +1564,7 @@ def import_complete_configuration(content):
 
         def pairs(name):
             result = {}
-            for key,value in rows(name,["项目","内容"] if name in {"使用说明", "界面偏好", "排班平衡", "分队长设置"} else ["项目","分钟"]):
+            for key,value in rows(name,["项目","内容"] if name in {"使用说明", "界面偏好", "排班平衡", "分队长设置", "半休设置", "轻松班次设置"} else ["项目","分钟"]):
                 key=_text(key)
                 if not key or key in result:
                     raise ValueError(f"“{name}”项目为空或重复")
@@ -1452,16 +1572,37 @@ def import_complete_configuration(content):
             return result
 
         guide=pairs("使用说明")
-        if guide.get("模板版本") not in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-2", "登机口完整配置-1"):
+        if guide.get('模板版本') in (_COMPLETE_EXCEL_VERSION, '登机口完整配置-4') and guide.get('携带历史') not in ('是', '否'):
+            raise ValueError('请保留使用说明中的携带历史标记，不能静默丢失历史')
+        compact_sheets = {'历史说明', '历史目录', '历史航班', '历史排班', '_历史快照'}
+        history_sheets = {"备份说明", "人员一览", "方案一览", "长文本"} | {n for n in book.sheetnames if n.startswith("完整数据")}
+        has_history = bool(history_sheets & set(book.sheetnames))
+        imported_history = None
+        if compact_sheets & set(book.sheetnames):
+            if has_history:
+                raise ValueError('配置不能同时包含两种历史快照')
+            from .configuration_archive import read_configuration_history
+            imported_history = read_configuration_history(book)
+            for name in compact_sheets:
+                del book[name]
+        elif guide.get("携带历史") == "是" or has_history:
+            if not history_sheets <= set(book.sheetnames):
+                raise ValueError("配置中的历史工作表缺失，请保留历史附表后重新导入")
+            from .backup_excel import read_backup_sheets
+            imported_history = read_backup_sheets(book)
+            # The existing day adapter only needs editable inputs, not another copy of history.
+            for name in history_sheets:
+                del book[name]
+        if guide.get("模板版本") not in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3", "登机口完整配置-2", "登机口完整配置-1"):
             raise ValueError("完整Excel配置版本不支持")
-        if guide.get("模板版本") in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-2") and any(n not in book.sheetnames for n in ("岗位性质", "航班衔接", "支援释放规则", "岗位方式例外")):
+        if guide.get("模板版本") in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3", "登机口完整配置-2") and any(n not in book.sheetnames for n in ("岗位性质", "航班衔接", "支援释放规则", "岗位方式例外")):
             raise ValueError("新版完整配置缺少岗位性质、航班衔接或支援释放规则，不能丢失新规则后导入")
-        if guide.get("模板版本") == _COMPLETE_EXCEL_VERSION and not any(_text(row[0].value) == "当天出勤" for row in book["支援释放规则"].iter_rows(min_row=2)):
+        if guide.get("模板版本") in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3") and not any(_text(row[0].value) == "当天出勤" for row in book["支援释放规则"].iter_rows(min_row=2)):
             raise ValueError("新版完整配置缺少当天出勤方式，不能丢失时间限制规则后导入")
         service_date=guide.get("排班日期")
         service_date=service_date.date().isoformat() if isinstance(service_date,datetime) else _text(service_date)
         date.fromisoformat(service_date)
-        qualification=import_qualifications(content)
+        qualification=import_qualifications(content, workbook=book, allow_empty=True)
         roles=[r["roleName"] for r in qualification["roles"]]
         settings=pairs("自动排班设置")
         expected_settings={"跨航班走动预留","支援备注已核对","大件轮换启用","大件轮换分钟"}
@@ -1491,8 +1632,6 @@ def import_complete_configuration(content):
             if not start or not end or parse_minutes(end)<=parse_minutes(start):
                 raise ValueError(f"{number}航班时间无效，跨午夜请明确填写次日")
             headers.append(f"{number} / {start}-{end}")
-        if not headers:
-            raise ValueError("请至少填写一个航班")
         main.append(["岗位",*headers])
         raw_rows=rows("岗位原文",["航班号","岗位","原名单","斜杠含义"])
         raw_by_pair={}
@@ -1512,6 +1651,8 @@ def import_complete_configuration(content):
             members.append([name,"\n".join(r["roleName"] for r in qualification["roles"] if name in r["memberNames"])])
             roster.append([name])
         for sheet,header in [("岗位配置",["岗位","同时需要人数"]),("岗位时间",["航班号","岗位","开始时间","结束时间"]),("岗位人数例外",["航班号","岗位","同时需要人数"]),("固定人员",["航班号","岗位","固定人员"]),("当日出勤",["人员","参加排班","到岗时间","离岗时间"]),("额外占用",["编号","人员","事项","开始时间","结束时间"])]:
+            if sheet == "当日出勤" and book[sheet].max_column >= 5:
+                header = [*header, "半休时段"]
             rows(sheet,header)
         remark_rows=rows("备注",["类型","原文","涉及人员","到岗时间"])
         remarks=[]
@@ -1521,7 +1662,7 @@ def import_complete_configuration(content):
             remarks.append(ImportedRemark(kind,_text(text),_split_names(_text(names)),_work_time_text(arrival)))
         stream=BytesIO()
         book.save(stream)
-        day=import_day(stream.getvalue(),service_date)
+        day=import_day(stream.getvalue(),service_date,allow_empty=True)
         day=replace(day,remarks=tuple(remarks),remarks_reviewed=reviewed,cells=tuple(replace(c,semantics=raw_by_pair[(c.flight_no,c.role_name)][1]) if (c.flight_no,c.role_name) in raw_by_pair else c for c in day.cells))
         data = {"day":imported_day_to_dict(day),"rotationEnabled":enabled,"rotationMinutes":settings["大件轮换分钟"],"source":_text(guide.get("资质来源"))}
         if "岗位性质" in book.sheetnames and _text(book["岗位性质"].cell(1, 4).value):
@@ -1617,6 +1758,20 @@ def import_complete_configuration(content):
             if set(entries) != {"排班布局", "表格大小"} or entries["排班布局"] not in {"按航班", "原保障表"}:
                 raise ValueError("界面偏好需完整填写排班布局和表格大小")
             data["displayPreferences"] = {"layout": "flights" if entries["排班布局"] == "按航班" else "matrix", "zoom": entries["表格大小"]}
+        if {'轻松班次设置', '末班航班范围'} & set(book.sheetnames):
+            if not {'轻松班次设置', '末班航班范围'} <= set(book.sheetnames):
+                raise ValueError('轻松班次设置与末班航班范围须一起保留')
+            entries = pairs('轻松班次设置')
+            keys = {'提前下班节点': 'earlyDepartureCutoffTime', '下午统计开始': 'afternoonRestStartTime',
+                    '下午统计结束': 'afternoonRestEndTime', '晚航班结束界线': 'lateShiftEndTime'}
+            if set(entries) != set(keys):
+                raise ValueError('轻松班次设置项目不完整或未知')
+            data['relaxedShiftSettings'] = {keys[k]: _work_time_text(v) for k, v in entries.items()}
+            data['relaxedShiftSettings']['lateFlightNos'] = [_text(r[0]) for r in rows('末班航班范围', ['航班号'])]
+        if "半休设置" in book.sheetnames:
+            rest = pairs("半休设置")
+            if set(rest) != {"半休人员不参与航班数比较"}: raise ValueError("半休设置需保留航班数比较项目")
+            data["halfRestSettings"] = {"exemptFlightCount": yes_no(rest["半休人员不参与航班数比较"])}
         if "分队长设置" in book.sheetnames:
             entries = pairs("分队长设置")
             if set(entries) != {"分队长最后使用", "分队长不参与航班数比较"}:
@@ -1667,6 +1822,8 @@ def import_complete_configuration(content):
                 enabled, minutes, transition = settings_rows[0]
                 overrides["settings"] = {"rotationEnabled":yes_no(enabled),"rotationMinutes":minutes,"transitionMinutes":transition}
             data["dayOverrides"] = overrides
+        if imported_history is not None:
+            data["history"] = imported_history
         return validate_complete_configuration(data)
     finally:
         book.close()

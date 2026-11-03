@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .domain import Assignment, Scenario, ValidationIssue, has_role_qualification, task_pair_conflict, member_flight_participation, task_flight_ids, flight_balance_members
-from .domain import MEMBER_STATUSES, member_available
+from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_rest_period_violation
 
 
 def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    if type(scenario.balance_exempt_half_rest) is not bool or any(m.half_rest not in HALF_REST_MODES for m in scenario.members):
+        issues.append(ValidationIssue("invalid_half_rest", "半休模式或航班数豁免设置无效"))
     if any(type(v) is not bool for v in (scenario.team_leader_last, scenario.balance_exempt_team_leaders)) or any(type(m.team_leader) is not bool for m in scenario.members):
         issues.append(ValidationIssue("invalid_team_leader", "分队长标记与规则开关必须是布尔值"))
     member_ids = [member.id for member in scenario.members]
@@ -112,6 +114,9 @@ def validate_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -
         assignments_by_task[task.id].append(member.id)
         if not member_available(member):
             issues.append(ValidationIssue("personnel_unavailable", f"人员 {member.id} 当前状态为{member.status}，不能安排任务", task.id, member.id))
+        half_rest_issue = half_rest_period_violation(member, task)
+        if half_rest_issue:
+            issues.append(ValidationIssue("half_rest_period", half_rest_issue, task.id, member.id))
         assignments_by_member[member.id].append(task.id)
         if assignments_by_task[task.id].count(member.id) > 1:
             issues.append(ValidationIssue("duplicate_assignment", f"人员 {member.id} 被重复分配到任务 {task.id}", task.id, member.id))

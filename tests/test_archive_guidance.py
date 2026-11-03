@@ -21,9 +21,10 @@ class ArchiveGuidanceTests(unittest.TestCase):
         for a in day['memberAvailability']:a.update(participating=False,availableFrom=None,availableUntil=None)
         before=self.workspace.backup()
         with patch('gate_schedule.workbench.solve',side_effect=AssertionError('No people must not call solver')):
-            with self.assertRaisesRegex(WorkspaceError,'请选择当天参加人员'):
-                self.command('archive-next',{'day':day},pid)
-        self.assertEqual(before,self.workspace.backup())
+            state = self.command('archive-next',{'day':day},pid)
+        self.assertEqual('2026-08-04',state['plans'][state['selectedPlanId']]['day']['serviceDate'])
+        self.assertTrue(state['plans'][pid]['adopted'])
+        self.assertIn('请选择当天参加人员',state['plans'][state['selectedPlanId']]['message'])
 
     def test_legacy_wall_of_diagnostics_is_readable_without_data_write(self):
         pid,p=self.source();day=deepcopy(p['day']);day['serviceDate']='2026-08-04'
@@ -48,8 +49,8 @@ class ArchiveGuidanceTests(unittest.TestCase):
         self.assertFalse(target['valid']);self.assertEqual(3,len(target['draft']))
         self.assertIn('AK151',target['message']);self.assertNotIn('imported-',target['message'])
         saved=self.workspace.backup()
-        with self.assertRaises(WorkspaceError):self.command('adopt',{},target['id'])
-        self.assertEqual(saved,self.workspace.backup())
+        self.command('adopt',{},target['id'])
+        self.assertTrue(self.workspace.snapshot()['plans'][target['id']]['adopted']['issues'])
 
     def test_continuous_archive_reuses_selected_configuration_without_extra_adopt(self):
         pid,p=self.source()
@@ -80,5 +81,6 @@ class ArchiveGuidanceTests(unittest.TestCase):
         before=self.workspace.backup();day=deepcopy(p['day']);day['serviceDate']='2026-08-04'
         day['roleConfigs'][0].update(workMode='timed')
         for c in day['cells']:c.update(workStart=None,workEnd=None)
-        with self.assertRaises(WorkspaceError):self.command('archive-next',{'day':day},pid)
-        self.assertEqual(before,self.workspace.backup())
+        state=self.command('archive-next',{'day':day},pid)
+        self.assertTrue(state['plans'][pid]['adopted'])
+        self.assertFalse(state['plans'][state['selectedPlanId']]['valid'])

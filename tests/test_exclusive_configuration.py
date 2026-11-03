@@ -74,8 +74,8 @@ class ExclusiveConfigurationTests(unittest.TestCase):
         self.assertFalse(next(p for p in options if p['id']==person_id)['available'])
         broken = self.command('edit-cell', {'cellId':board['id'], 'text':person}, pid, other)
         self.assertIn('exclusive_same_flight', {i['code'] for i in broken['plans'][pid]['issues']})
-        with self.assertRaises(WorkspaceError): self.command('adopt', {}, pid, other)
-        self.assertEqual(formal, other.snapshot()['plans'][pid]['adopted'])
+        formal = self.command('adopt', {}, pid, other)['plans'][pid]['adopted']
+        self.assertIn('exclusive_same_flight', {i['code'] for i in formal['issues']})
         self.assertEqual(old_plans, self.workspace.snapshot()['plans'])
         restored = Workbench(self.path.with_name('restore.sqlite3'))
         restored.restore(0, other.backup())

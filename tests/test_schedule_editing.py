@@ -31,8 +31,8 @@ class ScheduleEditingTests(unittest.TestCase):
         self.assertEqual('丙', p['cellDrafts']['temp'])
         self.assertFalse(p['valid'])
         self.assertEqual('丙', Workbench(self.path).snapshot()['plans'][plan_id]['cellDrafts']['temp'])
-        with self.assertRaises(WorkspaceError):
-            self.command('adopt', {}, plan_id)
+        formal = self.command('adopt', {}, plan_id)['plans'][plan_id]['adopted']
+        self.assertEqual('丙',formal['cellDrafts']['temp'])
         p = self.command('configure-cell', {'cellId': 'temp', 'requiredCount': 1, 'workStart': '20:00', 'workEnd': '21:00'}, plan_id)['plans'][plan_id]
         self.assertEqual(3, len(p['draft']), '新增岗位不能清空已排的人')
         self.assertTrue(any(i['code'] == 'ineligible' for i in p['issues']), '输入姓名不能授予资质')
@@ -85,9 +85,8 @@ class ScheduleEditingTests(unittest.TestCase):
         self.assertEqual(state['plans'], restored.snapshot()['plans'])
         self.command('edit-cell', {'cellId': 'c1', 'text': '甲'}, plan_id)
         before = self.workspace.backup()
-        with self.assertRaises(WorkspaceError):
-            self.command('archive-next', {'day': day}, plan_id)
-        self.assertEqual(before, self.workspace.backup())
+        state=self.command('archive-next', {'day': day}, plan_id)
+        self.assertTrue(state['plans'][plan_id]['adopted']['issues'])
 
     def test_pending_input_survives_backup_and_attendance_edit_but_bad_references_are_rejected(self):
         plan_id, _ = self.complete_plan()
@@ -135,8 +134,8 @@ class ScheduleEditingTests(unittest.TestCase):
         formal = self.command('adopt', {}, plan_id)['plans'][plan_id]['adopted']
         p = self.command('edit-cell', {'cellId': 'c1', 'text': '乙/丙'}, plan_id)['plans'][plan_id]
         self.assertTrue(any(i['code'] == 'lock_missing' for i in p['issues']))
-        with self.assertRaises(WorkspaceError): self.command('adopt', {}, plan_id)
-        self.assertEqual(formal, self.workspace.snapshot()['plans'][plan_id]['adopted'])
+        state=self.command('adopt', {}, plan_id)
+        self.assertIn('lock_missing',{i['code'] for i in state['plans'][plan_id]['adopted']['issues']})
         self.assertTrue(self.workspace.export(plan_id).startswith(b'PK'))
 
     def test_archive_failure_keeps_source_and_disk_failure_is_atomic(self):
@@ -150,8 +149,8 @@ class ScheduleEditingTests(unittest.TestCase):
             with self.assertRaises(OSError): self.command('archive-next', {'day': day}, plan_id)
         self.assertEqual(before, self.workspace.backup())
         day['memberAvailability'] = []
-        with self.assertRaises(WorkspaceError): self.command('archive-next', {'day': day}, plan_id)
-        self.assertEqual(before, self.workspace.backup())
+        state=self.command('archive-next', {'day': day}, plan_id)
+        self.assertFalse(state['plans'][state['selectedPlanId']]['valid'])
 
     def test_multisegment_edit_requires_explicit_slots_and_does_not_guess_rotation(self):
         import json

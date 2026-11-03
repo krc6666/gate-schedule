@@ -234,9 +234,9 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         self.assertFalse(state['plans'][pid]['valid'])
         self.assertTrue(any(issue['code'] == 'flight_count_spread' for issue in state['plans'][pid]['issues']))
         before = other.backup()
-        with self.assertRaises(ValueError):
-            self.command('adopt', {}, pid, other)
-        self.assertEqual(before, other.backup())
+        saved=self.command('adopt', {}, pid, other)
+        adopted=saved['plans'][pid]['adopted']
+        self.assertIn('flight_count_spread',{i['code'] for i in adopted['issues']})
         restored = Workbench(Path(self.directory.name) / 'backup-restored.sqlite3')
         restored.restore(0, other.backup())
         self.assertEqual(settings, restored.snapshot()['balanceSettings'])

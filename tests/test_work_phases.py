@@ -177,7 +177,8 @@ class PhaseWorkbenchTests(unittest.TestCase):
             state=self.command('edit-cell',{'cellId':role,'text':name},pid)
         self.assertFalse(state['plans'][pid]['valid'])
         self.assertEqual(adopted,state['plans'][pid]['adopted'])
-        with self.assertRaises(ValueError):self.command('adopt',{},pid)
+        saved=self.command('adopt',{},pid)['plans'][pid]
+        self.assertTrue(saved['adopted']['issues'])
 
     def test_phase_plan_preserves_old_plan_and_new_default_is_usable(self):
         state=self.command('new-plan',{'serviceDate':'2026-08-02'})

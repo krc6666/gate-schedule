@@ -105,6 +105,10 @@ def main():
             command("assign", {"assignments": assigned}, plan_id)
             command("adopt", {}, plan_id)
             backup = request("/api/workspace/backup")
+            excel_backup = request('/api/workspace/backup.xlsx')
+            assert excel_backup.startswith(b'PK')
+            from gate_schedule.backup_excel import import_backup
+            assert import_backup(excel_backup) == backup
             workbook = load_workbook(BytesIO(request(f"/api/workspace/export/{plan_id}")))
             assert workbook.worksheets[0].title == "正式保障班表"
             assert set(workbook["正式任务明细"].cell(2, 7).value.split("/")) == {"乙", "丙"}
@@ -119,7 +123,7 @@ def main():
             stop()
             assert start()["plans"][imported_id]["adopted"]
             revision = request("/api/workspace")["revision"]
-            restored = request(f"/api/workspace/restore?expectedRevision={revision}", backup)
+            restored = request(f"/api/workspace/restore?expectedRevision={revision}", content=excel_backup)
             assert restored["plans"][plan_id]["adopted"]["assignments"] == assigned
             assert len(restored["plans"]) == 1
             if args.workspace:

@@ -3,6 +3,9 @@ from __future__ import annotations
 from .domain import ExternalSupportRequirement, Flight, Member, Rotation, Scenario, Task, parse_minutes, validate_balance_settings, default_team_leader_settings, validate_team_leader_settings
 
 
+from .domain import default_half_rest_settings, validate_half_rest_settings
+
+
 def scenario_from_dict(data: dict) -> Scenario:
     flights = tuple(
         Flight(
@@ -51,6 +54,7 @@ def scenario_from_dict(data: dict) -> Scenario:
         release_policy=policy, phase_handoffs=tuple(tuple(pair) for pair in data.get("phaseHandoffs", ())),
         flight_count_gap=balance["flightCountGap"], priority_role_ids=tuple(balance["priorityRoleNames"]),
         team_leader_last=leaders["lastUsed"], balance_exempt_team_leaders=leaders["exemptFlightCount"],
+        balance_exempt_half_rest=validate_half_rest_settings(data.get("halfRestSettings", default_half_rest_settings()))["exemptFlightCount"],
         flights=flights,
         members=tuple(
             Member(
@@ -60,7 +64,7 @@ def scenario_from_dict(data: dict) -> Scenario:
                 available_from=parse_minutes(item["availableFrom"]),
                 available_until=parse_minutes(item["availableUntil"]) if item.get("availableUntil") is not None else None,
                 team_leader=item.get("teamLeader", False),
-                status=item.get("status", "正常"),
+                status=item.get("status", "正常"), half_rest=item.get("halfRest"),
             )
             for item in data["members"]
         ),
@@ -99,6 +103,7 @@ def scenario_to_dict(scenario: Scenario) -> dict:
         "releasePolicy": scenario.release_policy, "phaseHandoffs": [list(pair) for pair in scenario.phase_handoffs],
         "flightCountGap": scenario.flight_count_gap, "priorityRoleIds": list(scenario.priority_role_ids),
         "teamLeaderSettings": {"lastUsed": scenario.team_leader_last, "exemptFlightCount": scenario.balance_exempt_team_leaders},
+        "halfRestSettings": {"exemptFlightCount": scenario.balance_exempt_half_rest},
         "flights": [
             {"id": item.id, "flightNo": item.flight_no, "serviceDate": item.service_date,
              "windowStart": item.window_start, "windowEnd": item.window_end,
@@ -107,7 +112,7 @@ def scenario_to_dict(scenario: Scenario) -> dict:
         ],
         "members": [
             {"id": item.id, "name": item.name, "eligibleRoleIds": sorted(item.eligible_role_ids),
-             "availableFrom": item.available_from, "availableUntil": item.available_until, "teamLeader": item.team_leader, "status": item.status}
+             "availableFrom": item.available_from, "availableUntil": item.available_until, "teamLeader": item.team_leader, "status": item.status, "halfRest": item.half_rest}
             for item in scenario.members
         ],
         "tasks": [

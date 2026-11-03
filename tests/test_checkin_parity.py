@@ -193,9 +193,8 @@ class ParityTests(unittest.TestCase):
         self.assertFalse(plan["valid"])
         self.assertEqual({"coverage_shortfall"}, {i["code"] for i in plan["issues"]})
         before = self.workspace.backup()
-        with self.assertRaises(WorkspaceError):
-            self.command("adopt", {}, plan_id)
-        self.assertEqual(before, self.workspace.backup())
+        saved = self.command("adopt", {}, plan_id)
+        self.assertEqual({'coverage_shortfall'}, {i['code'] for i in saved['plans'][plan_id]['adopted']['issues']})
         scenario, _ = self.workspace._scenario(plan)
         self.assertFalse(draft_blocking_issues(validate_schedule(scenario, tuple(Assignment(a["taskId"], a["memberId"]) for a in plan["draft"]))))
         broken = replace(scenario, members=tuple(replace(m, eligible_role_ids=()) for m in scenario.members))

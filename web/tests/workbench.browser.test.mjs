@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir, rm, readdir } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -17,7 +17,7 @@ async function until(fn, label) {
   throw new Error(`等待超时：${label}`);
 }
 
-test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采用换人、备份恢复与正式导出", { timeout: 240000 }, async t => {
+test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采用换人、备份恢复与正式导出", { timeout: 360000 }, async t => {
   assert.ok(chrome, "需要 Chrome/Edge");
   assert.ok(existsSync(python), "先按 README 创建 .venv-local，或设置 GATE_TEST_PYTHON");
   const temporaryRoot = join(repo, ".tmp");
@@ -158,7 +158,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   const people = (await state()).people;
   await mutate(() => value('[data-slot="0"]', people[0].id));
   assert.equal((await current()).valid, false);
-  assert.equal(await evaluate("document.querySelector('#adopt-draft').disabled"), true);
+  assert.equal(await evaluate("document.querySelector('#adopt-draft').disabled"), false,'允许带问题采用保存');
   await evaluate("window.__reloadMarker=true");
   await call("Page.reload");
   await until(() => evaluate("!window.__reloadMarker && !!document.querySelector('[data-view=\"schedule\"]')"), "重载新页面");
@@ -168,7 +168,12 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await mutate(() => value('[data-slot="1"]', people[1].id));
   await click('[data-close-dialog]');
   assert.equal(await evaluate(`document.querySelector('[data-drop-ids]:not([data-drop-ids="[]"]) [data-edit-cell]').textContent`), '甲 / 乙', '多人在原表一格显示姓名');
-  assert.equal(await evaluate("document.querySelector('#schedule-path').open"), false, '人员明细默认收起');
+  assert.equal(await evaluate('!!document.querySelector("#schedule-path, #path-person")'),false,'删除独立人员当天安排功能');
+  assert.equal(await evaluate('document.querySelectorAll(".view-root details, .view-root summary").length'),0,'排班页不使用折叠展示');
+  assert.ok(await evaluate('document.querySelector("#people-overview table").getBoundingClientRect().height>0'));
+  assert.ok(await evaluate('document.querySelector("#clear-draft").getBoundingClientRect().height>0'),'原更多操作直接可见');
+  await click('#previous-schedule');
+  assert.equal(await evaluate('document.querySelector("#previous-comparison").tagName'),'SECTION');
 
 
   // Make a legal second flight, then deliberately break it through the real grid.
@@ -251,8 +256,12 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   assert.match(await evaluate("document.querySelector('.app-message[role=alert]').textContent"),/资格/);
   assert.equal((await current()).valid,false,'不合法输入保留为草稿');
   assert.match(await evaluate(`document.querySelector(${JSON.stringify(smartCell)}).textContent`),/丁/,'直接手输资格不符人员仍显示在格内');
-  const blocked=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'adopt',payload:{},planId:(await current()).id,expectedRevision:(await state()).revision})});
-  assert.equal(blocked.ok,false,'独立校验拒绝采用无资质安排');
+  const warningBackup=await(await fetch(`${baseUrl}/api/workspace/backup`)).json();
+  const accepted=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'adopt',payload:{},planId:(await current()).id,expectedRevision:(await state()).revision})});
+  assert.ok(accepted.ok,'无资质安排允许带问题归档');
+  assert.ok((await accepted.json()).plans[(await current()).id].adopted.issues.some(i=>i.code==='ineligible'));
+  const warningRestore=await fetch(`${baseUrl}/api/workspace/restore?expectedRevision=${(await state()).revision}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(warningBackup)});
+  assert.ok(warningRestore.ok);await reloadPage();
   await mutate(()=>click('#undo-move'));
   {
     const saved=await(await fetch(`${baseUrl}/api/workspace/backup`)).json();
@@ -297,7 +306,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowUp',code:'ArrowUp',windowsVirtualKeyCode:38});
   assert.equal(await evaluate("document.querySelector('#schedule-candidate-menu [aria-selected=true]').dataset.candidateId"),people[3].id,'首次上方向键可选择末尾的报警人选');
   await click('[data-close-picker]');
-  await evaluate("document.querySelector('#people-overview').open=true");
+  assert.ok(await evaluate('document.querySelector("#people-overview table").getBoundingClientRect().height>0'));
   assert.match(await evaluate("document.querySelector('#people-overview').textContent"),/AK151/);
   await mutate(()=>value('#schedule-zoom','120'));await evaluate("document.querySelector('#schedule-zoom').dispatchEvent(new Event('input'))");
   assert.equal(await evaluate("document.querySelector('[data-zoom-sheet] table').style.fontSize"),'120%');
@@ -324,11 +333,19 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   assert.deepEqual(new Set((await current()).draft.map(a => a.memberId)), new Set([people[2].id, people[1].id]));
   await mutate(() => click("#adopt-draft"));
   const adopted = (await current()).adopted;
-  await click("#backup-workspace");
+  assert.equal(await evaluate('document.querySelectorAll("#backup-workspace, #reload-workspace").length'),0);
+  assert.equal(await evaluate('document.querySelectorAll("#export-complete-configuration").length'),1);
+  await click("#export-complete-configuration");
   const backup = await (await fetch(`${baseUrl}/api/workspace/backup`)).json();
+  const configurationFilename = await until(async()=> {try{return (await readdir(join(directory,'downloads'))).find(name=>name==='登机口排班工具配置.xlsx');}catch{return false;}}, '统一配置Excel下载完成');
+  const configurationContent=await readFile(join(directory,'downloads',configurationFilename));
+  assert.equal(configurationContent.subarray(0,2).toString(),'PK','下载必须为真正xlsx工作簿');
+  const backupContent=Buffer.from(await(await fetch(`${baseUrl}/api/workspace/backup.xlsx`)).arrayBuffer());
+  assert.equal(await evaluate('document.querySelector("#restore-workspace").accept'),'.xlsx,.json');
   await rerun();
-  await mutate(() => evaluate(`(() => {const el=document.querySelector('#restore-workspace');const dt=new DataTransfer();dt.items.add(new File([${JSON.stringify(JSON.stringify(backup))}],'backup.json',{type:'application/json'}));el.files=dt.files;el.dispatchEvent(new Event('change'));})()`));
+  await mutate(() => evaluate(`(() => {const el=document.querySelector('#restore-workspace');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(${JSON.stringify(backupContent.toString('base64'))}),c=>c.charCodeAt(0))],'backup.xlsx',{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));el.files=dt.files;el.dispatchEvent(new Event('change'));})()`));
   assert.deepEqual((await current()).adopted, adopted);
+  assert.deepEqual((await(await fetch(`${baseUrl}/api/workspace/backup`)).json()).state.plans[backup.state.selectedPlanId].draft,backup.state.plans[backup.state.selectedPlanId].draft);
   await stopServer(); await launchServer();
   await call("Page.navigate", { url: baseUrl }); await waitElement('[data-view="schedule"]'); await click('[data-view="schedule"]');
   assert.deepEqual((await current()).adopted, adopted);
@@ -423,7 +440,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   const slotSelector = `[data-assignment-task="${firstSlot.task}"][data-slot="${firstSlot.slot}"]`;
   await mutate(() => value(slotSelector, ''));
   assert.equal((await current()).valid, false);
-  assert.equal(await evaluate("document.querySelector('#adopt-draft').disabled"), true);
+  assert.equal(await evaluate("document.querySelector('#adopt-draft').disabled"), false,'允许带问题采用保存');
   await mutate(() => value(slotSelector, firstSlot.value));
   assert.equal((await current()).valid, true);
   await click('[data-close-dialog]');
@@ -447,7 +464,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   const sharedSlot = `[data-assignment-task="${sharedId}"][data-slot="0"]`;
   const originalMember = await evaluate(`document.querySelector(${JSON.stringify(sharedSlot)}).value`);
   await mutate(()=>value(sharedSlot,''));
-  assert.equal((await current()).valid,false,'轮换缺人依旧拒绝采用');
+  assert.equal((await current()).valid,false,'轮换缺人仍保留问题');
   await click('[data-close-dialog]');
   assert.ok(await evaluate(`!!document.querySelector(${JSON.stringify(sharedSelector+' .unfilled-name')})`),'共享格显示轮换缺口');
   assert.ok(await evaluate(`document.querySelector(${JSON.stringify(sharedSelector)}).closest('td').classList.contains('schedule-cell-issue')`),'共享格保留缺人报警');
@@ -483,7 +500,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await mutate(()=>click('#toggle-schedule-layout'));
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(sharedSelector)}).closest('td').colSpan`),mergedInfo.columns.length,'原保障表也使用同一逻辑跨度');
   await mutate(()=>click('#toggle-schedule-layout'));
-  await evaluate("document.querySelector('.schedule-progress:not([data-run-status=running])')?.remove();document.querySelector('.schedule-more').open=false");
+  await evaluate("document.querySelector('.schedule-progress:not([data-run-status=running])')?.remove()");
   await evaluate(`document.querySelector(${JSON.stringify(sharedSelector)}).scrollIntoView({block:'center'})`);
   const sharedShot=await call('Page.captureScreenshot',{format:'png'});
   await writeFile(join(temporaryRoot,'shared-baggage.png'),Buffer.from(sharedShot.data,'base64'));
@@ -511,7 +528,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   const completeExcel = await readFile(legacyExcelPath);
   assert.equal(await evaluate("document.querySelectorAll('.day-flight-group').length"), 7, '配置直接按当天航班分组');
   assert.equal(await evaluate("[...document.querySelectorAll('.day-flight-group')].every(el=>!el.open)"), true, '航班分组默认折叠');
-  const uploadCompleteExcel = bytes => evaluate(`(() => {const el=document.querySelector('#import-complete-configuration');const dt=new DataTransfer();const bytes=Uint8Array.from(atob(${JSON.stringify(bytes.toString('base64'))}),c=>c.charCodeAt(0));dt.items.add(new File([bytes],'complete.xlsx'));el.files=dt.files;el.dispatchEvent(new Event('change'));})()`);
+  const uploadCompleteExcel = bytes => evaluate(`(() => {const el=document.querySelector('#restore-workspace');const dt=new DataTransfer();const bytes=Uint8Array.from(atob(${JSON.stringify(bytes.toString('base64'))}),c=>c.charCodeAt(0));dt.items.add(new File([bytes],'complete.xlsx'));el.files=dt.files;el.dispatchEvent(new Event('change'));})()`);
   const beforeExcel = await state();
   await uploadCompleteExcel(completeExcel); await waitElement('#confirm-complete-configuration');
   assert.deepEqual(await state(), beforeExcel, '完整Excel预览不写库');
@@ -698,7 +715,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   edited = await current();
   assert.equal(edited.draft.some(a=>a.taskId===twoTask.id && a.memberId===sourceMember),false,'拖至空位会移动来源');
   assert.ok(edited.draft.some(a=>a.taskId===twoTask.id && a.memberId===partner));
-  assert.equal(edited.valid,false,'缺人仍不能采用');
+  assert.equal(edited.valid,false,'缺人仍有问题');
   await mutate(()=>click('#undo-move'));
   await mutate(()=>typeCell(`[data-cell-text="${targetCell.id}"]`,memberName(targetMember)));
   assert.equal((await current()).valid,true);
@@ -736,7 +753,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     const beforeContinuous=await (await fetch(`${baseUrl}/api/workspace/backup`)).json();
     await click('#archive-next');await value('#confirm-role-times',true,true);await click('#prepare-no-people');
     assert.equal(await evaluate("document.querySelector('#confirm-prepare').textContent"),'归档并生成后天排班');
-    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),true);
+    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),false,'缺资料仍可归档并建立后天草稿');
     assert.match(await evaluate("document.querySelector('#prepare-selection-summary').textContent"),/0 人上班.*还未选择人员/);
     await click('#prepare-jump-people');
     assert.equal(await evaluate("document.activeElement.dataset.field"),'participating');
@@ -744,10 +761,10 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),false);
     const initialFlights=await evaluate("[...document.querySelectorAll('[data-prepare-flight]:checked')].map(x=>x.dataset.prepareFlight)");
     await click('#prepare-no-flights');
-    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),true);
+    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),false,'缺资料仍可归档并建立后天草稿');
     for(const id of initialFlights)await value(`[data-prepare-flight="${id}"]`,true,true);
     await click('#prepare-no-people');
-    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),true);
+    assert.equal(await evaluate("document.querySelector('#confirm-prepare').disabled"),false,'缺资料仍可归档并建立后天草稿');
     assert.deepEqual(await (await fetch(`${baseUrl}/api/workspace/backup`)).json(),beforeContinuous);
     const firstPerson=await evaluate("document.querySelector('[data-prepare-person][data-field=participating]').dataset.preparePerson");
     await value(`[data-prepare-person="${firstPerson}"][data-field="participating"]`,true,true);
@@ -761,7 +778,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.ok(await evaluate("document.querySelectorAll('.schedule-cell-vacancy').length>0"),'未排齐草稿标记缺口');
     await mutate(()=>click('#toggle-schedule-layout'));
     assert.ok(await evaluate("document.querySelectorAll('.schedule-cell-vacancy').length>0"),'切换布局保留琥珀缺口');
-    assert.equal(await evaluate("document.querySelector('#archive-next').disabled"),true,'缺口不能继续正式归档');
+    assert.equal(await evaluate("document.querySelector('#archive-next').disabled"),false,'缺口可带问题归档并排后天');
     assert.doesNotMatch(partial.message,/imported-/);
     const recover=await fetch(`${baseUrl}/api/workspace/restore?expectedRevision=${(await state()).revision}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(beforeContinuous)});
     assert.ok(recover.ok);await reloadPage();
@@ -810,7 +827,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.wb-matrix thead .flight-time')].map(e=>e.textContent)"),(await current()).formalSchedule.flights.map(f=>`${f.windowStart}–${f.windowEnd}`),'正式表头消费自身航班快照时间');
   assert.equal(await evaluate("document.querySelectorAll('.wb-matrix [draggable=true],.wb-matrix [contenteditable=true]').length"),0,'已归档正式快照只读');
   assert.equal(await evaluate("document.querySelectorAll('.schedule-cell-vacancy,.schedule-cell-conflict').length"),0,'正式快照不继承草稿报警');
-  assert.ok(await evaluate("document.querySelector('.schedule-more').getBoundingClientRect().width>0"),'正式快照的返回草稿菜单必须可见');
+  assert.ok(await evaluate("document.querySelector('#view-formal').getBoundingClientRect().width>0"),'正式快照的返回草稿按钮必须直接可见');
   await click('#view-formal');
   assert.ok(await evaluate("document.querySelectorAll('.wb-matrix [contenteditable=true]').length>0"),'历史打开后能够返回草稿编辑');
   // Reproduce the actual Aug 4 legacy draft through the normal button, without
@@ -1097,9 +1114,9 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.equal((await state()).displayPreferences.zoom,120);
     await click('[data-view="config"]');
     await evaluate('document.querySelector(".config-collapsible").open=true');
-    const exportedDate=(await current()).day.serviceDate;
+    await rm(join(directory,'downloads','登机口排班工具配置.xlsx'),{force:true});
     await click('#export-complete-configuration');
-    const bytes=await until(async()=>{try{return await readFile(join(directory,'downloads',`登机口完整配置-${exportedDate}.xlsx`));}catch{return false;}},'导出包含最新设置的完整Excel');
+    const bytes=await until(async()=>{try{return await readFile(join(directory,'downloads','登机口排班工具配置.xlsx'));}catch{return false;}},'导出包含最新设置的完整Excel');
     const previewResponse=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:bytes});
     assert.equal(previewResponse.status,200);
     const config=(await previewResponse.json()).payload;
@@ -1240,6 +1257,10 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await click('[data-view="history"]');
     assert.equal(await evaluate('!!document.querySelector("#priority-statistics-root")'),false,'历史页不再放次数统计');
     await click('[data-view="statistics"]');await waitElement('#duty-qualification-settings');
+    await waitElement('#duty-general-details');
+    assert.equal(await evaluate('document.querySelector("#duty-general-details").open'),false,'值班月表参照值机默认折叠');
+    assert.ok(await evaluate('document.querySelector(".duty-roster-details-section").getBoundingClientRect().height<300'),'收起后不挤占岗位统计');
+    assert.ok(await evaluate('!!document.querySelector(".section-heading #download-duty-template")&&!!document.querySelector(".section-heading #import-duty-roster")'),'模板工具与月份集中顶部');
     assert.equal(await evaluate('document.querySelectorAll(".nav-item[data-view]").length'),6);
     const initial=await state(),oldPlans=structuredClone(initial.plans);
     const pool=initial.people.filter(p=>p.active&&!p.teamLeader&&(p.status??'正常')==='正常').slice(0,4);assert.equal(pool.length,4);
@@ -1252,9 +1273,12 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.deepEqual((await state()).plans,oldPlans,'轮值不追改航班草稿及正式历史');
     await value('#duty-month','2026-08');await waitElement('[data-duty-date="2026-08-02"]');
     const report=await(await fetch(`${baseUrl}/api/duty-statistics?month=2026-08`)).json();
+    await evaluate('document.querySelector("#duty-general-details > summary").click()');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".duty-roster-fairness-table td")).fontSize'),'11px','人员次数表使用值机紧凑字号');
     assert.equal(report.rows.length,15);assert.equal(report.dutyDifference,1);assert.ok(report.standbyDifference<=1);
     const row=report.rows[0];await mutate(()=>value('[data-duty-date="2026-08-02"][data-duty-slot="duty"]',row.standbyMemberIds[0]));
     await waitElement('[data-reset-duty="2026-08-02"]:not([disabled])');
+    assert.equal(await evaluate('document.querySelector("#duty-general-details").open'),true,'手动换人后保留展开状态');
     assert.equal((await(await fetch(`${baseUrl}/api/duty-statistics?month=2026-08`)).json()).rows[0].standbyMemberIds[0],row.dutyMemberId,'同排换人');
     const content=Buffer.from(await(await fetch(`${baseUrl}/api/workspace/duty-roster/export?month=2026-08`)).arrayBuffer());
     const upload=()=>evaluate(`(() => {const el=document.querySelector('#import-duty-roster');const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(${JSON.stringify(content.toString('base64'))}),c=>c.charCodeAt(0))],'轮值.xlsx'));el.files=dt.files;el.dispatchEvent(new Event('change'));})()`);
@@ -1278,6 +1302,284 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,'统计页窄屏只在表格内滚动');
     const mobile=await call('Page.captureScreenshot',{format:'png'});await writeFile(join(temporaryRoot,'duty-statistics-mobile.png'),Buffer.from(mobile.data,'base64'));
     await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  });
+  await t.test('所有岗位次数：正式账本、月份岗位姓名筛选及只读浏览', async()=>{
+    const before=await(await fetch(`${baseUrl}/api/workspace/backup`)).json();
+    await click('[data-view="statistics"]');await waitElement('.role-statistics-table');
+    await value('#role-statistics-month','2026-08');
+    await until(()=>evaluate('!!document.querySelector(".role-statistics-table") && document.querySelector("#role-statistics-month").value==="2026-08"'),'所有岗位八月表');
+    const data=await(await fetch(`${baseUrl}/api/role-statistics?month=2026-08`)).json();
+    assert.ok(data.roles.length>before.state.balanceSettings.priorityRoleNames.length,'不止手选重点岗位');
+    const person=data.members[0],role=data.roles.find(r=>r.members.some(m=>m.memberId===person.memberId));assert.ok(role);
+    await click(`[data-role-filter="${role.roleName}"]`);
+    await evaluate(`(()=>{const el=document.querySelector('#role-statistics-name');el.value=${JSON.stringify(person.memberName)};el.dispatchEvent(new InputEvent('input',{bubbles:true}));})()`);
+    const row=`.role-statistics-table [data-role-member="${person.memberId}"]`;
+    assert.equal(await evaluate(`Number(document.querySelector(${JSON.stringify(row+' [data-role-total]')}).textContent)`),role.members.find(m=>m.memberId===person.memberId).count);
+    assert.equal(await evaluate('document.querySelectorAll(".role-statistics-table thead th").length'),3,'岗位筛选同步减少列且合计只含所选岗');
+    await evaluate(`document.querySelector(${JSON.stringify(row+' details summary')}).click()`);
+    assert.ok(await evaluate(`document.querySelector(${JSON.stringify(row+' details')}).open`));
+    await click('[data-view="history"]');assert.equal(await evaluate('!!document.querySelector("#role-statistics-root")'),false);
+    await click('[data-view="statistics"]');await waitElement('.role-statistics-table');
+    assert.equal(await evaluate('document.querySelector("#role-statistics-name").value'),person.memberName);
+    await value('#role-statistics-month','2026-07');await waitElement('.role-statistics-table');
+    await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    assert.deepEqual(await(await fetch(`${baseUrl}/api/workspace/backup`)).json(),before,'查看和筛选统计不改草稿、正式、资格或次数修正');
+  });
+  await t.test('手动临时调整即时计数，正式采用不双计，清空撤销同步', async()=>{
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2040-02-02";c["balanceSettings"]["priorityRoleNames"]=[c["day"]["roleNames"][0]];print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    const imported=await command('import-complete-configuration',config);pid=imported.selectedPlanId;
+    await command('edit-cell',{cellId:'c0',text:'甲'});await command('edit-cell',{cellId:'c1',text:'甲'});await command('adopt');
+    const formal=structuredClone((await current()).adopted),people=(await state()).people;
+    const a=people.find(p=>p.name==='甲').id,b=people.find(p=>p.name==='乙').id;
+    await reloadPage();await click('[data-view="schedule"]');
+    await mutate(()=>typeCell('[data-cell-id="c0"] [data-cell-text]','乙'));
+    const check=async(expected)=>{
+      await click('[data-view="statistics"]');await waitElement('.role-statistics-table');
+      await value('#role-statistics-month','2040-02');await waitElement('.role-statistics-table');
+      await evaluate('(()=>{const el=document.querySelector("#role-statistics-name");el.value="";el.dispatchEvent(new InputEvent("input",{bubbles:true}));})()');
+      await click('[data-role-filter=""]');
+      for(const[id,count]of [[a,expected[0]],[b,expected[1]]])assert.equal(await evaluate(`Number(document.querySelector('.role-statistics-table [data-role-member="'+${JSON.stringify(id)}+'"] [data-role-total]').textContent)`),count);
+      const report=await(await fetch(`${baseUrl}/api/priority-statistics?month=2040-02`)).json();
+      const rows=report.roles.find(r=>r.roleName==='接机1').members;
+      assert.equal(rows.find(p=>p.memberId===b).effectiveCount,expected[1]);
+    };
+    await check([1,1]);assert.deepEqual((await current()).adopted,formal,'临时手改不覆盖正式快照');
+    await command('clear-draft');await reloadPage();await check([0,0]);
+    await command('undo-edit');await reloadPage();await check([1,1]);
+    await command('adopt');await reloadPage();await check([1,1]);
+  });
+  await t.test('资质全选独立草稿；上午下午半休、取消重排、新日清空与规则保存', async()=>{
+    await click('[data-view="statistics"]');await waitElement('#save-duty-settings');
+    const revision=(await state()).revision;
+    await click('[data-duty-select-all="dutyMemberIds"]');
+    assert.ok(await evaluate('[...document.querySelectorAll("[data-duty-qualification=dutyMemberIds]")].every(i=>i.checked)'));
+    await click('[data-duty-clear-all="standbyMemberIds"]');
+    assert.ok(await evaluate('[...document.querySelectorAll("[data-duty-qualification=standbyMemberIds]")].every(i=>!i.checked)'));
+    assert.equal((await state()).revision,revision,'全选不提前保存');
+    await click('[data-duty-select-all="standbyMemberIds"]');await mutate(()=>click('#save-duty-settings'));
+    const roster=(await state()).dutyRoster;
+    assert.equal(roster.dutyMemberIds.length,roster.standbyMemberIds.length);
+    assert.ok(roster.dutyMemberIds.length>=2);
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2042-02-02";c["day"]["flights"][1].update(windowStart="14:00",windowEnd="15:00");print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    pid=(await command('import-complete-configuration',config)).selectedPlanId;
+    for(const r of (await state()).configuration.roleConfigs)if(r.roleName!=='接机1')await command('save-role',{roleName:r.roleName,requiredCount:0});
+    await reloadPage();await click('[data-view="schedule"]');
+    await click('#configure-half-rest');await waitElement('[data-half-rest-person="甲"]');
+    assert.ok(await evaluate('document.querySelector("#half-rest-selector").open'));
+    await value('[data-half-rest-person="甲"]',true,true);await value('[data-half-rest-mode="甲"]','late-start');
+    await value('[data-half-rest-person="乙"]',true,true);
+    await click('[data-close-dialog]');
+    assert.ok((await current()).day.memberAvailability.every(a=>!a.halfRest),'取消不改当前表');
+    await click('#configure-half-rest');
+    await value('[data-half-rest-person="甲"]',true,true);await value('[data-half-rest-mode="甲"]','late-start');
+    await value('[data-half-rest-person="乙"]',true,true);
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      const shot=await call('Page.captureScreenshot',{format:'png'});await writeFile(join(temporaryRoot,`half-rest-selection-${width}.png`),Buffer.from(shot.data,'base64'));
+    }
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await mutate(()=>click('#confirm-prepare'));pid=(await state()).selectedPlanId;
+    let p=await current();assert.ok(p.valid);assert.deepEqual(p.day.memberAvailability.filter(a=>a.halfRest).map(a=>a.halfRest),['late-start','early-finish']);
+    assert.match(await evaluate('document.querySelector(".half-rest-summary").textContent'),/甲（上午半休）.*乙（下午半休）/);
+    await rerun();assert.deepEqual((await current()).day.memberAvailability.filter(a=>a.halfRest).map(a=>a.halfRest),['late-start','early-finish']);
+    await mutate(()=>typeCell('[data-cell-id="c0"] [data-cell-text]','甲'));
+    assert.ok((await current()).issues.some(i=>i.code==='half_rest_period'));assert.equal(await evaluate('document.querySelector("#archive-only").disabled'),false);
+    await mutate(()=>click('#undo-move'));
+    await click('#archive-next');
+    assert.ok(await evaluate('[...document.querySelectorAll("[data-half-rest-person]")].every(i=>!i.checked)'),'新日清空半休');
+    await click('#prepare-copy-attendance');
+    assert.ok(await evaluate('[...document.querySelectorAll("[data-half-rest-person]")].every(i=>!i.checked)'),'复制原出勤不继承半休');
+    await click('[data-close-dialog]');
+    await click('[data-view="rules"]');await value('#half-rest-exempt',false,true);
+    await click('[data-view="schedule"]',false);await click('#leave-stay');
+    assert.equal(await evaluate('document.querySelector("#half-rest-exempt").checked'),false);
+    await mutate(()=>click('#save-rules'));assert.equal((await state()).halfRestSettings.exemptFlightCount,false);
+    await reloadPage();await click('[data-view="rules"]');assert.equal(await evaluate('document.querySelector("#half-rest-exempt").checked'),false);
+    await click('[data-view="schedule"]');await click('#configure-half-rest');
+    await value('[data-half-rest-person="甲"]',false,true);await value('[data-half-rest-person="乙"]',false,true);
+    await mutate(()=>click('#confirm-prepare'));assert.ok((await current()).day.memberAvailability.every(a=>!a.halfRest));
+    await click('#configure-half-rest');await value('[data-half-rest-person="甲"]',true,true);await value('[data-half-rest-mode="甲"]','late-start');
+    await click('#prepare-no-flights');await value('[data-prepare-flight="f0"]',true,true);
+    await mutate(()=>click('#confirm-prepare'));assert.ok((await current()).valid);
+    assert.match(await evaluate('document.querySelector(".half-rest-summary").textContent'),/甲（上午半休，当天无安排，保留休息）/);
+
+  });
+  await t.test('末班规则统一保存；轻松班次常显、手改正式切换、月份姓名筛选与重启', async()=>{
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2044-02-02";c["day"]["flights"][1].update(windowStart="14:00",windowEnd="14:30");print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    let imported=await command('import-complete-configuration',config);pid=imported.selectedPlanId;
+    await command('save-duty-settings',{...imported.dutyRoster,enabled:false});
+    await command('edit-cell',{cellId:'c0',text:'甲'});await command('edit-cell',{cellId:'c1',text:'乙'});await command('adopt');
+    await reloadPage();await click('[data-view="schedule"]');
+    assert.equal(await evaluate('document.querySelectorAll(".view-root details").length'),0);
+    assert.match(await evaluate('document.querySelector("#schedule-relaxed-shifts").textContent'),/提前下班人员.*甲.*下午无航班人员.*甲/);
+    await click('[data-view="rules"]');
+    const revision=(await state()).revision;
+    await click('[data-relaxed-all]');await click('[data-relaxed-clear]');
+    await value('[data-late-flight][value="F0"]',true,true);
+    await value('[data-relaxed-time="earlyDepartureCutoffTime"]','15:00');
+    assert.equal((await state()).revision,revision,'规则只改草稿');
+    await click('[data-view="schedule"]',false);await click('#leave-stay');
+    assert.ok(await evaluate('document.querySelector("[data-late-flight][value=F0]").checked'));
+    await evaluate('document.querySelector("#relaxed-shift-rules").open=true');
+    await mutate(()=>click('#save-rules'));
+    assert.deepEqual((await state()).relaxedShiftSettings.lateFlightNos,['F0']);
+    await click('[data-view="schedule"]');
+    assert.match(await evaluate('document.querySelector("#schedule-relaxed-shifts section:first-child").textContent'),/乙/);
+    await mutate(()=>typeCell('[data-cell-id="c1"] [data-cell-text]','甲'));
+    assert.match(await evaluate('document.querySelector("#schedule-relaxed-shifts").textContent'),/提前下班人员今日暂无下午无航班人员今日暂无/);
+    await click('#view-formal');assert.match(await evaluate('document.querySelector("#schedule-relaxed-shifts section:first-child").textContent'),/乙/);
+    await click('#view-formal');assert.match(await evaluate('document.querySelector("#schedule-relaxed-shifts section:first-child").textContent'),/今日暂无/);
+    await mutate(()=>typeCell('[data-cell-id="c1"] [data-cell-text]','乙'));
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      await evaluate('document.querySelector("#schedule-relaxed-shifts").scrollIntoView({block:"center"})');
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      await writeFile(join(temporaryRoot,`relaxed-schedule-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    }
+    await click('[data-view="statistics"]');await waitElement('.relaxed-statistics-table');
+    await value('#relaxed-statistics-month','2044-02');await waitElement('.relaxed-statistics-table');
+    await evaluate('(()=>{const el=document.querySelector("#relaxed-statistics-name");el.value="甲";el.dispatchEvent(new InputEvent("input",{bubbles:true}));})()');
+    assert.equal(await evaluate('document.querySelectorAll(".relaxed-statistics-table tbody tr").length'),1);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll(".relaxed-statistics-table tbody tr:first-child td")].map(el=>el.textContent)'),['0','—','1','02-02','1','02-02 / F0']);
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      await evaluate('document.querySelector("#relaxed-statistics-root").scrollIntoView({block:"center"})');
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      await writeFile(join(temporaryRoot,`relaxed-statistics-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    }
+    await value('#relaxed-statistics-month','2044-03');await waitElement('.relaxed-statistics-table');
+    assert.equal(await evaluate('document.querySelector(".relaxed-statistics-table tbody tr td").textContent'),'0');
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view="rules"]');await click('[data-view="rules"]');
+    assert.ok(await evaluate('document.querySelector("[data-late-flight][value=F0]").checked'));
+    assert.equal(await evaluate('document.querySelector("[data-relaxed-time=earlyDepartureCutoffTime]").value'),'15:00');
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  });
+  await t.test('航班差值只在整体提示显示；两种班表布局不整片标红，其他本格问题仍报警', async()=>{
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;print(json.dumps(small_configuration(0)))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    config.day.memberConfigs.find(m=>m.memberName==='乙').eligibleRoleNames=[];
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    pid=(await command('import-complete-configuration',config)).selectedPlanId;
+    await command('edit-cell',{cellId:'c0',text:'甲'});await command('edit-cell',{cellId:'c1',text:'甲'});
+    await reloadPage();await click('[data-view="schedule"]');
+    for(let layout=0;layout<2;layout++){
+      assert.match(await evaluate('document.querySelector("#schedule-issues").textContent'),/差2，超过上限0/);
+      assert.equal(await evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-conflict, .wb-matrix .cell-warning").length'),0);
+      assert.equal(await evaluate('[...document.querySelectorAll(".wb-matrix td[title]")].some(c=>c.title.includes("超过上限"))'),false);
+      assert.equal(await evaluate('document.querySelector("#adopt-draft").disabled'),false,'差距报警保留，允许带问题采用');
+      await mutate(()=>click('#toggle-schedule-layout'));
+    }
+    await command('edit-cell',{cellId:'c1',text:'乙'});await reloadPage();
+    assert.equal(await evaluate('document.querySelector("td[data-cell-id=c1]").classList.contains("schedule-cell-conflict")'),true);
+    assert.ok(await evaluate('!!document.querySelector("td[data-cell-id=c1] .cell-warning")'));
+    assert.equal(await evaluate('document.querySelector("td[data-cell-id=c0]").classList.contains("schedule-cell-conflict")'),false);
+  });
+  await t.test('带问题归档：空缺资质报警保留，Excel/HTML/图片可导出，连续后天和历史保持', async()=>{
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;print(json.dumps(small_configuration(None)))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    config.day.serviceDate='2047-02-02';
+    config.day.memberConfigs.find(m=>m.memberName==='乙').eligibleRoleNames=[];
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    pid=(await command('import-complete-configuration',config)).selectedPlanId;
+    await command('edit-cell',{cellId:'c0',text:'乙'});
+    await reloadPage();await click('[data-view="schedule"]');
+    for(const selector of ['#archive-next','#archive-only','#adopt-draft','#export-formal','#share-html','#share-png'])assert.equal(await evaluate(`document.querySelector('${selector}').disabled`),false,selector);
+    await mutate(()=>click('#export-formal'));
+    const excelPath=join(directory,'downloads','登机口正式班表-2047-02-02.xlsx');
+    await until(async()=>{try{return (await readFile(excelPath)).length>1000;}catch{return false;}},'带问题Excel下载');
+    execFileSync(python,['-B','-c','from openpyxl import load_workbook;import sys;b=load_workbook(sys.argv[1]);assert "排班问题" in b.sheetnames;v=str(list(b.worksheets[0].values));assert "乙" in v and "待安排" in v;issues=str(list(b["排班问题"].values));assert "ineligible" in issues and "coverage_shortfall" in issues;b.close()',excelPath],{cwd:repo,windowsHide:true});
+    const formal=(await current()).adopted;
+    assert.equal((await current()).valid,false);
+    await mutate(()=>click('#share-html'));
+    const htmlPath=join(directory,'downloads','登机口班表-2047-02-02.html');
+    const html=await until(async()=>{try{return await readFile(htmlPath,'utf8');}catch{return false;}},'带问题HTML下载');
+    assert.match(html,/排班问题.*原安排保留/);assert.match(html,/乙/);assert.match(html,/待安排/);assert.match(html,/资质|资格/);
+    await evaluate('window.__pngTexts=[];window.__originalFillText=CanvasRenderingContext2D.prototype.fillText;CanvasRenderingContext2D.prototype.fillText=function(text,...args){window.__pngTexts.push(text);return window.__originalFillText.call(this,text,...args)}');
+    await mutate(()=>click('#share-png'));
+    const png=await until(async()=>{try{return await readFile(join(directory,'downloads','登机口班表-2047-02-02.png'));}catch{return false;}},'带问题图片下载');
+    assert.equal(png.subarray(1,4).toString(),'PNG');
+    assert.match(await evaluate('window.__pngTexts.join(" ")'),/排班问题.*原安排保留/,'图片实际绘制问题附注');
+    assert.match(await evaluate('window.__pngTexts.join(" ")'),/乙/);
+    await evaluate('CanvasRenderingContext2D.prototype.fillText=window.__originalFillText');
+    await writeFile(join(temporaryRoot,'warning-archive-export.png'),png);
+    await click('#view-formal');
+    assert.match(await evaluate('document.querySelector("#schedule-issues").textContent'),/带问题归档/);
+    assert.ok(await evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-conflict").length>0'));
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      await writeFile(join(temporaryRoot,`warning-archive-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    }
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await click('[data-view="history"]');assert.match(await evaluate('document.querySelector(".history-day-list").textContent'),/带问题归档/);
+    await click('[data-view="schedule"]');
+    if(await evaluate('document.querySelector("#view-formal").textContent.includes("返回草稿")'))await click('#view-formal');
+    for(const date of ['2047-02-04','2047-02-06','2047-02-08']){
+      await click('#archive-next');await value('#prepare-date',date);await click('#prepare-no-people');
+      if(date==='2047-02-08')await click('#prepare-no-flights');
+      assert.equal(await evaluate('document.querySelector("#confirm-prepare").disabled'),false);
+      await mutate(()=>click('#confirm-prepare'));
+      assert.equal((await current()).day.serviceDate,date);assert.equal((await current()).valid,false);
+    }
+    assert.deepEqual((await state()).plans[pid].adopted,formal);
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view="history"]');
+    assert.deepEqual((await state()).plans[pid].adopted,formal);
+    await click('[data-view="schedule"]');
+  });
+  await t.test('可维护配置Excel：10天航班班表导入空设备、历史可见、重启和重复导入', async()=>{
+    const empty={formatVersion:2,state:{stateVersion:2,timeVersion:2,revision:0,people:[],plans:{},selectedPlanId:null,migrationReport:[]}};
+    const clear=async()=>{const response=await fetch(`${baseUrl}/api/workspace/restore?expectedRevision=${(await state()).revision}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(empty)});assert.ok(response.ok,await response.clone().text());};
+    await clear();
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;print(json.dumps(small_configuration(None)))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    let pid;
+    const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
+    for(let day=1;day<=10;day++){
+      config.day.serviceDate=`2046-08-${String(day).padStart(2,'0')}`;
+      pid=(await command('import-complete-configuration',config)).selectedPlanId;
+      await command('edit-cell',{cellId:'c0',text:'甲'});await command('edit-cell',{cellId:'c1',text:'乙'});await command('adopt');
+    }
+    const original=await state(),originalPlans=original.plans;
+    const path=join(directory,'ten-days.xlsx'),edited=join(directory,'ten-days-edited.xlsx');
+    await writeFile(path,Buffer.from(await(await fetch(`${baseUrl}/api/workspace/configuration/export/${pid}`)).arrayBuffer()));
+    execFileSync(python,['-B','-c','from openpyxl import load_workbook;import sys;b=load_workbook(sys.argv[1]);b["人员状态"]["E2"]="edited-for-migration";b.save(sys.argv[2]);b.close()',path,edited],{cwd:repo,windowsHide:true});
+    const bytes=await readFile(edited);
+    await clear();await call('Page.reload');await waitElement('#import-complete-configuration');
+    await uploadCompleteExcel(bytes);await waitElement('#confirm-complete-configuration');
+    assert.match(await evaluate('document.querySelector("[data-configuration-history]").textContent'),/10 天.*10 份.*补入 10 份/);
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'历史导入预览不撑宽页面');
+      const shot=await call('Page.captureScreenshot',{format:'png'});
+      await writeFile(join(temporaryRoot,`configuration-history-preview-${width}.png`),Buffer.from(shot.data,'base64'));
+    }
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await click('[data-close-dialog]');assert.equal(Object.keys((await state()).plans).length,0,'取消不迁移历史');
+    await uploadCompleteExcel(bytes);await waitElement('#confirm-complete-configuration');await mutate(()=>click('#confirm-complete-configuration'));
+    let actual=await state();assert.ok(actual.people.some(p=>p.remark==='edited-for-migration'),'可见维护表修改生效');
+    for(const[id,plan]of Object.entries(originalPlans)){
+      assert.deepEqual(actual.plans[id].adopted,plan.adopted);assert.deepEqual(actual.plans[id].draft,plan.draft);
+    }
+    await click('[data-view="history"]');
+    assert.equal(await evaluate('document.querySelectorAll(".history-day").length'),10);
+    assert.equal(await evaluate('document.querySelectorAll("[data-export-plan]").length'),10,'每天均可查看并导出原正式班表');
+    assert.match(await evaluate('document.querySelector(".history-day-list").textContent'),/F0.*F1/);
+    const historyShot=await call('Page.captureScreenshot',{format:'png'});
+    await writeFile(join(temporaryRoot,'configuration-history-ten-days.png'),Buffer.from(historyShot.data,'base64'));
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view="history"]');
+    await click('[data-view="history"]');assert.equal(await evaluate('document.querySelectorAll(".history-day").length'),10);
+    await click('[data-view="config"]');await uploadCompleteExcel(bytes);await waitElement('#confirm-complete-configuration');
+    assert.match(await evaluate('document.querySelector("[data-configuration-history]").textContent'),/补入 0 份.*已有 10 份/);
+    await mutate(()=>click('#confirm-complete-configuration'));
+    actual=await state();assert.equal(Object.values(actual.plans).filter(p=>p.adopted).length,10,'重导不重复历史');
   });
   assert.deepEqual(runtimeErrors, []);
 });

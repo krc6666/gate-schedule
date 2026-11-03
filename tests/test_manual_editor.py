@@ -61,9 +61,11 @@ class ManualEditorTests(unittest.TestCase):
         p=self.command('edit-slot',payload,pid)['plans'][pid]
         self.assertTrue(p['editFeedback']['hasWarnings'])
         self.assertFalse(p['valid'])
-        with self.assertRaises(WorkspaceError):self.command('adopt',{},pid)
         p=self.command('undo-edit',{},pid)['plans'][pid]
         self.assertEqual(before['state']['plans'][pid]['draft'],p['draft'])
+        self.command('edit-slot',payload,pid)
+        saved=self.command('adopt',{},pid)['plans'][pid]
+        self.assertIn('overlap',{i['code'] for i in saved['adopted']['issues']})
 
     def test_nonparticipating_and_unqualified_candidates_explain_why(self):
         pid,people=self.filled()
@@ -105,7 +107,8 @@ class ManualEditorTests(unittest.TestCase):
         other.restore(0, self.workspace.backup())
         self.assertEqual(p['draft'], other.snapshot()['plans'][pid]['draft'])
         for action in ['adopt','archive-only']:
-            with self.assertRaises(WorkspaceError): self.command(action, {}, pid)
+            result=self.command(action, {}, pid)
+            self.assertTrue({'ineligible','overlap'} <= {i['code'] for i in result['plans'][pid]['adopted']['issues']})
 
     def test_undo_temporary_cell_restores_pending_text_and_rejects_bad_or_stale_restore(self):
         pid,_=self.filled()

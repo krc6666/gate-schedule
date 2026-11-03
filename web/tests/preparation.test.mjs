@@ -9,14 +9,16 @@ const model = url(javascript(await readFile(new URL('../src/workbench-model.ts',
 const handoffs = url(javascript(await readFile(new URL('../src/handoff-preferences.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)));
 const source = javascript(await readFile(new URL('../src/template-config.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./handoff-preferences"', JSON.stringify(handoffs));
 const { prepareWithConfiguration } = await import(url(source));
-const pagesSource = javascript(await readFile(new URL('../src/workbench-pages.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./template-config"', JSON.stringify(url(source))).replace('"./handoff-preferences"', JSON.stringify(handoffs));
+const relaxed = url(javascript(await readFile(new URL('../src/relaxed-shifts.ts', import.meta.url), 'utf8')).replace("'./workbench-model'", JSON.stringify(model)));
+const pagesSource = javascript(await readFile(new URL('../src/workbench-pages.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./template-config"', JSON.stringify(url(source))).replace('"./handoff-preferences"', JSON.stringify(handoffs)).replace('"./relaxed-shifts"', JSON.stringify(relaxed));
 const { rulesPage } = await import(url(pagesSource));
 
 test('规则页无需当前日计划即可维护已导入的航班接续偏好', () => {
   const state = {
+    relaxedShiftSettings:{earlyDepartureCutoffTime:'12:00',afternoonRestStartTime:'12:00',afternoonRestEndTime:'18:00',lateShiftEndTime:'23:00',lateFlightNos:[]},
     teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},
     configuration: {roleConfigs:[{roleName:'接机2',workMode:'arrival'},{roleName:'登机核验',workMode:'boarding'}],rotationEnabled:false,rotationMinutes:60,transitionMinutes:0},
-    newRoleDefaults:{}, flightLibrary:[],
+    newRoleDefaults:{}, flightLibrary:[], plans:{},
     handoffPreferences:[{flightNo:'*',arrivalRole:'接机2',boardingRoles:['登机核验'],enabled:true}]
   };
   const markup=rulesPage(state,null,null);

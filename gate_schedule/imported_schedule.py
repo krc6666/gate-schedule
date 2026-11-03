@@ -45,7 +45,7 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
             issues.append(issue)
             continue
         extra_roles = {f"额外占用：{item.label}" for item in day.extra_occupancies if name in item.member_names}
-        members.append(Member(name, name, frozenset((*config.eligible_role_names, *extra_roles)), *bounds))
+        members.append(Member(name, name, frozenset((*config.eligible_role_names, *extra_roles)), *bounds, half_rest=availability.half_rest))
     tasks: list[Task] = []
     rotations: list[Rotation] = []
     baggage_cells = []

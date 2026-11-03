@@ -33,6 +33,9 @@ def issue_data(scenario, issues):
     result = []
     for issue in dict.fromkeys(issues):
         related = tuple(dict.fromkeys((*(issue.related_task_ids or ()), *((issue.task_id,) if issue.task_id else ()))))
+        # Whole-day balance belongs in the summary, never in every cell's warning.
+        if issue.code == 'flight_count_spread':
+            related = ()
         message = issue.message
         for key in sorted(replacements, key=len, reverse=True):
             message = message.replace(key, replacements[key])

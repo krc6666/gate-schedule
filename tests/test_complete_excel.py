@@ -159,9 +159,9 @@ class CompleteExcelTests(unittest.TestCase):
         self.assertFalse(state["plans"][plan_id]["valid"])
         with self.assertRaises(WorkspaceError):
             self.workspace.execute(state["revision"], "solve", {}, plan_id)
-        with self.assertRaises(WorkspaceError):
-            self.workspace.execute(state["revision"], "adopt", {}, plan_id)
-        self.assertEqual(state, self.workspace.snapshot())
+        saved = self.workspace.execute(state["revision"], "adopt", {}, plan_id)
+        self.assertEqual(state['plans'][plan_id]['day'], saved['plans'][plan_id]['adopted']['day'])
+        self.assertTrue(saved['plans'][plan_id]['adopted']['issues'])
 
 
 if __name__ == "__main__":

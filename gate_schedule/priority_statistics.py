@@ -19,7 +19,7 @@ def formal_history(state, *, before=None, month=None):
         formal = plan.get('adopted')
         if not formal:
             continue
-        day = formal['scenario']['serviceDate']
+        day = record_date(formal)
         if before is not None and day >= before or month is not None and not day.startswith(month + '-'):
             continue
         rank = (formal.get('savedRevision', -1), index, identity)
@@ -34,10 +34,26 @@ def next_formal_revision(state):
         for plan in state['plans'].values() if plan.get('adopted')), 0) + 1
 
 
-def _ledger(state, month, *, before=None):
+def record_date(record):
+    return (record.get('scenario') or record['day'])['serviceDate']
+
+
+def statistics_history(state, month, *, before=None, current=None):
+    """Selected saved draft replaces the same formal date, including an explicit clear."""
+    history = formal_history(state, before=before, month=month)
+    if current and record_date(current).startswith(month + '-'):
+        history = [f for f in history if record_date(f) != record_date(current)]
+        history.append(current)
+    return history
+
+
+def _ledger(state, month, *, before=None, current=None):
     counts = defaultdict(int)
     dates = defaultdict(list)
-    for formal in formal_history(state, before=before, month=month):
+    history = statistics_history(state, month, before=before, current=current)
+    for formal in history:
+        if not formal.get('scenario'):
+            continue
         scenario = scenario_from_dict(formal['scenario'])
         assignments = tuple(Assignment(a['taskId'], a['memberId']) for a in formal['assignments'])
         for key, count in member_role_flight_counts(scenario, assignments).items():
@@ -70,15 +86,21 @@ def priority_counts_before(state, service_date):
         for key in counts.keys() | adjustments.keys()}
 
 
-def priority_statistics(state, month=None):
+def _statistics_month(state, month):
     if month is None:
         selected = state['plans'].get(state.get('selectedPlanId'))
         month = selected['day']['serviceDate'][:7] if selected else date.today().strftime('%Y-%m')
-    month = _month(month)
-    counts, dates = _ledger(state, month)
+    return _month(month)
+
+
+def priority_statistics(state, month=None, *, current=None):
+    month = _statistics_month(state, month)
+    counts, dates = _ledger(state, month, current=current)
     adjustments = _adjustments(state, month)
-    months = {month, *(f['scenario']['serviceDate'][:7] for f in formal_history(state)),
+    months = {month, *(record_date(f)[:7] for f in formal_history(state)),
         *(a['month'] for a in state['balanceSettings']['priorityAdjustments'])}
+    if current:
+        months.add(record_date(current)[:7])
     roles = []
     for role in state['balanceSettings']['priorityRoleNames']:
         members = []
@@ -97,3 +119,44 @@ def priority_statistics(state, month=None):
         for person in state['people']]
     return {'month': month, 'months': sorted(months, reverse=True), 'roles': roles, 'totals': totals,
         'revision': state['revision']}
+
+
+def role_statistics(state, month=None, *, current=None):
+    """Current draft replaces its formal date, without priority corrections."""
+    month = _statistics_month(state, month)
+    counts, dates = _ledger(state, month, current=current)
+    history = formal_history(state)
+    if current:
+        history = [*history, current]
+    role_names = dict.fromkeys(r['roleName'] for r in state['configuration']['roleConfigs'])
+    for person in state['people']:
+        if not person.get('deleted', False):
+            role_names.update(dict.fromkeys(person['eligibleRoleNames']))
+    for formal in history:
+        if not formal.get('scenario'):
+            continue
+        scenario = scenario_from_dict(formal['scenario'])
+        role_names.update(dict.fromkeys(task.role_id for task in scenario.tasks
+                                        if task.required_count > 0 and task_flight_ids(task)))
+    members = [{'memberId': p['id'], 'memberName': p['name'], 'removed': p.get('deleted', False)}
+               for p in state['people'] if not p.get('deleted', False)
+               or any(count for (member, _), count in counts.items() if member == p['id'])]
+    visible = {p['memberId'] for p in members}
+    roles = []
+    for role in role_names:
+        rows = []
+        for person in state['people']:
+            if person['id'] not in visible:
+                continue
+            key = person['id'], role
+            qualified = not person.get('deleted', False) and role in person['eligibleRoleNames']
+            count = counts.get(key, 0)
+            if qualified or count:
+                rows.append({'memberId': person['id'], 'memberName': person['name'],
+                             'qualified': qualified, 'count': count, 'dates': dates.get(key, [])})
+        roles.append({'roleName': role, 'members': rows})
+    totals = [{'memberId': p['memberId'], 'count': sum(row['count'] for role in roles
+               for row in role['members'] if row['memberId'] == p['memberId'])} for p in members]
+    months = {month, *(record_date(f)[:7] for f in history)}
+    return {'month': month, 'months': sorted(months, reverse=True), 'roles': roles,
+            'members': members, 'totals': totals, 'revision': state['revision']}

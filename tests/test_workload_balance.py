@@ -4,7 +4,7 @@ import unittest
 from gate_schedule.domain import (
     Assignment, Flight, Member, Scenario, Task, draft_blocking_issues,
     default_balance_settings, member_flight_participation, member_role_flight_counts,
-    task_flight_ids, validate_balance_settings,
+    task_flight_ids, validate_balance_settings, scarce_role_groups,
 )
 from gate_schedule.solver import solve
 from gate_schedule.validator import validate_scenario, validate_schedule
@@ -190,6 +190,71 @@ class PriorityRoleRotationTests(unittest.TestCase):
     def assert_safe(self, value, result):
         self.assertIn(result.status, {"OPTIMAL", "FEASIBLE"})
         self.assertEqual([], validate_schedule(value, result.assignments))
+
+    def scarcity_scenario(self):
+        value = workload_scenario(2, priority=("普通岗",), role="稀缺岗")
+        rare, common = "稀缺岗", "普通岗"
+        members = tuple(replace(m, eligible_role_ids=frozenset({rare, common})) for m in value.members)
+        members += (Member("m2", "早退人员", frozenset({common}), 0, 650),)
+        first = replace(value.tasks[0], end=610, locked_member_ids=("m0",))
+        earlier_common = replace(first, id="common0", role_id=common, start=610, end=620)
+        later_common = replace(value.tasks[1], id="common1", role_id=common)
+        return replace(value, members=members, tasks=(first, earlier_common, value.tasks[1], later_common))
+
+    def test_automatic_scarce_role_spread_precedes_selected_common_role(self):
+        value = self.scarcity_scenario()
+        result = solve(value)
+        self.assert_safe(value, result)
+        counts = member_role_flight_counts(value, result.assignments)
+        self.assertEqual([1, 1], [counts.get((m, "稀缺岗"), 0) for m in ("m0", "m1")])
+        self.assertEqual("m0", next(a.member_id for a in result.assignments if a.task_id == "common1"))
+
+    def test_automatic_scarce_month_counts_precede_common_rotation_without_selection(self):
+        value = self.scarcity_scenario()
+        value = replace(value, tasks=value.tasks[2:], priority_role_ids=())
+        result = solve(value, priority_counts={
+            ("m0", "稀缺岗"): 0, ("m1", "稀缺岗"): 3,
+            ("m0", "普通岗"): 0, ("m1", "普通岗"): 20},
+            previous_roles={("m1", "稀缺岗"), ("m1", "普通岗")})
+        self.assert_safe(value, result)
+        self.assertEqual("m0", next(a.member_id for a in result.assignments if a.task_id == "t1"))
+
+    def test_automatic_scarce_rotation_never_overrides_coverage_or_fixed_people(self):
+        value = self.scarcity_scenario()
+        tasks = tuple(replace(t, locked_member_ids=("m0",)) if t.id == "t1" else t for t in value.tasks)
+        value = replace(value, tasks=tasks)
+        result = solve(value, allow_partial=True)
+        self.assert_safe(value, result)
+        self.assertEqual(len(value.tasks), len(result.assignments))
+        self.assertEqual("m0", next(a.member_id for a in result.assignments if a.task_id == "t1"))
+
+    def test_scarcity_groups_ignore_leave_zero_demand_and_extra_occupancy(self):
+        value = self.scarcity_scenario()
+        self.assertEqual((("稀缺岗",),), scarce_role_groups(value))
+        absent = replace(value, members=(*value.members[:2], replace(value.members[2], status="休假")))
+        self.assertEqual((), scarce_role_groups(absent), "请假人员不应使普通岗显得更不稀缺")
+        extra = replace(value.tasks[0], id="extra", flight_id=None, role_id="额外占用")
+        unused = replace(value.tasks[0], id="unused", role_id="无需求岗", required_count=0)
+        changed = replace(value, tasks=(*value.tasks, extra, unused))
+        self.assertEqual(scarce_role_groups(value), scarce_role_groups(changed))
+        self.assertEqual((), scarce_role_groups(replace(value, tasks=())))
+
+    def test_equal_scarcity_shares_one_tier_and_more_scarce_roles_come_first(self):
+        value = self.scarcity_scenario()
+        members = tuple(replace(m, eligible_role_ids=m.eligible_role_ids | {"另一稀缺岗"}) if m.id != "m2" else m
+                        for m in value.members)
+        members = (replace(members[0], eligible_role_ids=members[0].eligible_role_ids | {"唯一资质岗"}), *members[1:])
+        tasks = (*value.tasks, replace(value.tasks[0], id="other", role_id="另一稀缺岗"),
+                 replace(value.tasks[0], id="only", role_id="唯一资质岗"))
+        self.assertEqual((("唯一资质岗",), tuple(sorted(("稀缺岗", "另一稀缺岗")))),
+                         scarce_role_groups(replace(value, tasks=tasks, members=members)))
+
+    def test_automatic_scarce_rotation_uses_previous_archive_when_month_counts_tie(self):
+        value = self.scarcity_scenario()
+        value = replace(value, tasks=value.tasks[2:], priority_role_ids=())
+        result = solve(value, previous_roles={("m0", "稀缺岗"), ("m0", "普通岗")})
+        self.assert_safe(value, result)
+        self.assertEqual("m1", next(a.member_id for a in result.assignments if a.task_id == "t1"))
 
     def test_selected_role_spreads_work_before_month_counts(self):
         value = workload_scenario(4, priority=("重点岗",))
