@@ -1,3 +1,4 @@
+import { groupUrl } from "./group-api";
 import { html, type State } from "./workbench-model";
 
 type Run = { id: string; status: "running" | "completed" | "cancelled" | "failed"; stage: string; solutionCount: number; canKeep: boolean; message?: string; percent: number; completedSteps: number; totalSteps: number; steps: { label: string; status: string }[] };
@@ -8,7 +9,8 @@ async function read<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-export async function runSchedule(command: unknown): Promise<State> {
+export async function runSchedule(command: unknown, group?: "A" | "B"): Promise<State> {
+  const scopedFetch = (path: string, init?: RequestInit) => fetch(groupUrl(path, group), init);
   document.querySelector(".schedule-progress")?.remove();
   document.querySelector<HTMLDialogElement>("#app-dialog")?.close();
   const panel = document.createElement("section");
@@ -37,7 +39,7 @@ export async function runSchedule(command: unknown): Promise<State> {
         stopping = true; stopRequested = true; paint();
         if (!run) return;
         try {
-          const result = await read<Run>(await fetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: button.dataset.stopRun === "keep" }) }));
+          const result = await read<Run>(await scopedFetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: button.dataset.stopRun === "keep" }) }));
           if (run.status === "running") run = result;
           paint();
         } catch (error) { stopping = false; stopRequested = false; errorMessage = String(error); paint(); }
@@ -47,20 +49,20 @@ export async function runSchedule(command: unknown): Promise<State> {
   paint();
   const timer = window.setInterval(() => { elapsed = Math.floor((performance.now() - startedAt) / 1000); paint(); }, 1000);
   try {
-    run = await read<Run>(await fetch("/api/workspace/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) }));
-    if (stopRequested) run = await read<Run>(await fetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }) }));
+    run = await read<Run>(await scopedFetch("/api/workspace/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) }));
+    if (stopRequested) run = await read<Run>(await scopedFetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }) }));
     paint();
     while (run.status === "running") {
       await new Promise(resolve => setTimeout(resolve, 180));
-      const result: Run = await read<Run>(await fetch(`/api/workspace/runs/${run!.id}`));
+      const result: Run = await read<Run>(await scopedFetch(`/api/workspace/runs/${run!.id}`));
       if (run.status === "running") run = result;
       paint();
     }
     if (run.status !== "completed") throw new Error(run.message ?? "计算未保存，原班表保留");
-    return read<State>(await fetch("/api/workspace"));
+    return read<State>(await scopedFetch("/api/workspace"));
   } catch (error) {
     if (run?.status === "running") {
-      try { run = await read<Run>(await fetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }) })); } catch { /* Reload shows the persisted outcome. */ }
+      try { run = await read<Run>(await scopedFetch(`/api/workspace/runs/${run.id}/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }) })); } catch { /* Reload shows the persisted outcome. */ }
     }
     errorMessage = error instanceof Error ? error.message : "计算失败，请重新读取班表";
     if (!run) run = { id: "", status: "failed", stage: "", solutionCount: 0, canKeep: false, percent: 0, completedSteps: 0, totalSteps: 0, steps: [] };

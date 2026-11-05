@@ -1,3 +1,4 @@
+import { groupFetch, groupUrl } from "./group-api";
 import { html, type RoleStatistics, type State } from "./workbench-model";
 
 export type RoleStatisticsSelection = { month: string; roleName: string; query: string; expandedKeys?: Set<string> };
@@ -53,7 +54,7 @@ export function bindRoleStatistics(root: HTMLElement, state: State, selection: R
     const request = ++generation, month = selection.month;
     data = null; pending = true; draw();
     try {
-      const response = await fetch(`/api/role-statistics?month=${encodeURIComponent(month)}`, {signal: controller.signal});
+      const response = await groupFetch(`/api/role-statistics?month=${encodeURIComponent(month)}`, {signal: controller.signal});
       if (!response.ok) throw Error("岗位次数读取失败，请重试；原记录保留。");
       const result: RoleStatistics = await response.json();
       if (!active() || request !== generation || selection.month !== month) return;

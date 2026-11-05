@@ -13,7 +13,8 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 const javascript = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
 const url = text => `data:text/javascript;base64,${Buffer.from(text).toString('base64')}`;
 const model = url(javascript(await readFile(new URL('../src/workbench-model.ts', import.meta.url), 'utf8')));
-const source = javascript(await readFile(new URL('../src/schedule-palette.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model));
+const groups = url(javascript(await readFile(new URL('../src/group-api.ts', import.meta.url), 'utf8')));
+const source = javascript(await readFile(new URL('../src/schedule-palette.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./group-api"', JSON.stringify(groups));
 const { paletteHtml } = await import(url(source));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const fixture = () => {

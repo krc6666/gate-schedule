@@ -220,3 +220,7 @@
 .relaxed-statistics-table td { vertical-align:top; }
 @media(max-width:650px) { .relaxed-summary-grid { grid-template-columns:1fr; } #relaxed-statistics-root .section-heading { display:block; } }
 .priority-flight-choice{display:flex;align-items:center;gap:8px;font-size:12px;margin:12px 0}.priority-flight-choice select{min-width:140px;max-width:100%}.priority-legacy-adjustments{margin:12px 0;padding:10px;border:1px solid var(--border);border-radius:5px}.priority-legacy-adjustments p{font-size:12px}
+
+.group-switcher{display:flex;align-items:center;gap:8px;margin-left:auto;white-space:nowrap;font-size:12px;color:var(--muted)}.group-switcher select{width:80px;min-height:32px;padding:4px 8px;background:white;border:1px solid var(--border);border-radius:5px;color:var(--ink)}
+@media(max-width:600px){.app-header-inner{flex-wrap:wrap}.group-switcher{margin-left:auto}.app-header-inner .date-control{margin-left:0}.app-header-inner .save-state{margin-left:auto}}
+@media(max-width:600px){html[data-gate-local="true"] .nav-data-action{display:flex}}

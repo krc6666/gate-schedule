@@ -1579,6 +1579,8 @@ def import_complete_configuration(content):
             return result
 
         guide=pairs("使用说明")
+        from .group_excel import read_groups
+        group_transfer = read_groups(book, guide)
         if guide.get('模板版本') in (_COMPLETE_EXCEL_VERSION, '登机口完整配置-4') and guide.get('携带历史') not in ('是', '否'):
             raise ValueError('请保留使用说明中的携带历史标记，不能静默丢失历史')
         compact_sheets = {'历史说明', '历史目录', '历史航班', '历史排班', '_历史快照'}
@@ -1844,6 +1846,9 @@ def import_complete_configuration(content):
             data["dayOverrides"] = overrides
         if imported_history is not None:
             data["history"] = imported_history
-        return validate_complete_configuration(data)
+        result = validate_complete_configuration(data)
+        if group_transfer is not None:
+            result['groupTransfer'] = group_transfer
+        return result
     finally:
         book.close()

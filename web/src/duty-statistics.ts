@@ -1,3 +1,4 @@
+import { groupFetch } from "./group-api";
 import { html, type State, type DutyRoster, type DutyStatistics } from "./workbench-model";
 
 type Run = (action: string, payload: unknown, planId?: string | null) => Promise<boolean>;
@@ -44,7 +45,7 @@ export function bindDutyStatistics(root: HTMLElement,state: State,draft: DutyRos
   const load=async()=>{
     const request=++generation;const selected=selection.month;container.textContent='正在读取月度轮值…';
     try{
-      const response=await fetch(`/api/duty-statistics?month=${encodeURIComponent(selected)}`,{signal:controller.signal});
+      const response=await groupFetch(`/api/duty-statistics?month=${encodeURIComponent(selected)}`,{signal:controller.signal});
       if(!response.ok)throw Error('轮值读取失败，请重试；原数据保留。');
       const data:DutyStatistics=await response.json();if(!active()||request!==generation)return;
       if(data.revision!==state.revision||data.month!==selected)throw Error('轮值数据已改变，请重新读取工作台。');
@@ -61,7 +62,18 @@ export function bindDutyStatistics(root: HTMLElement,state: State,draft: DutyRos
     }catch(error){if(active()&&request===generation)failure(error);}
   };
   month.onchange=()=>{const next=month.value;if(!/^\d{4}-\d{2}$/.test(next))return;selection.month=next;if(active())void load();};
-  root.querySelector<HTMLButtonElement>('#download-duty-template')!.onclick=async()=>{if(await canLeave())window.location.href=`/api/workspace/duty-roster/export?month=${encodeURIComponent(selection.month)}`;};
+  root.querySelector<HTMLButtonElement>('#download-duty-template')!.onclick=async()=>{
+    if(!await canLeave())return;
+    const notice=root.querySelector<HTMLElement>('#duty-import-notice')!;notice.hidden=true;
+    try{
+      const selected=selection.month;
+      const response=await groupFetch(`/api/workspace/duty-roster/export?month=${encodeURIComponent(selected)}`);
+      if(!response.ok)throw Error((await response.json()).detail??'轮值模板下载失败，请重试');
+      const url=URL.createObjectURL(await response.blob());
+      const link=document.createElement('a');link.href=url;link.download=`登机口值班备勤-${selected}.xlsx`;link.click();
+      window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }catch(error){if(notice.isConnected){notice.hidden=false;notice.textContent=error instanceof Error?error.message:String(error);}}
+  };
   root.querySelector<HTMLInputElement>('#import-duty-roster')!.onchange=async event=>{
     const file=(event.target as HTMLInputElement).files?.[0];if(!file||!await canLeave())return;
     const reportTarget=root.querySelector<HTMLElement>('#duty-report');
@@ -71,7 +83,7 @@ export function bindDutyStatistics(root: HTMLElement,state: State,draft: DutyRos
     try{
       // Saving pending settings replaces the view and aborts its old controller.
       // This explicit import continues against the newly rendered report.
-      const response=await fetch('/api/workspace/duty-roster/preview',{method:'POST',body:file});const preview=await response.json();
+      const response=await groupFetch('/api/workspace/duty-roster/preview',{method:'POST',body:file});const preview=await response.json();
       if(!response.ok)throw Error(preview.detail??'轮值表未导入');if(!reportTarget.isConnected)return;
       const dialog=document.createElement('dialog');dialog.className='app-dialog duty-import-preview';
       dialog.innerHTML=`<h3>核对值班备勤表</h3><p>${preview.rows.length}个工作班。确认后按表替换这些日期，空白明确清空；其他日期及航班历史保留。</p><div class="table-responsive"><table class="data-table"><thead><tr><th>工作班</th><th>值班</th><th>次日备勤一</th><th>次日备勤二</th></tr></thead><tbody>${preview.rows.map((r: {date:string;dutyMemberId:string|null;standbyMemberIds:(string|null)[]})=>`<tr><td>${html(r.date)}</td>${[r.dutyMemberId,...r.standbyMemberIds].map(id=>`<td>${html(state.people.find(p=>p.id===id)?.name??'未配置')}</td>`).join('')}</tr>`).join('')}</tbody></table></div><div class="button-row"><button data-confirm-duty-import class="btn btn-primary">确认导入</button><button data-cancel-duty-import class="btn">取消</button></div>`;

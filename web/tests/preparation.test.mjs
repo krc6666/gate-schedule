@@ -6,10 +6,11 @@ import ts from 'typescript';
 const javascript = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
 const url = text => `data:text/javascript;base64,${Buffer.from(text).toString('base64')}`;
 const model = url(javascript(await readFile(new URL('../src/workbench-model.ts', import.meta.url), 'utf8')));
+const groups = url(javascript(await readFile(new URL('../src/group-api.ts', import.meta.url), 'utf8')));
 const handoffs = url(javascript(await readFile(new URL('../src/handoff-preferences.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)));
 const source = javascript(await readFile(new URL('../src/template-config.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./handoff-preferences"', JSON.stringify(handoffs));
 const { prepareWithConfiguration } = await import(url(source));
-const relaxed = url(javascript(await readFile(new URL('../src/relaxed-shifts.ts', import.meta.url), 'utf8')).replace("'./workbench-model'", JSON.stringify(model)));
+const relaxed = url(javascript(await readFile(new URL('../src/relaxed-shifts.ts', import.meta.url), 'utf8')).replace("'./workbench-model'", JSON.stringify(model)).replace('"./group-api"', JSON.stringify(groups)));
 const pagesSource = javascript(await readFile(new URL('../src/workbench-pages.ts', import.meta.url), 'utf8')).replace('"./workbench-model"', JSON.stringify(model)).replace('"./template-config"', JSON.stringify(url(source))).replace('"./handoff-preferences"', JSON.stringify(handoffs)).replace('"./relaxed-shifts"', JSON.stringify(relaxed));
 const { rulesPage } = await import(url(pagesSource));
 

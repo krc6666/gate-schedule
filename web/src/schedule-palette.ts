@@ -1,3 +1,4 @@
+import { groupFetch, groupUrl } from "./group-api";
 import { html, type Candidate, type Plan, type Schedule, type State } from "./workbench-model";
 
 type PaletteCandidate = Candidate & { status?: string; label?: string; revision?: number };
@@ -54,7 +55,7 @@ export function bindPalette(root: HTMLElement, state: State, plan: Plan, hooks: 
   const current = () => !controller.signal.aborted && requestGeneration === generation && palette.isConnected && root.contains(palette) && select.value === taskId && state.revision === expectedRevision;
   void (async () => {
     try {
-      const response = await fetch(`/api/workspace/candidates/${encodeURIComponent(plan.id)}/${encodeURIComponent(taskId)}?slot=${slot}`, { signal: controller.signal });
+      const response = await groupFetch(`/api/workspace/candidates/${encodeURIComponent(plan.id)}/${encodeURIComponent(taskId)}?slot=${slot}`, { signal: controller.signal });
       if (!response.ok) throw new Error("检查失败，请重试或重新读取班表。");
       const candidates: PaletteCandidate[] = await response.json();
       if (!current()) return;

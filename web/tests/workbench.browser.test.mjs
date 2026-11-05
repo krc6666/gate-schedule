@@ -49,7 +49,10 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   const value = (selector, inputValue, checked = false) => evaluate(`(() => { const el=document.querySelector(${JSON.stringify(selector)}); el.${checked ? "checked" : "value"}=${JSON.stringify(inputValue)}; el.dispatchEvent(new Event('change',{bubbles:true})); })()`);
   const state = async () => (await fetch(`${baseUrl}/api/workspace`)).json();
   const current = async () => { const s = await state(); return s.plans[s.selectedPlanId]; };
-  const waitElement = selector => until(() => evaluate(`!!document.querySelector(${JSON.stringify(selector)})`), selector);
+  const waitElement = async selector => {
+    try { return await until(() => evaluate(`!!document.querySelector(${JSON.stringify(selector)})`), selector); }
+    catch (error) { throw new Error(`${error.message}; 页面提示：${await evaluate("document.querySelector('.app-message')?.textContent ?? document.body.textContent.slice(0,1500)")}`); }
+  };
   const mutate = async action => {
     const revision = (await state()).revision;
     await action();
@@ -108,6 +111,40 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await call("Page.navigate", { url: baseUrl });
   await waitElement('[data-view="config"]');
+  await t.test('A/B切换、空B独立建人、未保存保护、记住当前组和窄屏', async () => {
+    const aBefore = await state();
+    const switchGroup = async group => {
+      await value('#active-group', group);
+      await until(() => evaluate(`document.querySelector('#active-group')?.value === '${group}' && !document.querySelector('#active-group').disabled`), `切换${group}`);
+    };
+    await switchGroup('B');
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/groups/B/workspace`)).json()).people, []);
+    await click('#add-person'); await value('#person-name', '甲');
+    await click('#save-person');
+    await until(async () => (await (await fetch(`${baseUrl}/api/groups/B/workspace`)).json()).people.length === 1, 'B组人员保存');
+    await until(() => evaluate('!document.querySelector("#app-dialog") && !document.querySelector("#active-group").disabled'), 'B保存完成');
+    await click('[data-view="rules"]');
+    await value('#base-rotation-enabled', false, true);
+    await value('#active-group', 'A'); await waitElement('#leave-stay'); await click('#leave-stay');
+    assert.equal(await evaluate('document.querySelector("#active-group").value'), 'B');
+    assert.equal(await evaluate('document.querySelector("#base-rotation-enabled").checked'), false);
+    await value('#active-group', 'A'); await waitElement('#leave-discard'); await click('#leave-discard');
+    await until(() => evaluate('document.querySelector("#active-group").value === "A" && !document.querySelector("#active-group").disabled'), '放弃后切A');
+    assert.deepEqual(await state(), aBefore, 'B人员和放弃草稿不修改A');
+    await switchGroup('B');
+    await evaluate('window.__groupReload=true'); await call('Page.reload');
+    await until(() => evaluate('!window.__groupReload && document.querySelector("#active-group")?.value === "B"'), '重启页面仍是B');
+    await click('[data-view="config"]');
+    for (const width of [1440, 390]) {
+      await call('Emulation.setDeviceMetricsOverride', {width, height:900, deviceScaleFactor:1, mobile:false});
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, '班组控件不撑破窄屏');
+      const shot = await call('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+      await writeFile(join(temporaryRoot, `groups-B-${width}.png`), Buffer.from(shot.data,'base64'));
+    }
+    await call('Emulation.setDeviceMetricsOverride', {width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await switchGroup('A');
+    assert.equal((await state()).people.length, 0);
+  });
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.app-nav [data-view]')].map(b=>b.textContent.trim())"), ["配置", "航班", "排班", "规则", "统计", "历史"]);
   await click('[data-view="config"]');
   assert.equal(await evaluate("document.querySelector('.view-root > :first-child').tagName"), 'DETAILS', '配置应先显示值机式人员折叠栏，Excel入口不能占用独立首屏卡片');
@@ -549,6 +586,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await mutate(() => click('#adopt-draft'));
   const excelFormal = (await current()).adopted;
   await click('[data-view="config"]'); await click('#export-complete-configuration');
+  await until(() => evaluate("!document.querySelector('#restore-workspace').disabled"), '配置下载完成后允许导入');
   const excelExport = await fetch(`${baseUrl}/api/workspace/configuration/export/${excelPlan.id}`);
   assert.equal(excelExport.status, 200);
   const exportedComplete = join(directory, 'complete.xlsx');

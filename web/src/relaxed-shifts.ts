@@ -1,3 +1,4 @@
+import { groupFetch, groupUrl } from "./group-api";
 import { html, type State } from './workbench-model';
 
 export type RelaxedSettings = { earlyDepartureCutoffTime: string; afternoonRestStartTime: string; afternoonRestEndTime: string; lateShiftEndTime: string; lateFlightNos: string[] };
@@ -47,7 +48,7 @@ export function bindRelaxedStatistics(root: HTMLElement, state: State, selection
   const load = async () => {
     const request = ++generation, month = selection.month; data = null; report.textContent = '正在读取轻松班次统计…';
     try {
-      const response = await fetch(`/api/relaxed-shift-statistics?month=${encodeURIComponent(month)}`, { signal: controller.signal });
+      const response = await groupFetch(`/api/relaxed-shift-statistics?month=${encodeURIComponent(month)}`, { signal: controller.signal });
       if (!response.ok) throw Error('轻松班次读取失败，请重试。');
       const result: Report = await response.json();
       if (!active() || request !== generation) return;

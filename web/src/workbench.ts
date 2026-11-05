@@ -1,3 +1,4 @@
+import { groupFetch, selectApiGroup } from "./group-api";
 import { relaxedSummaryHtml, bindRelaxedRules, bindRelaxedStatistics, type RelaxedSettings } from "./relaxed-shifts";
 import { halfRestSelector, bindHalfRest, syncHalfRest, halfRestLabel } from "./half-rest";
 import { statisticsPage, bindDutyStatistics } from "./duty-statistics";
@@ -22,6 +23,7 @@ type DragSource = { memberId: string; taskIds: string[]; planId: string; revisio
 type Dialog = ({ kind: "prepare"; mode: "reschedule" | "archive"; day: Day; selected: Set<string> } | { kind: "template"; flightNo?: string } | { kind: "copy-template"; sourceNo: string } | { kind: "move"; source: DragSource; targetIds: string[]; targetMember?: string } | { kind: "cell-settings"; cellId: string } | { kind: "assignment"; role: string; column: string; taskIds?: string[] } | { kind: "complete-configuration"; preview: CompleteConfigurationImport } | { kind: "person"; personId: string | null } | { kind: "role" } | { kind: "flight" } | { kind: "qualification-import"; preview: QualificationImport } | { kind: "qualification"; role: string; scope: "base" | "day"; selected: Set<string> }) & { fields?: Record<string, string | boolean> };
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let state: State;
+let activeGroup: "A" | "B" = "A";
 let section: Section = "config";
 let editable: Day | null = null;
 let dirty = false;
@@ -148,7 +150,7 @@ async function run(action: string, payload: unknown = {}, id = plan()?.id ?? nul
   let success = false;
   try {
     const command = { expectedRevision: state.revision, action, planId: id, payload };
-    state = ["solve", "prepare-solve", "archive-next"].includes(action) ? await runSchedule(command) : await responseJson(await fetch("/api/workspace/command", { method: "POST", headers: { "Content-Type": "application/json", "X-Gate-Rule-Schema": "flight-role-v1" }, body: JSON.stringify(command) }));
+    state = ["solve", "prepare-solve", "archive-next"].includes(action) ? await runSchedule(command, activeGroup) : await responseJson(await groupFetch(`/api/groups/${activeGroup}/workspace/command`, { method: "POST", headers: { "Content-Type": "application/json", "X-Gate-Rule-Schema": "flight-role-v1" }, body: JSON.stringify(command) }));
     if (["new-plan", "select-plan", "import-complete-configuration", "archive-next", "prepare-solve", "phase-plan"].includes(action)) { selectedDate = state.plans[state.selectedPlanId!]!.day.serviceDate; configurationDraft = null; balanceDraft = null; leaderDraft = null; halfRestDraft = null; relaxedDraft = null; cellEdits.clear(); }
     if (["save-input", "new-plan", "select-plan", "refresh-people", "apply-config", "import-complete-configuration", "configure-cell", "archive-next", "prepare-solve", "phase-plan", "cancel-preview"].includes(action)) resetEditable();
     message = action === "import-qualifications" ? "人员与资质已补充；原有资格、当天计划和正式结果保留。新计划会沿用，已有计划如需更新请载入最新人员。" : ["save-role", "save-roles", "save-person", "save-config", "save-flight-template", "copy-flight-roles"].includes(action) ? "配置已保存；已有当天资料和正式结果保持。" : plan()?.message ?? "已保存";
@@ -205,7 +207,7 @@ function render(): void {
   const noticeHeadingTag = section === "schedule" ? "div" : "summary";
   const notice = state.trialInfo ? `<aside id="trial-notice" class="trial-notice"><${noticeTag}><${noticeHeadingTag}><strong>${html(state.trialInfo.label)}</strong><span>出勤、人数和时段含试用假设${section === "schedule" ? "" : " · 查看说明"}</span></${noticeHeadingTag}><p>航班和人员取自历史资料；出勤、岗位人数及时段含试用假设。可直接自动排班或手动调整。</p><p>${html(state.trialInfo.source)}</p>${plan()?.day.roleConfigs.some(r=>r.workMode && r.workMode!=="timed") ? "<p>当前为环节方案：旧试用的20/25分钟不用于环节岗位计算，以当前岗位性质和航班衔接为准。</p>" : ""}<ul>${state.trialInfo.assumptions.map(item => `<li>${html(item)}</li>`).join("")}</ul></${noticeTag}></aside>` : "";
   const body = section === "config" ? configPage(state, editable, dirty) : section === "flights" ? (weeklyFlightsHtml(state, editable, selectedDate) + flightLibraryHtml(state) + `<details id="day-preparation-details" class="workspace-section"><summary>当天航班与人员 · 临时调整</summary>${flightsPage(p, editable, selectedDate, dirty)}</details>`) : section === "rules" ? rulesPage({ ...state, configuration: configurationDraft ?? state.configuration, balanceSettings: balanceDraft ?? state.balanceSettings, teamLeaderSettings: leaderDraft ?? state.teamLeaderSettings, halfRestSettings: halfRestDraft ?? state.halfRestSettings, relaxedShiftSettings: relaxedDraft ?? state.relaxedShiftSettings, handoffPreferences: handoffDraft ?? state.handoffPreferences }, p, editable) : section === "statistics" ? statisticsPage(state,dutyDraft,selectedDate) : section === "history" ? historyPage(state) : scheduleHtml(p);
-  root.innerHTML = `<header class="app-header"><div class="app-header-inner"><div class="brand-mark">${icon("calendar")}</div><div class="brand-copy"><h1>自动排班</h1><div>登机口保障 · 本地工作台</div></div><label class="date-control">${icon("calendar")}<input id="service-date" type="date" value="${html(selectedDate)}" aria-label="排班日期" /></label><span class="save-state">${busy ? "正在保存…" : dirty || configurationDraft || balanceDraft || halfRestDraft || relaxedDraft || leaderDraft || cellEdits.size ? "有未保存修改" : "✓ 已保存"}</span></div></header>
+  root.innerHTML = `<header class="app-header"><div class="app-header-inner"><div class="brand-mark">${icon("calendar")}</div><div class="brand-copy"><h1>自动排班</h1><div>${document.documentElement.dataset.gateLocal === "true" ? "本机保存 · 换设备请导出" : "登机口保障 · 本地工作台"}</div></div><div class="group-switcher" role="group" aria-label="排班组"><label for="active-group">当前组</label><select id="active-group" aria-label="当前组"><option value="A" ${activeGroup === "A" ? "selected" : ""}>A 组</option><option value="B" ${activeGroup === "B" ? "selected" : ""}>B 组</option></select></div><label class="date-control">${icon("calendar")}<input id="service-date" type="date" value="${html(selectedDate)}" aria-label="排班日期" /></label><span class="save-state">${busy ? "正在保存…" : dirty || configurationDraft || balanceDraft || halfRestDraft || relaxedDraft || leaderDraft || cellEdits.size ? "有未保存修改" : "✓ 已保存"}</span></div></header>
   <div class="app-layout"><nav class="app-nav" aria-label="主要导航">${navigation.map(n => `<button class="nav-item ${section === n.id ? "active" : ""}" data-view="${n.id}" ${section === n.id ? 'aria-current="page"' : ""}>${icon(n.icon)}<span>${n.title}</span></button>`).join("")}<div class="nav-spacer"></div><label class="nav-item nav-data-action">${icon("upload")}<span>导入数据</span><input id="restore-workspace" type="file" accept=".xlsx,.json" hidden /></label><button id="export-complete-configuration" class="nav-item nav-data-action" title="导出人员、规则、航班与全部历史班表">${icon("download")}<span>导出配置</span></button></nav>
   <main class="app-main wb-main"><div class="content-head"><div><h2>${current.title}</h2><div class="text-muted">${p?.day.flights.length ?? 0} 个航班 · ${p?.day.memberAvailability.filter(a => a.participating).length ?? 0} 人出勤 · ${p?.draft.length ?? 0} 个岗位已排${dirty ? ' · <span class="text-danger">当天资料未保存</span>' : ""}</div></div><select id="plan-picker" aria-label="选择当天方案"><option value="">选择当天方案</option>${Object.values(state.plans).filter(v => v.day.serviceDate === selectedDate).map((v, i) => `<option value="${html(v.id)}" ${p?.id === v.id ? "selected" : ""}>方案${i + 1} · ${html(v.day.title)} · ${v.adopted ? "已采用" : "草稿"}</option>`).join("")}</select></div>${message ? `<div class="app-message ${warningMessage ? "edit-warning" : ""}" role="${warningMessage ? "alert" : "status"}">${html(message)}</div>` : ""}${notice}<div class="view-root">${body}</div></main></div>${dialog && !leavePending ? dialogHtml(dialog) : ""}${leavePending ? modal("有未保存的修改", `<p>是否先保存本次修改，再继续刚才的操作？</p>${dialogError ? `<p class="text-danger" role="alert">${html(dialogError)}</p>` : ""}`, '<button id="leave-save" class="btn btn-primary">保存并继续</button><button id="leave-discard" class="btn btn-outline-danger">放弃修改</button><button id="leave-stay" class="btn btn-outline-secondary">继续编辑</button>', null) : ""}`;
   root.querySelectorAll<HTMLDetailsElement>(".view-root details").forEach((d,i) => { const wasOpen = openDetails.get(d.id || String(i)); if (wasOpen !== undefined) d.open = wasOpen; });
@@ -266,6 +268,25 @@ async function navigate(next: Section): Promise<void> {
 }
 
 function bindShared(): void {
+  root.querySelector<HTMLSelectElement>("#active-group")!.onchange = async event => {
+    const next = (event.target as HTMLSelectElement).value;
+    if ((next !== "A" && next !== "B") || busy || next === activeGroup || !await canLeave()) { render(); return; }
+    busy = true; markBusy();
+    try {
+      const response = await fetch(`/api/groups/${next}/workspace`);
+      const incoming = await responseJson(response);
+      const preference = await fetch("/api/groups/select", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({groupId:next})});
+      if (!preference.ok) throw new Error((await preference.json()).detail ?? "切换失败");
+      activeGroup = next; selectApiGroup(next); state = incoming;
+      discardChanges(); dialog = null; dragSource = null; placingPerson = null; selectedPaletteTarget = "";
+      message = `已切换到 ${next} 组`; warningMessage = false; editToast = false;
+      selectedDate = state.selectedPlanId ? state.plans[state.selectedPlanId].day.serviceDate : selectedDate;
+      priorityStatisticsSelection.month = ""; priorityStatisticsSelection.flightNo = ""; priorityStatisticsSelection.roleName = "";
+      roleStatisticsSelection.month = ""; relaxedSelection.month = ""; dutySelection.month = "";
+      resetEditable(); previousSection = null;
+    } catch (error) { message = String(error); }
+    finally { busy = false; render(); }
+  };
   root.querySelectorAll<HTMLButtonElement>("[data-view], [data-go]").forEach(b => b.onclick = () => navigate((b.dataset.view ?? b.dataset.go) as Section));
   root.querySelector<HTMLInputElement>("#service-date")!.onchange = async event => {
     const date = (event.target as HTMLInputElement).value;
@@ -284,7 +305,7 @@ function bindShared(): void {
     if (busy || !await canLeave()) return;
     busy = true; markBusy();
     try {
-      const response = await fetch(`/api/workspace/configuration/export?serviceDate=${encodeURIComponent(selectedDate)}`);
+      const response = await groupFetch(`/api/workspace/configuration/export?serviceDate=${encodeURIComponent(selectedDate)}`);
       if (!response.ok) throw new Error((await response.json()).detail);
       download(await response.blob(), '登机口排班工具配置.xlsx');
     } catch (error) { message = String(error); }
@@ -295,14 +316,14 @@ function bindShared(): void {
     if (busy || !file || !await canLeave()) return;
     busy = true; markBusy(); dialogError = "";
     try {
-      const response = await fetch('/api/workspace/data/preview', {method:'POST', body:file});
+      const response = await groupFetch('/api/workspace/data/preview', {method:'POST', body:file});
       const preview = await response.json();
       if (!response.ok) throw new Error(preview.detail ?? '导入文件校验失败');
       if (preview.expectedRevision !== state.revision) throw new Error('数据已更新，请刷新页面后重新导入。原资料保持。');
       if (preview.kind === 'configuration') {
         dialog = {kind:'complete-configuration', preview:preview as CompleteConfigurationImport};
-      } else if (confirm(`这是旧完整备份，恢复会替换当前工作台（${preview.peopleCount}人、${preview.historyPlanCount}份方案）。确定继续？`)) {
-        state = await responseJson(await fetch(`/api/workspace/restore?expectedRevision=${state.revision}`, {method:'POST',body:file}));
+      } else if (confirm(`${preview.scopeLabel ?? "恢复会替换当前工作台"}（${preview.peopleCount}人、${preview.historyPlanCount}份方案）。确定继续？`)) {
+        state = await responseJson(await groupFetch(`/api/workspace/restore?expectedRevision=${state.revision}${preview.expectedGroupsRevision === undefined ? "" : `&expectedGroupsRevision=${preview.expectedGroupsRevision}`}`, {method:'POST',body:file}));
         selectedDate = state.selectedPlanId ? state.plans[state.selectedPlanId].day.serviceDate : selectedDate;
         resetEditable(); section = plan() ? 'schedule' : 'config'; message = '完整数据已导入';
       }
@@ -369,7 +390,7 @@ function bindConfig(): void {
     if (busy || !file || !await canLeave()) return;
     busy = true; markBusy(); dialogError = "";
     try {
-      const response = await fetch("/api/workspace/configuration/preview", { method: "POST", body: await file.arrayBuffer() });
+      const response = await groupFetch("/api/workspace/configuration/preview", { method: "POST", body: await file.arrayBuffer() });
       const preview = await response.json();
       if (!response.ok) throw new Error(preview.detail ?? "完整Excel读取失败");
       if (preview.expectedRevision !== state.revision) throw new Error("数据已更新，请刷新页面后导入。原资料保持。");
@@ -380,7 +401,7 @@ function bindConfig(): void {
 
   root.querySelector<HTMLButtonElement>("#download-qualification-template")!.onclick = async () => {
     try {
-      const response = await fetch("/api/workspace/qualifications/template");
+      const response = await groupFetch("/api/workspace/qualifications/template");
       if (!response.ok) throw new Error("资质模板下载失败");
       download(await response.blob(), "登机口人员资质.xlsx");
     } catch (error) { message = String(error); render(); }
@@ -390,7 +411,7 @@ function bindConfig(): void {
     if (busy || !file) return;
     busy = true; markBusy(); dialogError = "";
     try {
-      const response = await fetch("/api/workspace/qualifications/preview", { method: "POST", body: await file.arrayBuffer() });
+      const response = await groupFetch("/api/workspace/qualifications/preview", { method: "POST", body: await file.arrayBuffer() });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail ?? "资质表读取失败");
       if (data.expectedRevision !== state.revision) throw new Error("数据已由其他窗口更新，请刷新页面后再导入。原资料保持。");
@@ -422,7 +443,7 @@ function bindFlights(): void {
   root.querySelector<HTMLInputElement>("#import-workspace")!.onchange = async event => {
     const file = (event.target as HTMLInputElement).files?.[0]; if (busy || !file || !await canLeave()) return;
     busy = true; markBusy();
-    try { state = await responseJson(await fetch(`/api/workspace/import?serviceDate=${selectedDate}&expectedRevision=${state.revision}`, { method: "POST", body: await file.arrayBuffer() })); resetEditable(); message = "已导入新方案；请核对资质、日期、人数、时段和出勤。原方案保留。"; }
+    try { state = await responseJson(await groupFetch(`/api/workspace/import?serviceDate=${selectedDate}&expectedRevision=${state.revision}`, { method: "POST", body: await file.arrayBuffer() })); resetEditable(); message = "已导入新方案；请核对资质、日期、人数、时段和出勤。原方案保留。"; }
     catch (error) { message = String(error); }
     finally { busy = false; render(); }
   };
@@ -518,7 +539,7 @@ function bindHistory(): void {
   root.querySelectorAll<HTMLButtonElement>("[data-export-plan]").forEach(b => b.onclick = () => void exportPlan(b.dataset.exportPlan!));
 }
 async function exportPlan(id: string): Promise<void> {
-  try { const response = await fetch(`/api/workspace/export/${encodeURIComponent(id)}`); if (!response.ok) throw new Error((await response.json()).detail); download(await response.blob(), `登机口正式班表-${state.plans[id].day.serviceDate}.xlsx`); }
+  try { const response = await groupFetch(`/api/workspace/export/${encodeURIComponent(id)}`); if (!response.ok) throw new Error((await response.json()).detail); download(await response.blob(), `登机口正式班表-${state.plans[id].day.serviceDate}.xlsx`); }
   catch (error) { message = String(error); render(); }
 }
 function dialogHtml(d: Dialog): string {
@@ -557,7 +578,7 @@ function dialogHtml(d: Dialog): string {
   }
   if (d.kind === "complete-configuration") {
     const p = d.preview, day = p.payload.day;
-    return modal("导入完整Excel · 核对更新", `<div class="import-summary"><span>${html(p.serviceDate)} · ${p.flightCount}航班 · ${p.peopleCount}人</span><span data-configuration-history>${p.historyPlanCount ? `携带 ${p.historyDayCount} 天 / ${p.historyPlanCount} 份历史方案；补入 ${p.newHistoryPlanCount} 份，已有 ${p.retainedHistoryPlanCount} 份保留本机版本` : "此文件未携带历史；已有历史保留"}</span><span>新增人员 ${p.newPeopleCount}</span><span>增加资质 ${p.newQualificationCount}</span><span class="text-danger">取消资质 ${p.removedQualificationCount}</span><span>接续偏好：${p.payload.handoffPreferences ? `按Excel更新（${p.payload.handoffPreferences.length}项）` : "旧文件未含此表，保留当前设置"}</span><span>重点轮换与航班差距：${p.payload.balanceSettings ? "按Excel更新，保留文件内累计次数修正" : "旧文件未含此设置，保留当前规则和次数修正"}</span><span>状态与备注：${p.payload.peopleStatus ? "按Excel更新正常/病假/休假" : "旧文件未含状态列，保留当前状态"}；${p.payload.peopleRemarks ? "同步备注（空白清空）" : "保留已有备注"}</span><span>分队长：${p.payload.peopleTeamLeaders ? "按Excel人员状态表更新" : "旧文件未含此列，保留已有标记"}；${p.payload.teamLeaderSettings ? "同步最后使用和航班数豁免设置" : "旧文件未含规则，保留当前设置"}</span><span>人员状态：${p.payload.peopleActive ? "按Excel更新启停" : "保留现有启停"}</span><span>界面偏好：${p.payload.displayPreferences ? "按Excel更新布局和缩放" : "保留现有设置"}</span></div><p class="section-note">来源：${html(p.payload.source)}。确认后更新表中人员×岗位范围内的资格，0或空白取消资格；人数、性质、轮换/走动及文件包含的偏好和人员状态同步到基础配置，并新增当天方案。当天岗位、资质和设置例外仅用于新方案，长期默认与当天调整均保留。旧计划、草稿和正式班表保留。</p><p class="section-note">出勤 ${day.memberAvailability.filter(a=>a.participating).length} 人；大件轮换${p.payload.rotationEnabled ? `每${p.payload.rotationMinutes}分钟` : "关闭"}；走动 ${day.transitionMinutes} 分钟。输入资料缺项会在新草稿中标出，正式采用仍需独立校验。</p><div class="table-responsive"><table class="data-table"><thead><tr><th>岗位</th><th>人数</th><th>Excel资质人员</th></tr></thead><tbody>${day.roleNames.map(role=>`<tr><td>${html(role)}</td><td>${day.roleConfigs.find(r=>r.roleName===role)?.requiredCount ?? "未配置"}</td><td>${day.memberConfigs.filter(m=>m.eligibleRoleNames.includes(role)).map(m=>html(m.memberName)).join("、") || "无人"}</td></tr>`).join("")}</tbody></table></div><p class="section-note">取消不保存任何修改。确认后可直接到排班点“自动排班”；文件携带的每日航班、草稿和正式班表会补入“历史”，同ID保留本机版本；本机已有同日正式优先计次。历史附表请完整保留，日常修改使用可编辑维护表。</p>`, '<button id="confirm-complete-configuration" class="btn btn-primary">确认更新并新建方案</button>');
+    return modal("导入完整Excel · 核对更新", `<div class="import-summary"><strong>${html(p.scopeLabel ?? "导入当前组配置")}</strong><span>${html(p.serviceDate)} · ${p.flightCount}航班 · ${p.peopleCount}人</span><span data-configuration-history>${p.historyPlanCount ? `携带 ${p.historyDayCount} 天 / ${p.historyPlanCount} 份历史方案；补入 ${p.newHistoryPlanCount} 份，已有 ${p.retainedHistoryPlanCount} 份保留本机版本` : "此文件未携带历史；已有历史保留"}</span><span>新增人员 ${p.newPeopleCount}</span><span>增加资质 ${p.newQualificationCount}</span><span class="text-danger">取消资质 ${p.removedQualificationCount}</span><span>接续偏好：${p.payload.handoffPreferences ? `按Excel更新（${p.payload.handoffPreferences.length}项）` : "旧文件未含此表，保留当前设置"}</span><span>重点轮换与航班差距：${p.payload.balanceSettings ? "按Excel更新，保留文件内累计次数修正" : "旧文件未含此设置，保留当前规则和次数修正"}</span><span>状态与备注：${p.payload.peopleStatus ? "按Excel更新正常/病假/休假" : "旧文件未含状态列，保留当前状态"}；${p.payload.peopleRemarks ? "同步备注（空白清空）" : "保留已有备注"}</span><span>分队长：${p.payload.peopleTeamLeaders ? "按Excel人员状态表更新" : "旧文件未含此列，保留已有标记"}；${p.payload.teamLeaderSettings ? "同步最后使用和航班数豁免设置" : "旧文件未含规则，保留当前设置"}</span><span>人员状态：${p.payload.peopleActive ? "按Excel更新启停" : "保留现有启停"}</span><span>界面偏好：${p.payload.displayPreferences ? "按Excel更新布局和缩放" : "保留现有设置"}</span></div><p class="section-note">来源：${html(p.payload.source)}。确认后更新表中人员×岗位范围内的资格，0或空白取消资格；人数、性质、轮换/走动及文件包含的偏好和人员状态同步到基础配置，并新增当天方案。当天岗位、资质和设置例外仅用于新方案，长期默认与当天调整均保留。旧计划、草稿和正式班表保留。</p><p class="section-note">出勤 ${day.memberAvailability.filter(a=>a.participating).length} 人；大件轮换${p.payload.rotationEnabled ? `每${p.payload.rotationMinutes}分钟` : "关闭"}；走动 ${day.transitionMinutes} 分钟。输入资料缺项会在新草稿中标出，正式采用仍需独立校验。</p><div class="table-responsive"><table class="data-table"><thead><tr><th>岗位</th><th>人数</th><th>Excel资质人员</th></tr></thead><tbody>${day.roleNames.map(role=>`<tr><td>${html(role)}</td><td>${day.roleConfigs.find(r=>r.roleName===role)?.requiredCount ?? "未配置"}</td><td>${day.memberConfigs.filter(m=>m.eligibleRoleNames.includes(role)).map(m=>html(m.memberName)).join("、") || "无人"}</td></tr>`).join("")}</tbody></table></div><p class="section-note">取消不保存任何修改。确认后可直接到排班点“自动排班”；文件携带的每日航班、草稿和正式班表会补入“历史”，同ID保留本机版本；本机已有同日正式优先计次。历史附表请完整保留，日常修改使用可编辑维护表。</p>`, '<button id="confirm-complete-configuration" class="btn btn-primary">确认更新并新建方案</button>');
   }
 
   if (d.kind === "qualification-import") {
@@ -984,7 +1005,7 @@ function bindSchedule(): void {
   root.querySelector<HTMLButtonElement>("#export-formal")?.addEventListener("click", async () => {
     if (!viewingFormal && (!await flushCells() || !await run("adopt"))) return;
     try {
-      const response = await fetch(`/api/workspace/export/${encodeURIComponent(state.selectedPlanId!)}`);
+      const response = await groupFetch(`/api/workspace/export/${encodeURIComponent(state.selectedPlanId!)}`);
       if (!response.ok) throw new Error((await response.json()).detail);
       download(await response.blob(), `登机口正式班表-${plan()!.day.serviceDate}.xlsx`);
     } catch (error) { message = String(error); render(); }
@@ -1002,7 +1023,7 @@ function bindSchedule(): void {
     const p=plan()!, revision=state.revision;
     input.disabled = true;
     input.title = "正在检查该位置的人选…";
-    void fetch(`/api/workspace/candidates/${encodeURIComponent(p.id)}/${encodeURIComponent(input.dataset.assignmentTask!)}?slot=${input.dataset.slot}`)
+    void groupFetch(`/api/workspace/candidates/${encodeURIComponent(p.id)}/${encodeURIComponent(input.dataset.assignmentTask!)}?slot=${input.dataset.slot}`)
       .then(async response=>{if(!response.ok)throw Error("候选检查未完成");return response.json() as Promise<Candidate[]>;})
       .then(items=>{
         if(!input.isConnected || state.revision!==revision || plan()?.id!==p.id)return;
@@ -1023,7 +1044,7 @@ function bindSchedule(): void {
     const revision=state.revision, planId=plan()!.id, result=root.querySelector<HTMLElement>("#candidate-result")!;
     result.textContent="正在核对人选…";
     try {
-      const response = await fetch(`/api/workspace/candidates/${encodeURIComponent(planId)}/${encodeURIComponent(button.dataset.candidates!)}`);
+      const response = await groupFetch(`/api/workspace/candidates/${encodeURIComponent(planId)}/${encodeURIComponent(button.dataset.candidates!)}`);
       if (!response.ok) throw new Error("候选查询失败");
       const items = await response.json() as Candidate[];
       if(generation!==candidateQueryGeneration || !button.isConnected || !result.isConnected || revision!==state.revision || plan()?.id!==planId)return;
@@ -1044,7 +1065,12 @@ function download(blob: Blob, name: string): void {
 window.addEventListener("beforeunload", event => { if (hasUnsaved()) { event.preventDefault(); event.returnValue = ""; } });
 async function start(): Promise<void> {
   try {
-    state = await responseJson(await fetch("/api/workspace"));
+    const response = await fetch("/api/groups");
+    if (!response.ok) throw new Error("读取班组失败，请检查数据或刷新页面");
+    const groups = await response.json();
+    activeGroup = groups.activeGroupId === "B" ? "B" : "A";
+    selectApiGroup(activeGroup);
+    state = await responseJson(await groupFetch("/api/workspace"));
     if (state.selectedPlanId) selectedDate = state.plans[state.selectedPlanId].day.serviceDate;
     resetEditable();
     section = plan() ? "schedule" : "config";

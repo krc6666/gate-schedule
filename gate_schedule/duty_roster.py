@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from io import BytesIO
 
-from ortools.sat.python import cp_model
+from .cp_backend import cp_model
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from .domain import validate_duty_roster

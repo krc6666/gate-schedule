@@ -1,0 +1,92 @@
+[
+  {
+    "file": "sqlite3-1.0.0-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/sqlite3-1.0.0-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "sha256": "aab7214b987a3803fca283a8221e4b9d3274abc05d0cf506ea1a2ae7e09e3bf0"
+  },
+  {
+    "file": "typing_extensions-4.15.0-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/typing_extensions-4.15.0-py3-none-any.whl",
+    "sha256": "b57583f623dd3df72e6ace8a4061c3e4f0683755165ef73b4cd44ac3df92ddb9"
+  },
+  {
+    "file": "pydantic_core-2.41.5-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pydantic_core-2.41.5-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "sha256": "dd259177c9159a866334e2ac040aca973b8205cc884b3297cb5b2dc6bef8d629"
+  },
+  {
+    "file": "annotated_types-0.7.0-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/annotated_types-0.7.0-py3-none-any.whl",
+    "sha256": "107c6d0a31af3ce347cad1990976cca76373de2ef51dfbffff84fe10cb7b2c19"
+  },
+  {
+    "file": "typing_inspection-0.4.2-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/typing_inspection-0.4.2-py3-none-any.whl",
+    "sha256": "5c4d0bade04cec6ac0d03c227c8bdb7c59218e4c6d759b5ac0cea5c34f6a72aa"
+  },
+  {
+    "file": "pydantic-2.12.5-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pydantic-2.12.5-py3-none-any.whl",
+    "sha256": "a56b56d0a0942fbd5cf24a9c9195eb5bdfeceea17ddb3e1cd174db43be4e88dc"
+  },
+  {
+    "file": "httpx-0.28.1-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/httpx-0.28.1-py3-none-any.whl",
+    "sha256": "3123bf6c7e7623667b39d31f8b2bf4eac925b49ea79dfdf520560db2e1cf87a9"
+  },
+  {
+    "file": "markupsafe-3.0.2-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/markupsafe-3.0.2-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "sha256": "2b480f742c99c45c9e0f7402ae6d0fa531284a3aa34da4b8982c37809c9b4d07"
+  },
+  {
+    "file": "jinja2-3.1.6-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/jinja2-3.1.6-py3-none-any.whl",
+    "sha256": "56b8a136e2140cb9ce2e2e7c8ed138a795ec1f6ea97fdd4319d46ed9193ab9d2"
+  },
+  {
+    "file": "starlette-0.47.2-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/starlette-0.47.2-py3-none-any.whl",
+    "sha256": "8ae10ca3b4f3e2f58593bd18a8f58df0193aac10f1922dd6c8a0d4b7a95db470"
+  },
+  {
+    "file": "libopenssl-1.1.1w.zip",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/libopenssl-1.1.1w.zip",
+    "sha256": "eaec7126f466a33ea4121fd230211bb01e9ad1c5748f3cd0b4b1c8677b4ac90a"
+  },
+  {
+    "file": "ssl-1.0.0-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/ssl-1.0.0-cp313-cp313-pyodide_2025_0_wasm32.whl",
+    "sha256": "23a3fe862983d6798a51a0a63ac55356891751084927a7bde979dc4d6d52e0b5"
+  },
+  {
+    "file": "sniffio-1.3.1-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/sniffio-1.3.1-py3-none-any.whl",
+    "sha256": "0077e1685d430cd50f6413af1ed209bb03c95da589ef4f1b8426d67c6b02cb4a"
+  },
+  {
+    "file": "anyio-4.9.0-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/anyio-4.9.0-py3-none-any.whl",
+    "sha256": "9dee49af7541d8bf0b334adcf910aaeb878132648633fc3b91d1604ecb6b1c34"
+  },
+  {
+    "file": "fastapi-0.116.1-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/fastapi-0.116.1-py3-none-any.whl",
+    "sha256": "57b58f74bc39b4b10828cffe45d59eebfa18f30d5656f35c002f2f5f651c305f"
+  },
+  {
+    "file": "idna-3.10-py3-none-any.whl",
+    "url": "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/idna-3.10-py3-none-any.whl",
+    "sha256": "72da788d7a6d3e363535aba1be2658fd21bda5038f2eb0976ce6cb5186942bd6"
+  },
+  {
+    "file": "openpyxl-3.1.5-py2.py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+    "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2"
+  },
+  {
+    "file": "et_xmlfile-2.0.0-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+    "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa"
+  }
+]

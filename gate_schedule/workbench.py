@@ -108,10 +108,14 @@ class Workbench:
 
     KEY = "workspace-v2"
 
-    def __init__(self, database_path: Path):
-        self.store = LocalStateStore(database_path)
+    def __init__(self, database_path: Path, *, store=None):
+        self.store = store if store is not None else LocalStateStore(database_path)
+        self._default_group = store is None
 
     def _load(self):
+        if self._default_group and isinstance(self.store, LocalStateStore) and self.store.read_document('group-workspaces-v1') is not None:
+            from .group_workspaces import GroupWorkspaces, _GroupStore
+            self.store = _GroupStore(GroupWorkspaces(self.store.database_path), 'A')
         document = self.store.read_document(self.KEY)
         state = document if document is not None else {"stateVersion": 2, "timeVersion": 2, "revision": 0, "people": [], "plans": {}, "selectedPlanId": None, "migrationReport": []}
         self._with_configuration(state)

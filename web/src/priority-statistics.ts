@@ -1,3 +1,4 @@
+import { groupFetch, groupUrl } from "./group-api";
 import { html, type PriorityStatistics, type State } from "./workbench-model";
 
 export type PriorityStatisticsSelection = { month: string; roleName: string; flightNo?: string; expandedKeys?: Set<string> };
@@ -84,7 +85,7 @@ export function bindPriorityStatistics(root: HTMLElement, state: State, selectio
     const request=++generation, month=selection.month;
     data=null; pending=true; draw();
     try {
-      const response=await fetch(`/api/priority-statistics?month=${encodeURIComponent(month)}`,{signal:controller.signal});
+      const response=await groupFetch(`/api/priority-statistics?month=${encodeURIComponent(month)}`,{signal:controller.signal});
       if (!response.ok) throw Error("次数读取失败，请重试；原记录保留。");
       const result: PriorityStatistics=await response.json();
       if (!active() || request!==generation || selection.month!==month) return;

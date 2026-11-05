@@ -55,6 +55,8 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   const snapshot=()=>({...state,priorityStatistics:stats('2026-08')});
   let rejectSettings=false,queryMode='normal';const commands=[],held=[];
   const server=createServer((request,response)=>{
+    if(request.url==='/api/groups'){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({activeGroupId:'A'}));return;}
+    request.url=request.url?.replace('/api/groups/A/','/api/');
     if(request.url==='/app.js'){response.setHeader('Content-Type','text/javascript');response.end(script);return;}
     if(request.url==='/app.css'){response.setHeader('Content-Type','text/css');response.end(css);return;}
     if(request.url==='/api/workspace'){response.setHeader('Content-Type','application/json');response.end(JSON.stringify(snapshot()));return;}

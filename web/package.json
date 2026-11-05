@@ -5,10 +5,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:browser": "python ../scripts/prepare-browser.py && tsc && vite build --mode browser",
+    "preview:browser": "vite preview --mode browser --host 127.0.0.1 --port 8787 --strictPort",
+    "test:browser": "node --test tests/browser-local.browser.test.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
+  },
+  "dependencies": {
+    "coi-serviceworker": "0.1.7",
+    "cp-sat-wasm": "2.0.1",
+    "pyodide": "0.29.3"
   }
 }

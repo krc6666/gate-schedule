@@ -1,3 +1,4 @@
+import { groupFetch, groupUrl } from "./group-api";
 import { html, type State, type Plan, type Candidate, type EditPreview } from "./workbench-model";
 
 type Context = { state: State; plan: Plan; disabled: boolean };
@@ -147,14 +148,14 @@ export class ScheduleEditor {
       try {
         const endpoint = t.taskId ? "candidates" : "cell-candidates", targetId = t.taskId ?? t.cellId;
         if (!targetId) throw Error("无法识别岗位，请重新打开班表后重试");
-        const response = await fetch(`/api/workspace/${endpoint}/${encodeURIComponent(expectedPlanId)}/${encodeURIComponent(targetId)}?slot=${t.slot}`, { signal: this.controller.signal });
+        const response = await groupFetch(`/api/workspace/${endpoint}/${encodeURIComponent(expectedPlanId)}/${encodeURIComponent(targetId)}?slot=${t.slot}`, { signal: this.controller.signal });
         if (!response.ok) throw Error("候选查询失败，请重试");
         const items: Candidate[] = await response.json();
         if (!ensureCurrent()) return;
         if (!Array.isArray(items) || items.some(candidate => candidate.revision !== expectedRevision)) throw Error("班表已改变，请重新读取后再选人");
         this.options = items; this.optionsPlanId = expectedPlanId; this.showOptions(search?.value ?? query);
         if (t.input && t.cellId) {
-          const response = await fetch(`/api/workspace/preview-edit/${encodeURIComponent(expectedPlanId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cellId: t.cellId, text: t.text, expectedRevision }), signal: this.controller.signal });
+          const response = await groupFetch(`/api/workspace/preview-edit/${encodeURIComponent(expectedPlanId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cellId: t.cellId, text: t.text, expectedRevision }), signal: this.controller.signal });
           if (!response.ok) throw Error("检查未完成，请保存时重试");
           const preview: EditPreview = await response.json();
           if (!ensureCurrent()) return;

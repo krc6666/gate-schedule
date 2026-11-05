@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from time import monotonic
 
-from ortools.sat.python import cp_model
+from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
