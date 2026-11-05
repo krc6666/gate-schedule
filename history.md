@@ -1,3 +1,13 @@
+# 2026-11-05 GitHub Pages已上线
+
+Owner先选择保留私有，随后明确改为“公开并部署Pages”；按最新明确授权实施。先取回远端完整4份提交，检查211份历史blob和165份候选文件，不含数据库/备份/现场班表/密钥，唯一Excel为无人员的空白资质模板。继续使用既有独立源码历史，提交d8eb89e（浏览器运行、A/B隔离和工作流）后，将krc6666/gate-schedule设为public、Pages设为workflow并推送。原本地Git历史与实际配置没有上传。
+
+Actions运行42013829732的Linux构建、2项接口回归、真实Chrome迁移回归、artifact和deploy全部success；https://krc6666.github.io/gate-schedule/返回200。真实HTTPS Chrome完整回归35.97秒通过自动求解、月度轮值、A/B同名隔离、航班筛选、文件实际下载/空存储导入/刷新/再次排班、事务失败/损坏/并发/取消保护和窄屏数据入口。CDP网络记录没有/api请求，合成测试资料只在隔离浏览器保存。移除原来为空且持续失败的main.yml，部署唯一入口pages.yml；网页程序未再改动，补线上回归参数与当前文档后再次推送收口。
+
+证据.tmp/browser-public-audit.json、.tmp/browser-pages-live-test.log、.tmp/browser-pages-live-result.json和GitHub Actions。原388项后端、44项前端、本机24方案副本/76安排及原库不变验证沿用。源码公开与网址发布完成，现场业务/另一真实设备人工未验；原桌面入口及资料保持。网页资料不云同步，换设备/清网站数据前仍须导出完整配置。
+
+---
+
 # 2026-11-05 浏览器本地版：复用原求解与文件迁移
 
 问题：原网页依赖Python HTTP接口和SQLite，直接放Pages只能展示壳，无法完成排班与保存。Owner明确不付费、不租服务器，希望和值机一样新设备导入配置就用。只读参照值机的浏览器本地方式，保留登机口自己的领域与硬规则；先用Pyodide/CP-SAT WASM试验，再形成浏览器运行适配层，架构结论记录在plan，不额外生成审视报告。

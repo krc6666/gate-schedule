@@ -1,14 +1,12 @@
 # 浏览器本地运行合同（2026-11-05）
 
-最新发布合同：Owner已授权公开本源码仓并部署Pages。https://krc6666.github.io/gate-schedule/ 提供同一浏览器本地运行版，用户资料通过文件导入并仅存在当前浏览器，不写GitHub。后文旧未授权发布说明已被本次授权覆盖。
-
 网页本机版不需要Python服务或云数据库，现有桌面Python/EXE入口继续独立运行。浏览器适配层以Pyodide执行原Workbench、domain、validator和Excel逻辑，以cp_backend选择原生OR-Tools或浏览器CP-SAT WASM；browser_cp/browser-cp仅传递整数模型、状态和解，不重新实现排班规则。整数系数/边界/解以十进制字符串传输，避免JavaScript数值精度损失；不支持的模型操作明确失败。月度轮值也使用同一运行时选择，不用近似轮换替代求解。
 
 BrowserStore只持有一次请求的候选文档；浏览器以同源Web Lock串行读入当前IndexedDB快照→原接口执行和独立验证→成功持久保存候选→返回成功。写入失败不确认采用，下次请求重新读原资料。A/B全组文档、版本检查、旧Excel默认/保留、统一导入预览和取消合同复用GroupWorkspaces；两组同名不合并。后台排班由网页管理任务及轮询，BrowserControl复用RunControl阶段、候选独立校验和采用前停止检查；停止不采用不写入，保留候选仍需校验。关闭计算中的页面会终止未提交计算，重新打开以已经持久保存的资料为准。
 
 访问者用新版Chrome/Edge，通过HTTPS或localhost打开；以同目录service worker为普通静态托管补充跨域隔离，不依赖服务端自定义响应头。首次可能自动刷新以准备环境，运行依赖全部由同站点提供；不保证断网冷启动。业务资料存在当前浏览器的当前站点，网站域名或端口改变、不同浏览器、不同设备不共享，用户用统一配置Excel迁移。完整配置继续携带A/B长期设置、草稿和正式历史；浏览器保存不是跨设备同步，也不代替配置文件。清网站数据前需导出。
 
-build/browser为独立网页交付，只有程序和已校验运行依赖，不包含data、backups、templates现场资料、测试截图或实际配置。桌面程序SQLite不读取浏览器资料；通过统一导入导出迁移。Pages配置已提供；私有仓库免费资格是外部上线边界，未获授权不改为公开，也不将已构建等同于已上线。
+build/browser为独立网页交付，只有程序和已校验运行依赖，不包含data、backups、templates现场资料、测试截图或实际配置。桌面程序SQLite不读取浏览器资料；通过统一导入导出迁移。Owner已明确授权公开krc6666/gate-schedule并部署Pages，现已由Actions实际部署至https://krc6666.github.io/gate-schedule/并通过真实HTTPS浏览器回归。统一配置文件仅由网页在访问者设备内读取和生成，不写GitHub仓库；完整远端历史已核对为筛选源码与空白模板，未上传原本地Git历史。旧的空main.yml工作流已移除，以pages.yml为部署唯一入口。
 
 ---
 

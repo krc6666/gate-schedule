@@ -27,7 +27,7 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
     }catch(error){res.statusCode=404;res.end(String(error))}
   });
   await new Promise(r=>server.listen(0,"127.0.0.1",r));
-  const base="http://127.0.0.1:"+server.address().port+"/gate-schedule/";
+  const base=process.env.GATE_TEST_URL??"http://127.0.0.1:"+server.address().port+"/gate-schedule/";
   await mkdir(join(repo,".tmp"),{recursive:true});
   const directory=await mkdtemp(join(repo,".tmp/browser-local-test-"));
   let browser,ws;let next=0;const pending=new Map();
@@ -39,22 +39,23 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   const target=await until(async()=>{const list=await(await fetch("http://127.0.0.1:"+port+"/json/list")).json();return list.find(x=>x.type==="page"&&x.url.includes("gate-schedule"))},"页面");
   ws=new WebSocket(target.webSocketDebuggerUrl);
   await new Promise(r=>ws.addEventListener("open",r,{once:true}));
-  ws.addEventListener("message",event=>{const m=JSON.parse(event.data);if(m.method==="Runtime.exceptionThrown")errors.push(m.params);const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}});
+  ws.addEventListener("message",event=>{const m=JSON.parse(event.data);if(m.method==="Runtime.exceptionThrown")errors.push(m.params);if(process.env.GATE_TEST_URL&&m.method==="Network.requestWillBeSent")requests.push(m.params.request.url);const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}});
   const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(Error("浏览器调用超时："+method))},120000);pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});ws.send(JSON.stringify({id,method,params}))});
   const evaluate=async expression=>{const r=await call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value};
   await call("Runtime.enable");
   await call("Page.enable");
+  await call("Network.enable");
   await call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:directory});
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   const ready=async()=>{
-    try { await until(()=>evaluate("document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"浏览器本机工作台",30000); }
+    try { await until(()=>evaluate("document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"浏览器本机工作台",120000); }
     catch(error) { throw Error(String(error)+"; "+await evaluate("document.body.innerText")); }
   };
   const reload=async()=>{
     await evaluate("window.__reloadPending=true");
     await call("Page.reload");
-    await until(()=>evaluate("!window.__reloadPending && document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",30000);
+    await until(()=>evaluate("!window.__reloadPending && document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000);
   };
   await ready();
   assert.equal(await evaluate("crossOriginIsolated"),true);
@@ -218,7 +219,7 @@ print(json.dumps({g:c['history']['state'] for g,c in d['groupTransfer']['configu
       await writeFile(join(repo,`.tmp/browser-local-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
     }
   }
-  assert.ok(!requests.some(url=>url.startsWith("/api")),"不得请求任何Python后台");
+  assert.ok(!requests.some(url=>new URL(url,base).pathname.startsWith("/api/")),"不得请求任何Python后台");
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));
 });

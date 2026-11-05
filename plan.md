@@ -1,6 +1,6 @@
 # 当前任务：网页直接使用与新设备导入配置（2026-11-05）
 
-最新Owner决定：已授权公开krc6666/gate-schedule并部署GitHub Pages，覆盖先前保留私有的选择。历史记录中的未授权/待决定已失效。先核对历史与候选源码不含现场数据，提交筛选源码，开通Pages后由Actions部署，再实际HTTPS浏览器验收；未部署通过前不冒称上线完成。原本地Git历史、人员配置、班表、SQLite、备份和测试截图不上传。
+最新Owner决定：已明确授权将krc6666/gate-schedule改为公开并部署GitHub Pages，覆盖先前“保持私有”的选择。已完成历史/候选源码核对、筛选源码提交推送、仓库公开、Actions Pages开通、实际构建部署与HTTPS浏览器验收。原本地Git历史与业务资料不公开；网址https://krc6666.github.io/gate-schedule/ 。
 
 Owner最终明确：不付费、不租服务器、不要求云数据库。目标是和值机一样，浏览器打开后可在本机使用；新设备导入完整配置 Excel，工作结束导出文件即可带走数据。原来的 Python/EXE 本机入口继续可用，不能用只有页面外壳、缺失自动排班的版本冒充完成。例：A组配置导入一台新设备后可建立当天方案并自动排班，B组仍独立，重点岗位按航班＋岗位统计，导出后再次导入还原历史。
 
@@ -12,13 +12,13 @@ Owner最终明确：不付费、不租服务器、不要求云数据库。目标
 - [x] 实现浏览器本地工作区及现有界面完整请求链路，保留 A/B 和自动排班。
 - [x] 验证修改→导出→空设备导入→重启→排班/统计/历史，兼容旧格式并测试拒绝路径。
 - [x] 构建静态交付、核对 GitHub Pages 可部署条件，更新 spec/README/HANDOFF/history 和测试。
-- [ ] 公网发布：等待Owner决定是否将既有私有源码仓库改为公开；不付费的前提下GitHub已拒绝私有Pages开通。
+- [x] 公网发布：按Owner授权公开原仓并上线，GitHub Actions build/deploy成功，实际HTTPS浏览器验收通过。
 
-网页实现与本机验证完成，公网发布尚未完成。388项后端、44项完整前端/真实Chrome及最终接口/班组13项通过；最后模板下载修复另由真实静态浏览器及3项定向前端复验。最终普通静态子路径无Python后台/无自定义隔离头：真实CP-SAT、月度轮值、A/B同名隔离、航班筛选、值班模板实际下载、完整配置实际下载→空存储导入→重启→再次求解、停止不采用、损坏/写失败/竞争拒绝全部通过，窄屏仍能导入导出。实际268098字节配置副本的24份原草稿/正式快照保持，再排76项安排无问题，原生产全组backup完全不变；1440/390截图已查看。证据.tmp/browser-{backend-full,frontend-full,adapter-final,owner-test}.log和.tmp/browser-local-result.json。
+网页实现、本机验证与公网发布完成。388项后端、44项完整前端/真实Chrome及最终接口/班组13项通过；最后模板下载修复另由真实静态浏览器及3项定向前端复验。最终普通静态子路径无Python后台/无自定义隔离头：真实CP-SAT、月度轮值、A/B同名隔离、航班筛选、值班模板实际下载、完整配置实际下载→空存储导入→重启→再次求解、停止不采用、损坏/写失败/竞争拒绝全部通过，窄屏仍能导入导出。实际268098字节配置副本的24份原草稿/正式快照保持，再排76项安排无问题，原生产全组backup完全不变；1440/390截图已查看。证据.tmp/browser-{backend-full,frontend-full,adapter-final,owner-test}.log和.tmp/browser-local-result.json。
 
-本机预览已在http://127.0.0.1:8787/提供，原8765入口及资料保留。GitHub只读核对private=true后，按既有网页发布目标尝试开通原仓Pages，GitHub返回422：Your current plan does not support GitHub Pages for this repository（.tmp/browser-pages-eligibility.json），没有建立站点或收费服务。未commit/push/改可见性；发布配置和成品先准备完，最后只待Owner决定公开源码并发布或保留私有使用本机版。现场人工、另一台真实设备和公网验收未完成。
+本机预览http://127.0.0.1:8787/和原8765入口及资料保留。先前GitHub对私有Pages返回422；Owner最后明确授权公开，现仓库public、Pages工作流启用。独立源码d8eb89e已推送，Actions运行42013829732的build/deploy均success；HTTPS返回200，真实线上Chrome回归35.97秒通过全部迁移/求解/统计/保存/拒绝路径，没有/api网络请求。旧空main.yml工作流移除，公开历史4提交/211blob及候选165文件核对，无业务资料/密钥。证据.tmp/browser-public-audit.json和.tmp/browser-pages-live-{test.log,result.json}。现场人工与另一台真实设备未验，无待Owner决定项。
 
-交付包build/GateSchedule-Browser-20261105.zip：38个文件、16576056字节，源码归档与根目录逐文件一致，纯程序检查和ZIP完整性通过。独立既有远端源码克隆.tmp/browser-github-source准备146份筛选程序/测试及工作流，未复制业务资料或原Git历史；在该克隆重新npm ci/浏览器构建、2项接口回归及真实静态浏览器29.58秒通过，证据.tmp/browser-{artifact-check,source-check}.json和.tmp/browser-clean-source-{build,test}.log。无可独立继续的实现项，只剩公开/上线决定；不能将其标为整个网站已上线。
+交付包build/GateSchedule-Browser-20261105.zip：38个文件、16576056字节，源码归档与根目录逐文件一致，纯程序检查和ZIP完整性通过。独立既有远端源码克隆.tmp/browser-github-source准备146份筛选程序/测试及工作流，未复制业务资料或原Git历史；在该克隆重新npm ci/浏览器构建、2项接口回归及真实静态浏览器29.58秒通过，证据.tmp/browser-{artifact-check,source-check}.json和.tmp/browser-clean-source-{build,test}.log。已按授权公开并上线，既有功能及自动验证范围完成。
 
 ---
 

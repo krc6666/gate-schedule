@@ -1,6 +1,6 @@
 # 浏览器本机版（2026-11-05）
 
-网页版地址：https://krc6666.github.io/gate-schedule/ 。源码仓库公开，排班资料保存在访问者当前浏览器；首次使用或换设备，点击“导入数据”选择之前导出的完整配置Excel。日常结束或换设备前点击“导出配置”，不会自动跨设备同步。部署状态可在本仓Actions的Browser app on Pages查看。
+网页版已上线：https://krc6666.github.io/gate-schedule/ 。源码仓库已按Owner授权公开，GitHub Actions构建与部署成功，真实HTTPS浏览器已通过导入、自动排班、刷新恢复、A/B隔离和导出验证。
 
 浏览器版使用原有六个页面、自动排班和独立校验，保留A/B隔离、重点航班岗位统计、月度轮值及Excel导入导出。网页自身即可计算；访问者不用安装Python或Node，也不用开通数据库或付费后台。使用更新后的Chrome或Edge，通过HTTPS网站或本机网址打开，不能双击index.html使用。
 
@@ -16,9 +16,11 @@ npm.cmd run build:browser --prefix web
 npm.cmd run preview:browser --prefix web
 ```
 
-在这台电脑访问 http://127.0.0.1:8787/ 。构建输出为build/browser，整个目录可交给普通静态HTTPS托管。运行文件均随包提供，构建时按scripts/browser-wheels.json校验依赖。`.github/workflows/pages.yml`会构建、跑空白浏览器迁移回归、上传网页成品并部署Pages；仓库Settings → Pages需先选择GitHub Actions，并且账号/仓库须具备Pages资格。当前既有GitHub仓库为私有，免费账户不能直接给私有仓库开通Pages；本轮未修改仓库可见性、未推送或上线。
+在这台电脑访问 http://127.0.0.1:8787/ 。构建输出为build/browser，整个目录可交给普通静态HTTPS托管。运行文件均随包提供，构建时按scripts/browser-wheels.json校验依赖。`.github/workflows/pages.yml`会构建、跑空白浏览器迁移回归、上传网页成品并部署Pages。既有仓库现已公开，Settings → Pages已选择GitHub Actions；此前私有仓库的套餐限制已通过Owner授权公开解决。发布不包含原本地Git历史或业务资料。
 
 验证命令：`.venv-local/Scripts/python.exe -m unittest tests.test_browser_runtime -v`，以及构建后`npm.cmd run test:browser --prefix web`。测试浏览器默认使用本机Chrome；可用GATE_TEST_BROWSER和GATE_TEST_PYTHON指定程序。真实配置副本迁移可设置GATE_TEST_CONFIGURATION指向本仓.tmp内的Excel，测试不会把该文件放进网页成品。
+
+设置GATE_TEST_URL=https://krc6666.github.io/gate-schedule/可用同一浏览器回归验证线上版本；测试使用独立浏览器资料目录，合成人员和操作保存在测试浏览器，不向GitHub上传业务文件。
 
 ---
 
