@@ -7,9 +7,8 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from .domain import Assignment, Personnel, format_minutes, has_role_qualification, GATE_ROLE_NAMES, BaggageRotationSettings, ImportedRoleConfig, WORK_MODES, phase_role_config, phase_handoff_options, task_timing_label, prepare_regular_day
-from .excel_io import imported_day_from_dict, imported_day_to_dict, import_day, validate_imported_day, export_formal_schedule, validate_complete_configuration, export_complete_configuration
-from .imported_schedule import imported_day_to_scenario
+from .domain import Personnel, format_minutes, has_role_qualification, BaggageRotationSettings, ImportedRoleConfig, WORK_MODES, phase_role_config, phase_handoff_options, task_timing_label, prepare_regular_day
+from .excel_io import imported_day_from_dict, imported_day_to_dict, import_day, export_formal_schedule
 from .io import scenario_from_dict, scenario_to_dict, normalize_saved_scenario
 from .projections import task_matrix, member_paths, flights_by_start
 from .solver import solve
@@ -21,29 +20,22 @@ from .domain import validate_weekly_flights
 from .domain import ValidationIssue
 from .domain import draft_blocking_issues
 from .domain import validate_handoff_preferences, default_handoff_preferences, validate_display_preferences, general_handoff_preferences
-from .flight_configuration import seed_library, save_template, validate_library, remember_day, fill_day, with_role_membership
-from .excel_io import configuration_day
+from .flight_configuration import save_template, fill_day
 from .domain import default_balance_settings, validate_balance_settings, member_flight_participation
 from .priority_statistics import priority_statistics, priority_counts_before, formal_history, next_formal_revision, role_statistics
-from .duty_roster import default_roster, duty_statistics, update_slot, export_roster, preview_roster, validate_roster_row
+from .duty_roster import duty_statistics, update_slot, export_roster, preview_roster, validate_roster_row
 from .domain import validate_duty_roster
 from .domain import default_team_leader_settings, validate_team_leader_settings, default_half_rest_settings, validate_half_rest_settings, HALF_REST_LABELS
-from .domain import PERSONNEL_STATUSES, MEMBER_STATUSES, personnel_status, personnel_states, validate_personnel_details
-from .domain import imported_required_count
-from .domain import default_relaxed_shift_settings, validate_relaxed_shift_settings
+from .domain import PERSONNEL_STATUSES, personnel_states, validate_personnel_details
+from .domain import validate_relaxed_shift_settings
 from .relaxed_shift_statistics import relaxed_shift_statistics
-from .configuration_history import merge_history
-from .domain import task_flight_ids
-
-
-class WorkspaceError(ValueError):
-    pass
-
-
-def _assignments(values):
-    if not isinstance(values, list):
-        raise WorkspaceError("分配必须是列表")
-    return tuple(Assignment(item["taskId"], item["memberId"]) for item in values)
+from .workspace_document import (
+    WorkspaceError, normalize_document, with_configuration, validate_document,
+    plan_scenario, apply_personnel_policy, pending_issues, archive_review,
+    typed_names, sync_roster, read_assignments, role_configuration,
+)
+from .configuration_transfer import prepare_import, prepare_export
+from .domain import COVERAGE_PRIORITIES, task_coverage_priority
 
 
 def _assignment_data(values):
@@ -66,21 +58,8 @@ def _input_summary(issues):
     return "；".join(messages[:4]) + (f"；另有{len(messages)-4}项，请在当天资料中查看" if len(messages) > 4 else "")
 
 
-def _validate_day_structure(day):
-    date.fromisoformat(day.service_date)
-    if len(day.flights) != len({f.id for f in day.flights}) or len(day.flights) != len({f.flight_no for f in day.flights}) or any(not f.flight_no.strip() for f in day.flights):
-        raise WorkspaceError("航班编号或航班号重复/为空")
-    if len(day.cells) != len({c.id for c in day.cells}) or len(day.role_names) != len(set(day.role_names)) or len(day.roster) != len(set(day.roster)):
-        raise WorkspaceError("任务格、岗位或当天名单重复")
-
-
 def _solver_summary(scenario, diagnostics):
     return _input_summary(issue_data(scenario, [ValidationIssue("solver", text) for text in diagnostics])) or "当前人员与岗位要求无法同时满足，请检查当天人员、岗位人数和规则"
-
-
-def _new_role_config(role):
-    config = phase_role_config(ImportedRoleConfig(role["roleName"], role["requiredCount"]))
-    return {**role, "workMode": role.get("workMode", config.work_mode), "concurrent": role.get("concurrent", config.concurrent)}
 
 
 def schedule_data(scenario, assignments):
@@ -116,75 +95,18 @@ class Workbench:
         if self._default_group and isinstance(self.store, LocalStateStore) and self.store.read_document('group-workspaces-v1') is not None:
             from .group_workspaces import GroupWorkspaces, _GroupStore
             self.store = _GroupStore(GroupWorkspaces(self.store.database_path), 'A')
-        document = self.store.read_document(self.KEY)
-        state = document if document is not None else {"stateVersion": 2, "timeVersion": 2, "revision": 0, "people": [], "plans": {}, "selectedPlanId": None, "migrationReport": []}
-        self._with_configuration(state)
-        seed_library(state)
-        with_role_membership(state)
-        self._with_preferences(state)
-        return state
-
-    @staticmethod
-    def _with_preferences(state):
-        if "handoffPreferences" not in state:
-            state["handoffPreferences"] = default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]])
-        validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {f["flightNo"] for f in state["flightLibrary"]} | {f["flightNo"] for p in state["plans"].values() for f in p["day"]["flights"]})
-        state["handoffPreferences"] = general_handoff_preferences(state["handoffPreferences"])
-        state.setdefault("displayPreferences", {"layout": "flights", "zoom": 100})
-        state.setdefault("balanceSettings", default_balance_settings())
-        # Owner chose to reselect the new flight/role scope; legacy fields stay
-        # as migration evidence and never select new priority combinations.
-        state['balanceSettings'].setdefault('priorityFlightRoles', [])
-        state.setdefault("teamLeaderSettings", default_team_leader_settings())
-        state.setdefault("halfRestSettings", default_half_rest_settings())
-        state.setdefault("relaxedShiftSettings", default_relaxed_shift_settings())
-        state.setdefault("dutyRoster", default_roster(state))
-
-    @staticmethod
-    def _with_configuration(state):
-        """Add optional v2 configuration without inferring demand or changing saved plans."""
-        if isinstance(state, dict) and state.get("stateVersion") == 2 and "configuration" not in state:
-            roles = list(GATE_ROLE_NAMES)
-            for person in state.get("people", []):
-                roles.extend(person["eligibleRoleNames"])
-            for plan in state.get("plans", {}).values():
-                roles.extend(plan["day"]["roleNames"])
-            state["configuration"] = {"roleConfigs": [{"roleName": r, "requiredCount": None} for r in dict.fromkeys(roles)], "rotationMinutes": 60, "rotationEnabled": True, "transitionMinutes": 0}
-        return state
-
-    def _scenario(self, plan):
-        day = imported_day_from_dict(plan["day"])
-        issues = validate_imported_day(day)
-        try:
-            scenario, conversion = imported_day_to_scenario(day, plan["rotationMinutes"], plan["rotationEnabled"])
-        except (ValueError, TypeError, KeyError) as error:
-            return None, [{"code": "input", "message": str(error), "taskId": None, "memberId": None}]
-        issues = issue_data(scenario, issues + conversion)
-        identities = plan.get("memberIds", {})
-        scenario = replace(scenario,
-            members=tuple(replace(m, id=identities.get(m.name, m.id), team_leader=identities.get(m.name, m.id) in plan.get("teamLeaderIds", []), status=plan.get("personnelStates", {}).get(identities.get(m.name, m.id), "正常")) for m in scenario.members),
-            tasks=tuple(replace(t, locked_member_ids=tuple(identities.get(n, n) for n in t.locked_member_ids)) for t in scenario.tasks),
-            rotations=tuple(replace(r, candidate_member_ids=tuple(identities.get(n, n) for n in r.candidate_member_ids)) for r in scenario.rotations),
-            flight_count_gap=plan.get("balanceSettings", default_balance_settings())["flightCountGap"],
-            priority_role_ids=tuple(plan.get("balanceSettings", default_balance_settings())["priorityRoleNames"])
-                if plan.get("balanceSettings", default_balance_settings())["priorityEnabled"] and 'priorityFlightRoles' not in plan.get('balanceSettings', {}) else (),
-            priority_flight_roles=tuple((p['flightNo'], p['roleName']) for p in plan.get('balanceSettings', {}).get('priorityFlightRoles', []))
-                if plan.get('balanceSettings', {}).get('priorityEnabled', False) else (),
-            team_leader_last=plan.get("teamLeaderSettings", default_team_leader_settings())["lastUsed"],
-            balance_exempt_team_leaders=plan.get("teamLeaderSettings", default_team_leader_settings())["exemptFlightCount"],
-            balance_exempt_half_rest=plan.get("halfRestSettings", default_half_rest_settings())["exemptFlightCount"],
-        )
-        return scenario, issues
+        return normalize_document(self.store.read_document(self.KEY))
 
     def snapshot(self):
         state = deepcopy(self._load())
         state["workModes"] = WORK_MODES
+        state['coveragePolicy'] = {'choices': COVERAGE_PRIORITIES}
         state["priorityStatistics"] = priority_statistics(state, current=self._statistics_draft(state))
         state["people"] = [p for p in state["people"] if not p.get("deleted", False)]
         state["personnelStatuses"] = list(PERSONNEL_STATUSES)
         state["weeklyFlightPresets"] = deepcopy(state.get("weeklyFlightPresets", {}))
         state["flightTemplates"] = [{k: f[k] for k in ("flightNo", "windowStart", "windowEnd")} for f in state["flightLibrary"]]
-        state["newRoleDefaults"] = {r["roleName"]: _new_role_config(r) for r in state["configuration"]["roleConfigs"]}
+        state["newRoleDefaults"] = {r["roleName"]: role_configuration(r) for r in state["configuration"]["roleConfigs"]}
         state["suggestedHandoffPreferences"] = general_handoff_preferences(default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]]))
         for plan in state["plans"].values():
             plan["preparationDay"] = _prepare_day(plan["day"])
@@ -196,18 +118,18 @@ class Workbench:
             plan["flightColumns"] = [f.flight_no for f in flights]
             plan["needsPreparation"] = plan["day"].get("attendanceMode") != "duty"
             plan["handoffOptions"] = phase_handoff_options(imported_day_from_dict(plan["day"]))
-            scenario, issues = self._scenario(plan)
+            scenario, issues = plan_scenario(plan)
             plan["preparationNotice"] = f'{plan["day"]["serviceDate"]} 尚未选择当天人员。请选择谁来上班，再生成排班。' if plan["day"]["flights"] and not any(a.get("participating") for a in plan["day"].get("memberAvailability", [])) else None
             legacy_prefix = "原班表已归档；新日期暂时无合法安排，已保留未完成草稿："
             if plan.get("message", "").startswith(legacy_prefix):
                 plan["message"] = "上一班已归档；新一天草稿已保存。" + (plan["preparationNotice"] or _solver_summary(scenario, plan["message"][len(legacy_prefix):].split("；")))
-            assignments = _assignments(plan["draft"])
+            assignments = read_assignments(plan["draft"])
             if scenario:
                 issues += issue_data(scenario, validate_schedule(scenario, assignments))
                 plan["schedule"] = schedule_data(scenario, assignments)
             else:
                 plan["schedule"] = None
-            issues += self._pending_issues(plan)
+            issues += pending_issues(plan)
             plan["issues"] = issues
             plan["valid"] = bool(scenario and scenario.tasks) and not issues
             plan["undoAvailable"] = bool(plan.get("undoEdit") and plan["undoEdit"]["atRevision"] == state["revision"])
@@ -216,7 +138,7 @@ class Workbench:
             plan["editFeedback"] = {"hasWarnings": bool(edit_issues), "issues": edit_issues,
                 "message": ("已保存为待处理草稿：" + _input_summary(edit_issues)) if edit_issues else plan.get("message", "草稿已保存")}
             formal = plan.get("adopted")
-            plan["formalSchedule"] = schedule_data(scenario_from_dict(formal["scenario"]) if formal.get('scenario') else None, _assignments(formal["assignments"])) if formal else None
+            plan["formalSchedule"] = schedule_data(scenario_from_dict(formal["scenario"]) if formal.get('scenario') else None, read_assignments(formal["assignments"])) if formal else None
             plan['formalIssues'] = deepcopy(formal.get('issues', [])) if formal else []
             plan['formalCellDrafts'] = deepcopy(formal.get('cellDrafts', {})) if formal else {}
             plan['formalDay'] = deepcopy(formal['day']) if formal else None
@@ -237,7 +159,7 @@ class Workbench:
 
     def _commit(self, state, expected):
         state["revision"] = expected + 1
-        self._validate_document(state)
+        validate_document(state)
         try:
             self.store.compare_and_save(self.KEY, expected, state)
         except ValueError as error:
@@ -247,17 +169,14 @@ class Workbench:
     def _save_balance(self, state, payload):
         if 'priorityFlightRoles' not in payload["balanceSettings"]:
             raise WorkspaceError("页面版本已更新，请按 Ctrl+F5 刷新，选择航班后重新勾选重点岗位；本次未保存，原配置和班表保留")
-        settings = validate_balance_settings(payload["balanceSettings"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
+        incoming = deepcopy(payload['balanceSettings'])
+        if 'coveragePriorities' in state['balanceSettings']:
+            incoming.setdefault('coveragePriorities', deepcopy(state['balanceSettings']['coveragePriorities']))
+        settings = validate_balance_settings(incoming, [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
         if settings["priorityAdjustments"] != state["balanceSettings"]["priorityAdjustments"]:
             raise WorkspaceError("累计次数已改变，请刷新后重试；次数请在统计表用加减按钮调整")
         state["balanceSettings"] = settings
 
-    @staticmethod
-    def _personnel_policy(plan, state):
-        plan["teamLeaderSettings"] = deepcopy(state["teamLeaderSettings"])
-        plan["halfRestSettings"] = deepcopy(state["halfRestSettings"])
-        plan["teamLeaderIds"] = [p["id"] for p in state["people"] if p.get("teamLeader", False)]
-        plan["personnelStates"] = personnel_states(state["people"])
 
     @staticmethod
     def _personnel_policy_changed(plan, state):
@@ -286,7 +205,7 @@ class Workbench:
         enabled = payload.get("rotationEnabled", plan["rotationEnabled"])
         BaggageRotationSettings(enabled, interval)
         plan["rotationMinutes"], plan["rotationEnabled"] = interval, enabled
-        self._roster(plan, state["people"], refresh=False)
+        sync_roster(plan, state["people"], refresh=False)
         # Parsing is structural; incomplete business input is retained and shown as draft issues.
         imported_day_from_dict(plan["day"])
         plan["inputRevision"] += 1
@@ -306,7 +225,7 @@ class Workbench:
         if action == "import-qualifications":
             self._merge_qualifications(state, payload)
         elif action == "import-complete-configuration":
-            self._apply_complete_configuration(state, payload)
+            state = prepare_import(state, payload).state
         elif action == "save-rules":
             # Validate on the same private state; one CAS commit or no write at all.
             self._save_base_settings(state, payload["configuration"])
@@ -378,7 +297,7 @@ class Workbench:
                     suffix += 1
                 name = f"{base}{suffix}"
             if name not in catalog:
-                role = {**_new_role_config(catalog[source_name]), "roleName": name} if source_name else _new_role_config({"roleName": name, "requiredCount": None})
+                role = {**role_configuration(catalog[source_name]), "roleName": name} if source_name else role_configuration({"roleName": name, "requiredCount": None})
                 if source_name == "大件行李拦截":
                     role["workMode"] = "continuous"
                 state["configuration"]["roleConfigs"].append(role)
@@ -402,7 +321,7 @@ class Workbench:
                 raise WorkspaceError("请填写不重复的岗位名称，人数为空或非负整数")
             if set(names) & {r["roleName"] for r in state["configuration"]["roleConfigs"]}:
                 raise WorkspaceError("包含已有岗位，请修改现有岗位，原配置未改变")
-            state["configuration"]["roleConfigs"].extend(_new_role_config({"roleName": n.strip(), "requiredCount": count}) for n in names)
+            state["configuration"]["roleConfigs"].extend(role_configuration({"roleName": n.strip(), "requiredCount": count}) for n in names)
         elif action == "copy-flight-roles":
             source = next((f for f in state["flightLibrary"] if f["flightNo"] == payload["sourceNo"]), None)
             if source is None:
@@ -495,7 +414,7 @@ class Workbench:
             else:
                 config = state["configuration"]
                 roles = payload.get("roleNames", [r["roleName"] for r in config["roleConfigs"]])
-                day = {"serviceDate": service_date, "title": "当天保障计划", "roleNames": roles, "flights": [], "cells": [], "remarks": [], "roster": [], "roleConfigs": [_new_role_config(r) for r in config["roleConfigs"] if r["roleName"] in roles], "memberConfigs": [], "memberAvailability": [], "extraOccupancies": [], "remarksReviewed": True, "transitionMinutes": config["transitionMinutes"], "releasePolicy": "task", "phaseHandoffs": []}
+                day = {"serviceDate": service_date, "title": "当天保障计划", "roleNames": roles, "flights": [], "cells": [], "remarks": [], "roster": [], "roleConfigs": [role_configuration(r) for r in config["roleConfigs"] if r["roleName"] in roles], "memberConfigs": [], "memberAvailability": [], "extraOccupancies": [], "remarksReviewed": True, "transitionMinutes": config["transitionMinutes"], "releasePolicy": "task", "phaseHandoffs": []}
             if action == "new-plan":
                 day["attendanceMode"] = "duty"
                 if "flightNos" in payload:
@@ -505,10 +424,10 @@ class Workbench:
                     state["people"].append({"id": str(uuid4()), "name": name, "eligibleRoleNames": [], "active": True})
             plan = {"id": plan_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": 60, "rotationEnabled": True, "memberIds": {}, "preview": None, "message": "已创建未完成草稿"}
             plan["balanceSettings"] = deepcopy(state["balanceSettings"])
-            self._personnel_policy(plan, state)
+            apply_personnel_policy(plan, state)
             if action == "new-plan":
                 plan.update(rotationMinutes=state["configuration"]["rotationMinutes"], rotationEnabled=state["configuration"]["rotationEnabled"])
-            self._roster(plan, state["people"], refresh=action == "new-plan")
+            sync_roster(plan, state["people"], refresh=action == "new-plan")
             state["plans"][plan_id] = plan
             state["selectedPlanId"] = plan_id
         elif action == "select-plan":
@@ -525,15 +444,15 @@ class Workbench:
             # Keep the old plan and formal snapshot byte-for-byte; the new draft is explicit.
             fresh = {**deepcopy(plan), "id": new_id, "day": imported_day_to_dict(day), "draft": [], "preview": None, "adopted": None, "inputRevision": 0, "message": "已另建环节方案，原方案保留。接机/登机无需逐格时间，督导可兼任；其他岗位暂按全程保障，请在配置调整性质与环节。跨航班衔接在规则中确认。"}
             fresh["balanceSettings"] = deepcopy(state["balanceSettings"])
-            self._personnel_policy(fresh, state)
+            apply_personnel_policy(fresh, state)
             fresh.pop("cellDrafts", None)
             state["plans"][new_id] = fresh
             state["selectedPlanId"] = new_id
         elif action == "save-input":
             self._save_day_input(state, plan, payload)
         elif action == "refresh-people":
-            self._roster(plan, state["people"], refresh=True)
-            self._personnel_policy(plan, state)
+            sync_roster(plan, state["people"], refresh=True)
+            apply_personnel_policy(plan, state)
             plan["inputRevision"] += 1
             plan["draft"], plan["preview"] = [], None
         elif action == "apply-config":
@@ -545,19 +464,19 @@ class Workbench:
                     for flight in day["flights"]:
                         day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role["roleName"], "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "workStart": None, "workEnd": None, "fixedMemberNames": [], "requiredCountOverride": None})
             current = {r["roleName"]: r for r in day["roleConfigs"]}
-            current.update({r["roleName"]: _new_role_config(r) if day.get("releasePolicy") == "task" else deepcopy(r) for r in config["roleConfigs"]})
+            current.update({r["roleName"]: role_configuration(r) if day.get("releasePolicy") == "task" else deepcopy(r) for r in config["roleConfigs"]})
             day["roleConfigs"] = list(current.values())
             day["transitionMinutes"] = config["transitionMinutes"]
             plan.update(rotationMinutes=config["rotationMinutes"], rotationEnabled=config["rotationEnabled"])
             plan["balanceSettings"] = deepcopy(state["balanceSettings"])
-            self._personnel_policy(plan, state)
-            self._roster(plan, state["people"], refresh=True)
+            apply_personnel_policy(plan, state)
+            sync_roster(plan, state["people"], refresh=True)
             plan["inputRevision"] += 1
             plan["draft"], plan["preview"] = [], None
             plan["message"] = "已载入基础岗位、资质及规则；当前草稿重置，正式结果保留"
         elif action == "assign":
-            values = _assignments(payload["assignments"])
-            scenario, _ = self._scenario(plan)
+            values = read_assignments(payload["assignments"])
+            scenario, _ = plan_scenario(plan)
             if scenario is None:
                 raise WorkspaceError("请先补齐当天岗位和人员资料")
             tasks = {t.id for t in scenario.tasks}
@@ -569,11 +488,11 @@ class Workbench:
         elif action == "edit-cell":
             self._edit_cell(plan, payload)
         elif action == "edit-slot":
-            scenario, _ = self._scenario(plan)
+            scenario, _ = plan_scenario(plan)
             if scenario is None:
                 raise WorkspaceError("请先确认当天岗位与人员")
             try:
-                values = replace_slot(scenario, _assignments(plan["draft"]), payload["taskId"], payload["slot"], payload.get("memberId", ""))
+                values = replace_slot(scenario, read_assignments(plan["draft"]), payload["taskId"], payload["slot"], payload.get("memberId", ""))
             except ValueError as error:
                 raise WorkspaceError(str(error)) from error
             plan["draft"] = _assignment_data(values)
@@ -598,7 +517,7 @@ class Workbench:
             source_id = plan["id"]
             if plan.get("balanceSettings", default_balance_settings()) != state["balanceSettings"] or self._personnel_policy_changed(plan, state):
                 plan = {**deepcopy(plan), "id": str(uuid4()), "balanceSettings": deepcopy(state["balanceSettings"]), "adopted": None, "preview": None}
-                self._personnel_policy(plan, state)
+                apply_personnel_policy(plan, state)
                 state["plans"][plan["id"]] = plan
                 state["selectedPlanId"] = plan["id"]
             self._solve(plan, state, control)
@@ -613,10 +532,10 @@ class Workbench:
                 new_id = str(uuid4())
                 plan = {**deepcopy(plan), "id": new_id, "day": day, "inputRevision": 0, "draft": [], "preview": None, "adopted": None}
                 plan["balanceSettings"] = deepcopy(state["balanceSettings"])
-                self._personnel_policy(plan, state)
+                apply_personnel_policy(plan, state)
                 if "cellDrafts" in plan:
                     plan["cellDrafts"] = {key: text for key, text in plan["cellDrafts"].items() if key in {c["id"] for c in day["cells"]}}
-                self._roster(plan, state["people"], refresh=False)
+                sync_roster(plan, state["people"], refresh=False)
                 state["plans"][new_id] = plan
                 state["selectedPlanId"] = new_id
             self._solve(plan, state, control)
@@ -643,9 +562,9 @@ class Workbench:
             next_id = str(uuid4())
             next_plan = {"id": next_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": payload.get("rotationMinutes", plan["rotationMinutes"]), "rotationEnabled": payload.get("rotationEnabled", plan["rotationEnabled"]), "memberIds": deepcopy(plan["memberIds"]), "preview": None, "message": "已归档原班表并创建下一班草稿，请确认航班、岗位设置和当天出勤"}
             next_plan["balanceSettings"] = deepcopy(state["balanceSettings"])
-            self._personnel_policy(next_plan, state)
+            apply_personnel_policy(next_plan, state)
             BaggageRotationSettings(next_plan["rotationEnabled"], next_plan["rotationMinutes"])
-            self._roster(next_plan, state["people"], refresh=False)
+            sync_roster(next_plan, state["people"], refresh=False)
             try:
                 self._solve(next_plan, state, control)
             except WorkspaceError as error:
@@ -663,7 +582,7 @@ class Workbench:
             affected.update(payload[k] for k in ("taskId", "targetTaskId", "sourceTaskId") if payload.get(k))
             if payload.get("cellId"):
                 cell = self._cell(plan, payload["cellId"])
-                current, _ = self._scenario(plan)
+                current, _ = plan_scenario(plan)
                 if current:
                     affected.update(t.id for t in current.tasks if t.role_id == cell["roleName"] and (t.flight_id == cell["flightId"] or cell["flightId"] in t.covered_flight_ids))
             plan["undoEdit"] = {"atRevision": expected + 1, "before": before_edit}
@@ -673,16 +592,12 @@ class Workbench:
             return control.finish(lambda: self._commit(state, expected))
         return self._commit(state, expected)
 
-    @staticmethod
-    def _pending_issues(plan):
-        cells = {c["id"]: c for c in plan["day"]["cells"]}
-        return [{"code": "pending_cell", "message": f'{cells[key]["flightNo"]} {cells[key]["roleName"]} 已输入“{text}”，请确认人数、工作方式和当天人员并确认安排', "taskId": key, "memberId": None} for key, text in plan.get("cellDrafts", {}).items()]
 
     def _solve(self, plan, state=None, control=None):
         if not any(a.get("participating") for a in plan["day"].get("memberAvailability", [])):
             raise WorkspaceError("请选择当天参加人员")
-        scenario, issues = self._scenario(plan)
-        issues += self._pending_issues(plan)
+        scenario, issues = plan_scenario(plan)
+        issues += pending_issues(plan)
         if issues or scenario is None or not scenario.tasks:
             raise WorkspaceError(_input_summary(issues) or "请选择航班并配置岗位人数和资质")
         previous_roles = set()
@@ -698,7 +613,7 @@ class Workbench:
                 old_scenario = scenario_from_dict(previous['scenario'])
                 flight_nos = {f.id: f.flight_no for f in old_scenario.flights}
                 previous_roles.update((m, flight_nos[f], r) for m, f, r in
-                    member_flight_role_participation(old_scenario, _assignments(previous['assignments'])))
+                    member_flight_role_participation(old_scenario, read_assignments(previous['assignments'])))
         counts = {**priority_counts_before(state, scenario.service_date),
             **priority_counts_before(state, scenario.service_date, by_flight=True)} if state else {}
         result = solve(scenario, allow_partial=True, previous_roles=previous_roles, priority_counts=counts, handoff_preferences=state.get("handoffPreferences", []) if state else [], control=control)
@@ -713,24 +628,19 @@ class Workbench:
         plan["draft"] = _assignment_data(values)
         plan["historyReferenceDate"] = previous_date
         plan["message"] = ("已生成未完成草稿：" + _input_summary(issue_data(scenario, final_issues)) + "。可保留问题归档或导出。") if final_issues else "排班已生成并保存，可以调整或继续归档排后天。"
+        protected = {t.id for t in scenario.tasks if task_coverage_priority(scenario, t) == 'protect'}
+        shortfalls = [i for i in final_issues if i.code == 'coverage_shortfall' and i.task_id in protected]
+        if shortfalls:
+            plan['message'] += '优先保岗仍有缺口：' + _input_summary(issue_data(scenario, shortfalls)) + '；当前人员与规则下尚未补齐，请增加可用人员或检查限制。'
         if final_issues and scenario.flight_count_gap is not None:
             plan["message"] += f"当前航班数最大差距{scenario.flight_count_gap}仍严格执行；可补齐人员或在规则页调整后重新排班。"
         if previous_date:
             plan["message"] += f"轮岗参考 {previous_date} 已归档班表。"
 
-    def _archive_review(self, plan):
-        scenario, issues = self._scenario(plan)
-        issues += self._pending_issues(plan)
-        values = _assignments(plan["draft"])
-        if scenario:
-            issues += issue_data(scenario, validate_schedule(scenario, values))
-        if not scenario or not scenario.tasks:
-            issues.append({'code':'no_tasks', 'message':'当前没有已落实的岗位任务，原输入和待完善姓名已保留', 'taskId':None, 'memberId':None, 'relatedTaskIds':[]})
-        return scenario, issues
 
     def _adopt(self, plan, saved_revision=None, state=None):
-        scenario, issues = self._archive_review(plan)
-        values = _assignments(plan['draft'])
+        scenario, issues = archive_review(plan)
+        values = read_assignments(plan['draft'])
         previous = plan.get("adopted")
         if previous and previous.get('scenario') == (scenario_to_dict(scenario) if scenario else None) and previous["assignments"] == _assignment_data(values) and previous.get("day") == plan["day"] and previous["inputRevision"] == plan["inputRevision"] and previous.get('cellDrafts', {}) == plan.get('cellDrafts', {}) and previous.get('issues', []) == issues:
             plan["preview"] = None
@@ -755,21 +665,11 @@ class Workbench:
             raise WorkspaceError("岗位格不存在，请重新读取")
         return cell
 
-    @staticmethod
-    def _typed_names(plan, text):
-        if not isinstance(text, str) or len(text) > 2000:
-            raise WorkspaceError("姓名内容无效或过长")
-        names = [n.strip() for n in re.split(r"[/／、,，;；\n]+", text) if n.strip()]
-        unknown = set(names) - set(plan["day"]["roster"])
-        if unknown:
-            suggestions = name_suggestions(text, plan["day"]["roster"])
-            raise WorkspaceError("未找到当天人员：" + "、".join(sorted(unknown)) + ("。可选择：" + "、".join(suggestions) if suggestions else "。请先配置人员") + "；原安排保留")
-        return names
 
     def _edit_cell(self, plan, payload):
         cell = self._cell(plan, payload["cellId"])
-        names = self._typed_names(plan, payload["text"])
-        scenario, _ = self._scenario(plan)
+        names = typed_names(plan, payload["text"])
+        scenario, _ = plan_scenario(plan)
         segments = task_matrix(scenario, ()).get(cell["roleName"], {}).get(cell["flightNo"], []) if scenario else []
         requested_task = payload.get("taskId")
         if requested_task:
@@ -807,12 +707,12 @@ class Workbench:
         count = payload["requiredCount"]
         if type(count) is not int or count < 0:
             raise WorkspaceError("岗位人数必须为0或正整数")
-        old, _ = self._scenario(plan)
+        old, _ = plan_scenario(plan)
         cell.update(requiredCountOverride=count, workStart=payload.get("workStart") or None, workEnd=payload.get("workEnd") or None)
         if "workModeOverride" in payload:
             cell["workModeOverride"] = payload["workModeOverride"] or None
         imported_day_from_dict(plan["day"])
-        new, _ = self._scenario(plan)
+        new, _ = plan_scenario(plan)
         # Preserve only task identities whose entire facts are unchanged.
         old_tasks = {t.id: t for t in old.tasks} if old else {}
         retained = {t.id for t in new.tasks if old_tasks.get(t.id) == t} if new else set()
@@ -825,7 +725,7 @@ class Workbench:
         plan["message"] = "该格岗位资料已保存；其他事实未变的安排保留，正式快照不变"
 
     def _move_assignment(self, plan, payload):
-        scenario, _ = self._scenario(plan)
+        scenario, _ = plan_scenario(plan)
         if not scenario:
             raise WorkspaceError("请先补齐当天资料")
         tasks = {t.id: t for t in scenario.tasks}
@@ -859,33 +759,6 @@ class Workbench:
         plan["draft"] = values
         plan["message"] = "拖动已保存为草稿；有冲突时须修正后才能采用"
 
-    def _roster(self, plan, people, refresh):
-        day = plan["day"]
-        active = [p for p in people if p["active"] and not p.get("deleted", False)]
-        if refresh:
-            by_id = {p["id"]: p for p in people}
-            renames = {name: by_id[identity]["name"] for name, identity in plan.get("memberIds", {}).items() if identity in by_id}
-            renamed = lambda name: renames.get(name, name)
-            day["roster"] = list(dict.fromkeys(renamed(n) for n in day.get("roster", [])))
-            for key in ("memberConfigs", "memberAvailability"):
-                for entry in day.get(key, []):
-                    entry["memberName"] = renamed(entry["memberName"])
-            for entry in day.get("memberAvailability", []):
-                if any(p["id"] == plan.get("memberIds", {}).get(entry["memberName"]) and personnel_status(p) != "正常" for p in people):
-                    entry["participating"] = False
-            for cell in day["cells"]:
-                for key in ("internalNames", "fixedMemberNames"):
-                    cell[key] = [renamed(n) for n in cell.get(key, [])]
-            for entry in day.get("extraOccupancies", []):
-                entry["memberNames"] = [renamed(n) for n in entry["memberNames"]]
-            for entry in day.get("remarks", []):
-                entry["people"] = [renamed(n) for n in entry.get("people", [])]
-            day["roster"] = list(dict.fromkeys([*day.get("roster", []), *(p["name"] for p in active)]))
-            configs = {c["memberName"]: c for c in day.get("memberConfigs", [])}
-            for p in active:
-                configs[p["name"]] = {"memberName": p["name"], "eligibleRoleNames": [r for r in p["eligibleRoleNames"] if r in day["roleNames"]]}
-            day["memberConfigs"] = list(configs.values())
-        plan["memberIds"] = {**{name: identity for name, identity in plan.get("memberIds", {}).items() if name in day.get("roster", [])}, **{p["name"]: p["id"] for p in people}}
 
     @staticmethod
     def _merge_qualifications(state, payload):
@@ -921,226 +794,13 @@ class Workbench:
         state = deepcopy(self._load())
         return {**self._merge_qualifications(state, payload), "expectedRevision": state["revision"]}
 
-    def _apply_complete_configuration(self, state, payload):
-        data = validate_complete_configuration(payload)
-        original_people = {p['id'] for p in state['people']}
-        history_summary = {key: 0 for key in ('historyDayCount', 'historyPlanCount', 'newHistoryPlanCount', 'retainedHistoryPlanCount')}
-        if 'history' in data:
-            history = self._with_configuration(deepcopy(data['history']['state']))
-            self._validate_document(history)
-            history_summary = merge_history(state, history)
-        day = deepcopy(data["day"])
-        existing_flags = {r["roleName"]: r.get("exclusiveSameFlight", False) for r in state["configuration"]["roleConfigs"]}
-        for role in day["roleConfigs"]:
-            if "exclusiveSameFlight" not in role and existing_flags.get(role["roleName"], False):
-                role["exclusiveSameFlight"] = True
-        # The imported plan and maintained defaults must use the same retained flags.
-        data["day"] = deepcopy(day)
-        by_name = {p["name"]: p for p in state["people"] if not p.get("deleted", False)}
-        inactive = [p["name"] for p in by_name.values() if not p["active"] and not data.get("peopleActive", {}).get(p["name"], False) and any(a["memberName"] == p["name"] and a["participating"] for a in day["memberAvailability"])]
-        if inactive:
-            raise WorkspaceError("这些人员已停用，不能通过Excel自动启用或参加排班：" + "、".join(inactive))
-        added, removed, new_people = 0, 0, len({p['id'] for p in state['people']} - original_people)
-        roles = set(day["roleNames"])
-        for member in day["memberConfigs"]:
-            name = member["memberName"]
-            if name not in by_name and name in data.get('peopleIds', {}):
-                person = next((p for p in state['people'] if p['id'] == data['peopleIds'][name] and not p.get('deleted', False)), None)
-                if person is not None:
-                    by_name.pop(person['name'], None)
-                    person['name'] = name
-                    by_name[name] = person
-            if name not in by_name:
-                identity = data.get("peopleIds", {}).get(name, str(uuid4()))
-                if any(p["id"] == identity for p in state["people"]):
-                    raise WorkspaceError("导入人员ID已属于另一位人员，原数据未改变")
-                person = {"id": identity, "name": name, "eligibleRoleNames": [], "active": True}
-                by_name[name] = person
-                state["people"].append(person)
-                new_people += 1
-            person = by_name[name]
-            current = set(person["eligibleRoleNames"]) & roles
-            incoming = set(member["eligibleRoleNames"])
-            added += len(incoming - current)
-            removed += len(current - incoming)
-            person["eligibleRoleNames"] = [r for r in person["eligibleRoleNames"] if r not in roles] + list(member["eligibleRoleNames"])
-        config = state["configuration"]
-        incoming_roles = {r["roleName"]: {**r, "workMode": r.get("workMode", "timed"), "concurrent": r.get("concurrent", False)} for r in day["roleConfigs"]}
-        for role in day["roleNames"]:
-            incoming_roles.setdefault(role, {"roleName": role, "requiredCount": None})
-        existing = {r["roleName"]: r for r in config["roleConfigs"]}
-        existing.update(incoming_roles)
-        config["roleConfigs"] = list(existing.values())
-        config.update(rotationEnabled=data["rotationEnabled"], rotationMinutes=data["rotationMinutes"], transitionMinutes=day["transitionMinutes"])
-        for key in ("handoffPreferences", "displayPreferences"):
-            if key in data:
-                state[key] = deepcopy(data[key])
-        if "balanceSettings" in data:
-            settings = deepcopy(data["balanceSettings"])
-            settings.setdefault('priorityFlightRoles', deepcopy(state['balanceSettings'].get('priorityFlightRoles', [])))
-            identities = {identity: by_name[name]["id"] for name, identity in data.get("peopleIds", {}).items()}
-            for adjustment in settings["priorityAdjustments"]:
-                adjustment["memberId"] = identities.get(adjustment["memberId"], adjustment["memberId"])
-            state["balanceSettings"] = validate_balance_settings(settings, [r["roleName"] for r in config["roleConfigs"]], {p["id"] for p in state["people"]})
-        if "peopleActive" in data:
-            for person in state["people"]:
-                if not person.get("deleted", False) and person["name"] in data["peopleActive"]:
-                    person["active"] = data["peopleActive"][person["name"]]
-        if "peopleTeamLeaders" in data:
-            for person in state["people"]:
-                if not person.get("deleted", False) and person["name"] in data["peopleTeamLeaders"]:
-                    person["teamLeader"] = data["peopleTeamLeaders"][person["name"]]
-        for key, field in (("peopleStatus", "status"), ("peopleRemarks", "remark")):
-            if key in data:
-                for name, value in data[key].items():
-                    by_name[name][field] = value
-        if "relaxedShiftSettings" in data:
-            state["relaxedShiftSettings"] = deepcopy(data["relaxedShiftSettings"])
-        if "halfRestSettings" in data:
-            state["halfRestSettings"] = deepcopy(data["halfRestSettings"])
-        if "teamLeaderSettings" in data:
-            state["teamLeaderSettings"] = deepcopy(data["teamLeaderSettings"])
-        if "dutyRoster" in data:
-            incoming = deepcopy(data['dutyRoster'])
-            identity_map = {identity: by_name[name]['id'] for name, identity in data.get('peopleIds', {}).items()}
-            for key in ('dutyMemberIds', 'standbyMemberIds'):
-                incoming[key] = [identity_map.get(i, i) for i in incoming[key]]
-            for row in incoming['overrides']:
-                row['dutyMemberId'] = identity_map.get(row['dutyMemberId'], row['dutyMemberId'])
-                row['standbyMemberIds'] = [identity_map.get(i,i) for i in row['standbyMemberIds']]
-            state['dutyRoster'] = validate_duty_roster(incoming, {p['id'] for p in state['people']})
-        if "weeklyFlightPresets" in data:
-            state["weeklyFlightPresets"] = deepcopy(data["weeklyFlightPresets"])
-        if "flightLibrary" in data:
-            previous_templates = {f["flightNo"]: f for f in state["flightLibrary"]}
-            state["flightLibrary"] = deepcopy(data["flightLibrary"])
-            for flight in state["flightLibrary"]:
-                if "roleNames" not in flight and flight["flightNo"] in previous_templates:
-                    flight["roleNames"] = deepcopy(previous_templates[flight["flightNo"]]["roleNames"])
-        else:
-            remember_day(state, day)
-        with_role_membership(state)
-        day = configuration_day(data)
-        daily_settings = data.get("dayOverrides", {}).get("settings", {})
-        plan_id = str(uuid4())
-        plan = {"id": plan_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": data["rotationMinutes"], "rotationEnabled": data["rotationEnabled"], "memberIds": {}, "preview": None, "configurationSource": data["source"], "message": "完整Excel配置已载入；已新增当天计划，旧计划和正式结果保留。可直接点自动排班。"}
-        plan["balanceSettings"] = deepcopy(state["balanceSettings"])
-        self._personnel_policy(plan, state)
-        self._roster(plan, state["people"], refresh=False)
-        plan["rotationEnabled"] = daily_settings.get("rotationEnabled", plan["rotationEnabled"])
-        plan["rotationMinutes"] = daily_settings.get("rotationMinutes", plan["rotationMinutes"])
-        state["plans"][plan_id] = plan
-        state["selectedPlanId"] = plan_id
-        return {"payload": data, **history_summary, "newPeopleCount": new_people, "newQualificationCount": added, "removedQualificationCount": removed, "peopleCount": len(day["roster"]), "flightCount": len(day["flights"]), "serviceDate": day["serviceDate"], "handoffPreferenceCount": len(state["handoffPreferences"])}
 
     def preview_complete_configuration(self, payload):
-        state = deepcopy(self._load())
-        expected = state['revision']
-        result = self._apply_complete_configuration(state, payload)
-        state['revision'] = expected + 1
-        self._validate_document(state)
-        return {**result, "expectedRevision": expected}
+        return prepare_import(self._load(), payload).preview
 
-    def _configuration_history_views(self, state):
-        result = {}
-        for identity, plan in state['plans'].items():
-            versions = {}
-            scenario, _ = self._scenario(plan)
-            if scenario:
-                versions['草稿'] = (scenario, plan['draft'])
-            if plan.get('adopted') and plan['adopted'].get('scenario'):
-                formal = plan['adopted']
-                versions['正式'] = (scenario_from_dict(formal['scenario']), formal['assignments'])
-            result[identity] = {}
-            for version, (scenario, assignments) in versions.items():
-                flights = {f.id: f.flight_no for f in scenario.flights}
-                result[identity][version] = {'serviceDate': scenario.service_date,
-                    'members': [{'id': m.id, 'name': m.name} for m in scenario.members],
-                    'tasks': [{'id': t.id, 'roleId': t.role_id, 'flightNos': [flights[f] for f in task_flight_ids(t)],
-                               'start': format_minutes(t.start), 'end': format_minutes(t.end)} for t in scenario.tasks],
-                    'assignments': assignments}
-        return result
 
     def export_complete_configuration(self, plan_id=None, service_date=None):
-        state = self._load()
-        history = {"formatVersion": 2, "state": deepcopy(state)}
-        state["people"] = [p for p in state["people"] if not p.get("deleted", False)]
-        current_ids = {p["id"] for p in state["people"]}
-        for key in ('dutyMemberIds', 'standbyMemberIds'):
-            state['dutyRoster'][key] = [i for i in state['dutyRoster'][key] if i in current_ids]
-        for row in state['dutyRoster']['overrides']:
-            if row['dutyMemberId'] not in current_ids: row['dutyMemberId'] = None
-            row['standbyMemberIds'] = [i if i in current_ids else None for i in row['standbyMemberIds']]
-        state["balanceSettings"]["priorityAdjustments"] = [a for a in state["balanceSettings"]["priorityAdjustments"] if a["memberId"] in current_ids]
-        plan_id = plan_id or state['selectedPlanId']
-        if plan_id is not None and plan_id not in state['plans']:
-            raise WorkspaceError('当天计划不存在，请刷新页面')
-        if plan_id is None:
-            day = {'serviceDate': service_date or date.today().isoformat(), 'title': '登机口配置',
-                'roleNames': [r['roleName'] for r in state['configuration']['roleConfigs']],
-                'flights': [], 'cells': [], 'remarks': [], 'roster': [], 'memberConfigs': [],
-                'memberAvailability': [], 'roleConfigs': deepcopy(state['configuration']['roleConfigs']),
-                'extraOccupancies': [], 'remarksReviewed': True, 'releasePolicy': 'task', 'attendanceMode': 'duty',
-                'transitionMinutes': state['configuration']['transitionMinutes']}
-            plan = {'day': day, 'memberIds': {}, 'rotationEnabled': state['configuration']['rotationEnabled'],
-                    'rotationMinutes': state['configuration']['rotationMinutes']}
-        else:
-            plan = state['plans'][plan_id]
-        # Export latest maintained configuration, even if today's draft was not rerun.
-        export_plan = deepcopy(plan)
-        self._roster(export_plan, state["people"], refresh=True)
-        day = export_plan["day"]
-        saved_day = deepcopy(day)
-        # refresh above only normalizes stable identities; daily qualifications remain explicit.
-        renames = {name: next((p["name"] for p in state["people"] if p["id"] == identity), name) for name, identity in plan.get("memberIds", {}).items()}
-        saved_day["memberConfigs"] = [{**deepcopy(m), "memberName": renames.get(m["memberName"], m["memberName"])} for m in plan["day"]["memberConfigs"]]
-        config = state["configuration"]
-        day["roleNames"] = list(dict.fromkeys([*day["roleNames"], *(r["roleName"] for r in config["roleConfigs"])]))
-        roles = {r["roleName"]: r for r in day["roleConfigs"]}
-        roles.update({r["roleName"]: _new_role_config(r) for r in config["roleConfigs"]})
-        day["roleConfigs"] = list(roles.values())
-        day["roster"] = [p["name"] for p in state["people"]]
-        day["memberConfigs"] = [{"memberName": p["name"], "eligibleRoleNames": [r for r in p["eligibleRoleNames"] if r in day["roleNames"]]} for p in state["people"]]
-        available = {a["memberName"]: a for a in day["memberAvailability"]}
-        day["memberAvailability"] = [{**available.get(p["name"], {"memberName": p["name"], "participating": False, "availableFrom": None, "availableUntil": None}), **({"participating": False} if personnel_status(p) != "正常" else {})} for p in state["people"]]
-        # Configuration represents today's maintained roster; retired identities
-        # remain only in the original plans and full backups, never active locks.
-        live_names = set(day["roster"])
-        previous_cells = {c.id: c for c in imported_day_from_dict(day).cells}
-        source_day = imported_day_from_dict(day)
-        for cell in day["cells"]:
-            if set(cell["internalNames"]) - live_names:
-                demand = imported_required_count(source_day, previous_cells[cell["id"]])
-                if cell.get("requiredCountOverride") is None and demand is not None:
-                    cell["requiredCountOverride"] = demand
-                cell["internalNames"] = [n for n in cell["internalNames"] if n in live_names]
-                cell["rawValue"] = "/".join([*cell["internalNames"], *cell["externalLabels"]])
-                if len(cell["internalNames"]) < 2:
-                    cell["semantics"] = "external" if cell["externalLabels"] else "single" if cell["internalNames"] else "empty"
-            cell["fixedMemberNames"] = [n for n in cell.get("fixedMemberNames", []) if n in live_names]
-        for entry in day["extraOccupancies"]:
-            entry["memberNames"] = [n for n in entry["memberNames"] if n in live_names]
-        day["extraOccupancies"] = [entry for entry in day["extraOccupancies"] if entry["memberNames"]]
-        for entry in day["remarks"]:
-            entry["people"] = [n for n in entry.get("people", []) if n in live_names]
-        for flight in day["flights"]:
-            for role in day["roleNames"]:
-                if not any(c["flightId"] == flight["id"] and c["roleName"] == role for c in day["cells"]):
-                    day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role, "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [], "requiredCountOverride": None, "workStart": None, "workEnd": None})
-        day["transitionMinutes"] = config["transitionMinutes"]
-        saved_roles = {r["roleName"]: _new_role_config(r) for r in saved_day["roleConfigs"]}
-        for name, role in saved_roles.items():
-            if next((r.get("exclusiveSameFlight", False) for r in day["roleConfigs"] if r["roleName"] == name), False) and "exclusiveSameFlight" not in role:
-                role["exclusiveSameFlight"] = False
-        latest_roles = {r["roleName"]: r for r in day["roleConfigs"]}
-        latest_members = {m["memberName"]: set(m["eligibleRoleNames"]) for m in day["memberConfigs"]}
-        qualifications = [{"memberName": m["memberName"], "roleName": role, "qualified": role in m["eligibleRoleNames"]}
-                          for m in saved_day["memberConfigs"] if m["memberName"] in latest_members for role in plan["day"]["roleNames"]
-                          if (role in m["eligibleRoleNames"]) != (role in latest_members[m["memberName"]])]
-        daily_settings = {"rotationEnabled": plan["rotationEnabled"], "rotationMinutes": plan["rotationMinutes"], "transitionMinutes": saved_day["transitionMinutes"]}
-        base_settings = {k: config[k] for k in daily_settings}
-        overrides = {"roleConfigs": [r for name, r in saved_roles.items() if r != latest_roles[name]], "qualifications": qualifications, "settings": daily_settings if daily_settings != base_settings else {}}
-        return export_complete_configuration({"history": history, "day": day, "dayOverrides": overrides, "peopleStatus": {p["name"]: p.get("status", "正常") for p in state["people"]}, "peopleRemarks": {p["name"]: p.get("remark", "") for p in state["people"]}, "peopleActive": {p["name"]: p["active"] for p in state["people"]}, "peopleTeamLeaders": {p["name"]: p.get("teamLeader", False) for p in state["people"]}, "teamLeaderSettings": state["teamLeaderSettings"], "halfRestSettings": state["halfRestSettings"], "relaxedShiftSettings": state["relaxedShiftSettings"], "dutyRoster": state["dutyRoster"], "peopleIds": {p["name"]: p["id"] for p in state["people"]}, "balanceSettings": state["balanceSettings"], "handoffPreferences": state["handoffPreferences"], "displayPreferences": state["displayPreferences"], "flightLibrary": state["flightLibrary"], "weeklyFlightPresets": state.get("weeklyFlightPresets", {}), "rotationEnabled": config["rotationEnabled"], "rotationMinutes": config["rotationMinutes"], "source": plan.get("configurationSource", "当前最新长期配置，含当天航班与例外")}, history_schedules=self._configuration_history_views(history["state"]))
+        return prepare_export(self._load(), plan_id, service_date).excel()
 
     def qualification_configuration(self):
         state = self._load()
@@ -1169,7 +829,7 @@ class Workbench:
         plan = state['plans'].get(state.get('selectedPlanId'))
         if not plan or not (plan['draft'] or plan.get('lastEdit')):
             return None
-        scenario, _ = self._scenario(plan)
+        scenario, _ = plan_scenario(plan)
         if scenario is None:
             return None
         return {'scenario': scenario_to_dict(scenario), 'assignments': plan['draft']}
@@ -1212,12 +872,12 @@ class Workbench:
         if backup.get("formatVersion") == 1:
             candidate = self._migrate_legacy(backup["state"])
         elif backup.get("formatVersion") == 2:
-            candidate = self._with_configuration(deepcopy(backup["state"]))
+            candidate = with_configuration(deepcopy(backup["state"]))
         else:
             raise WorkspaceError("备份版本不支持；当前数据未改变")
         if candidate.get("stateVersion") != 2 or candidate.get("timeVersion") != 2:
             raise WorkspaceError("数据或时间版本不支持")
-        self._validate_document(candidate)
+        validate_document(candidate)
         return candidate
 
     def preview_restore(self, backup):
@@ -1239,156 +899,11 @@ class Workbench:
                     plan.pop("undoEdit", None)
         return self._commit(candidate, expected)
 
-    def _validate_document(self, state, *, validate_undo=True):
-        if not isinstance(state, dict):
-            raise WorkspaceError("工作台数据必须为对象")
-        if state.get("stateVersion") != 2 or state.get("timeVersion") != 2:
-            raise WorkspaceError("数据或时间版本不支持")
-        if not isinstance(state["people"], list) or not isinstance(state["plans"], dict):
-            raise WorkspaceError("人员或计划结构无效")
-        if "trialInfo" in state:
-            notice = state["trialInfo"]
-            if not isinstance(notice, dict) or any(not isinstance(notice.get(key), str) or not notice[key].strip() for key in ("label", "source")) or not isinstance(notice.get("assumptions"), list) or any(not isinstance(item, str) or not item.strip() for item in notice["assumptions"]):
-                raise WorkspaceError("试用数据说明无效")
-        self._with_configuration(state)
-        seed_library(state)
-        validate_library(state["flightLibrary"])
-        with_role_membership(state)
-        self._with_preferences(state)
-        validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {f["flightNo"] for f in state["flightLibrary"]} | {f["flightNo"] for p in state["plans"].values() for f in p["day"]["flights"]})
-        validate_display_preferences(state["displayPreferences"])
-        validate_weekly_flights(state.get("weeklyFlightPresets", {}))
-        validate_balance_settings(state["balanceSettings"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
-        validate_team_leader_settings(state["teamLeaderSettings"])
-        validate_half_rest_settings(state["halfRestSettings"])
-        validate_relaxed_shift_settings(state["relaxedShiftSettings"])
-        validate_duty_roster(state['dutyRoster'], {p['id'] for p in state['people']})
-        config = state["configuration"]
-        BaggageRotationSettings(config["rotationEnabled"], config["rotationMinutes"])
-        if type(config["transitionMinutes"]) is not int or not 0 <= config["transitionMinutes"] <= 180:
-            raise WorkspaceError("基础走动预留无效")
-        roles = config["roleConfigs"]
-        if not isinstance(roles, list) or len(roles) != len({r["roleName"] for r in roles}):
-            raise WorkspaceError("基础岗位重复或无效")
-        for role in roles:
-            ImportedRoleConfig(role["roleName"], role["requiredCount"], role.get("workMode", "timed"), role.get("concurrent", False), role.get("exclusiveSameFlight", False))
-            count = role["requiredCount"]
-            if not isinstance(role["roleName"], str) or not role["roleName"].strip() or (count is not None and (type(count) is not int or count < 0)):
-                raise WorkspaceError("基础岗位名称或人数无效")
-        if type(state["revision"]) is not int or state["revision"] < 0 or (state["selectedPlanId"] is not None and state["selectedPlanId"] not in state["plans"]):
-            raise WorkspaceError("工作台版本或选中计划无效")
-        ids = [p["id"] for p in state["people"]]
-        names = [p["name"] for p in state["people"] if not p.get("deleted", False)]
-        if len(ids) != len(set(ids)) or len(names) != len(set(names)):
-            raise WorkspaceError("人员身份重复")
-        for person in state["people"]:
-            validate_personnel_details(person.get("status", "正常"), person.get("remark", ""))
-            if type(person.get("deleted", False)) is not bool:
-                raise WorkspaceError("人员删除标记无效")
-            if type(person.get("teamLeader", False)) is not bool:
-                raise WorkspaceError("分队长开关必须是布尔值")
-            if not isinstance(person["id"], str) or not person["id"] or not isinstance(person["name"], str) or not person["name"].strip() or type(person["active"]) is not bool or not isinstance(person["eligibleRoleNames"], list) or any(not isinstance(r, str) or not r.strip() for r in person["eligibleRoleNames"]):
-                raise WorkspaceError("人员结构无效")
-        for plan_id, plan in state["plans"].items():
-            statuses = plan.get("personnelStates", {})
-            if not isinstance(statuses, dict) or any(not isinstance(k, str) or not k or v not in MEMBER_STATUSES for k, v in statuses.items()):
-                raise WorkspaceError("当天人员状态快照无效")
-            validate_team_leader_settings(plan.get("teamLeaderSettings", default_team_leader_settings()))
-            validate_half_rest_settings(plan.get("halfRestSettings", default_half_rest_settings()))
-            leaders = plan.get("teamLeaderIds", [])
-            if not isinstance(leaders, list) or any(not isinstance(v, str) or not v for v in leaders) or len(set(leaders)) != len(leaders):
-                raise WorkspaceError("当天分队长身份列表无效")
-            undo = plan.get("undoEdit")
-            if "undoEdit" in plan and not isinstance(undo, dict):
-                raise WorkspaceError("撤销记录无效，原数据保留")
-            changed = plan.get("lastEdit", {})
-            if not isinstance(changed, dict) or any(not isinstance(changed.get(k, []), list) or any(not isinstance(v, str) for v in changed.get(k, [])) for k in ("taskIds", "cellIds")):
-                raise WorkspaceError("编辑反馈记录无效，原数据保留")
-            if undo and validate_undo:
-                if not isinstance(undo, dict) or type(undo.get("atRevision")) is not int or not 0 <= undo["atRevision"] <= state["revision"] or not isinstance(undo.get("before"), dict) or set(undo["before"]) != {"day", "inputRevision", "draft", "preview", "cellDrafts"}:
-                    raise WorkspaceError("撤销记录无效，原数据保留")
-                shadow = deepcopy(state)
-                for value in shadow["plans"].values():
-                    value.pop("undoEdit", None)
-                shadow["plans"][plan_id].update(deepcopy(undo["before"]))
-                self._validate_document(shadow, validate_undo=False)
-            if plan["id"] != plan_id or type(plan["inputRevision"]) is not int:
-                raise WorkspaceError("计划身份或版本无效")
-            day = imported_day_from_dict(plan["day"])
-            if "balanceSettings" in plan:
-                validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"]
-                    + [r['roleName'] for r in plan['balanceSettings'].get('priorityFlightRoles', [])]
-                    + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
-            BaggageRotationSettings(plan["rotationEnabled"], plan["rotationMinutes"])
-            _validate_day_structure(day)
-            pending = plan.get("cellDrafts", {})
-            if not isinstance(pending, dict) or set(pending) - {c.id for c in day.cells}:
-                raise WorkspaceError("待完善姓名格引用无效")
-            for text in pending.values():
-                if not self._typed_names(plan, text):
-                    raise WorkspaceError("待完善姓名格不能为空")
-            scenario, _ = self._scenario(plan)
-            draft = _assignments(plan["draft"])
-            if draft and scenario is None:
-                raise WorkspaceError("草稿没有有效任务资料")
-            if scenario:
-                if any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in draft):
-                    raise WorkspaceError("草稿引用未知任务或人员")
-            if plan.get("preview"):
-                preview = plan["preview"]
-                return_id = preview.get("returnPlanId")
-                if return_id is not None and (not isinstance(return_id, str) or return_id == plan_id or return_id not in state["plans"] or state["plans"][return_id]["day"]["serviceDate"] != day.service_date):
-                    raise WorkspaceError("预览返回方案无效")
-                if preview["inputRevision"] != plan["inputRevision"]:
-                    raise WorkspaceError("预览与当前输入版本不一致")
-                previous = _assignments(preview["previousDraft"])
-                if not scenario or any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in previous):
-                    raise WorkspaceError("预览中的原草稿引用未知任务或人员")
-            adopted = plan["adopted"]
-            if adopted:
-                if 'dutyMemberId' in adopted and adopted['dutyMemberId'] is not None and adopted['dutyMemberId'] not in ids:
-                    raise WorkspaceError('正式结果值班身份无效')
-                if "savedRevision" in adopted and (type(adopted["savedRevision"]) is not int or adopted["savedRevision"] < 0):
-                    raise WorkspaceError("正式结果归档版本无效")
-                warning_archive = 'archiveVersion' in adopted
-                if warning_archive and (type(adopted['archiveVersion']) is not int or adopted['archiveVersion'] != 1 or not isinstance(adopted.get('issues'), list)):
-                    raise WorkspaceError('归档问题快照版本或问题清单无效')
-                formal = scenario_from_dict(adopted["scenario"]) if adopted.get('scenario') else None
-                assignments = _assignments(adopted['assignments'])
-                if assignments and (not formal or any(a.task_id not in {t.id for t in formal.tasks} or a.member_id not in {m.id for m in formal.members} for a in assignments)):
-                    raise WorkspaceError('归档引用未知任务或人员')
-                issues = validate_schedule(formal, assignments) if formal else []
-                if not warning_archive and (issues or formal is None):
-                    raise WorkspaceError("正式结果无效：" + "；".join(i.message for i in issues))
-                if warning_archive or not adopted.get("legacyOriginal"):
-                    reference = {"day": adopted["day"], "memberIds": adopted["memberIds"], "rotationMinutes": adopted["rotationMinutes"], "rotationEnabled": adopted["rotationEnabled"]}
-                    _validate_day_structure(imported_day_from_dict(reference['day']))
-                    BaggageRotationSettings(reference['rotationEnabled'], reference['rotationMinutes'])
-                    if "balanceSettings" in adopted:
-                        reference["balanceSettings"] = adopted["balanceSettings"]
-                    for key in ("teamLeaderSettings", "teamLeaderIds", "personnelStates", "halfRestSettings"):
-                        if key in adopted:
-                            reference[key] = adopted[key]
-                    if warning_archive:
-                        reference['draft'] = adopted['assignments']
-                        reference['cellDrafts'] = adopted.get('cellDrafts', {})
-                        if not isinstance(reference['cellDrafts'], dict) or set(reference['cellDrafts']) - {c['id'] for c in reference['day']['cells']}:
-                            raise WorkspaceError('归档待完善姓名格引用无效')
-                        for text in reference['cellDrafts'].values():
-                            if not self._typed_names(reference, text):
-                                raise WorkspaceError('归档待完善姓名格不能为空')
-                        rebuilt, problems = self._archive_review(reference)
-                        if problems != adopted['issues']:
-                            raise WorkspaceError('归档问题清单与原安排不一致')
-                    else:
-                        rebuilt, problems = self._scenario(reference)
-                    if (problems and not warning_archive) or rebuilt != formal:
-                        raise WorkspaceError("正式结果与采用输入快照不一致")
 
     def _migrate_legacy(self, old):
         raw, assignments, mapping = normalize_saved_scenario(old["scenario"], old["assignments"])
         scenario = scenario_from_dict(raw)
-        issues = validate_schedule(scenario, _assignments(assignments))
+        issues = validate_schedule(scenario, read_assignments(assignments))
         if issues:
             raise WorkspaceError("旧结果无法合法迁移：" + "；".join(i.message for i in issues))
         imported = old.get("importedDay")
@@ -1396,7 +911,7 @@ class Workbench:
         interval, enabled = settings.get("intervalMinutes", 60), settings.get("enabled", True)
         linked = False
         if imported is not None and scenario.model_version == "imported-day-v1":
-            rebuilt, problems = self._scenario({"day": imported, "rotationMinutes": interval, "rotationEnabled": enabled, "memberIds": {}})
+            rebuilt, problems = plan_scenario({"day": imported, "rotationMinutes": interval, "rotationEnabled": enabled, "memberIds": {}})
             linked = not problems and rebuilt == scenario
         day = imported if linked else {"serviceDate": scenario.service_date, "title": "旧版独立正式快照", "flights": [], "roleNames": [], "cells": [], "remarks": [], "roster": [], "remarksReviewed": True}
         day = imported_day_to_dict(imported_day_from_dict(day))
@@ -1413,9 +928,9 @@ class Workbench:
         if not plan or not plan["adopted"]:
             raise WorkspaceError("尚无归档班表，请先采用保存；可以保留问题归档和导出")
         formal = plan["adopted"]
-        self._validate_document(self._load())
+        validate_document(self._load())
         scenario = scenario_from_dict(formal["scenario"]) if formal.get('scenario') else None
-        assignments = _assignments(formal["assignments"])
+        assignments = read_assignments(formal["assignments"])
         if formal.get('archiveVersion') == 1:
             from .excel_io import export_archived_schedule
             return export_archived_schedule(formal['day'], scenario, assignments, formal['issues'], formal.get('cellDrafts', {}))
@@ -1424,14 +939,14 @@ class Workbench:
     def candidates(self, plan_id, task_id, slot=0):
         state = self._load()
         plan = state["plans"][plan_id]
-        scenario, issues = self._scenario(plan)
+        scenario, issues = plan_scenario(plan)
         if issues or scenario is None:
             return []
         return self._candidate_roster(state, plan, scenario, task_id, slot)
 
     @staticmethod
     def _candidate_roster(state, plan, scenario, task_id, slot):
-        draft = _assignments(plan["draft"])
+        draft = read_assignments(plan["draft"])
         result = []
         options = {option["name"]: option for option in candidate_options(scenario, draft, task_id, slot)}
         for name in plan["day"].get("roster", []):
@@ -1454,7 +969,7 @@ class Workbench:
                      "reasons": reasons, "issues": [], "revision": state["revision"],
                      "requiresConfiguration": True} for name in plan["day"]["roster"]]
 
-        scenario, issues = self._scenario(plan)
+        scenario, issues = plan_scenario(plan)
         segments = task_matrix(scenario, ()).get(cell["roleName"], {}).get(cell["flightNo"], []) if scenario else []
         if len(segments) > 1:
             return unchecked(["请在岗位详情中选择具体轮换段，再检查人选"])
@@ -1466,7 +981,7 @@ class Workbench:
                 return unchecked(["请先确认大件岗位需求及轮换段，再逐段检查人选"])
             existing_tasks = {task.id: task for task in scenario.tasks} if scenario else {}
             cell["requiredCountOverride"] = 1
-            scenario, issues = self._scenario(plan)
+            scenario, issues = plan_scenario(plan)
             new_tasks = {task.id: task for task in scenario.tasks} if scenario else {}
             if scenario and any(new_tasks.get(key) != task for key, task in existing_tasks.items()):
                 return unchecked(["临时岗位会改变原方案的任务分段，请先确认岗位需求，再检查人选"])
@@ -1489,18 +1004,18 @@ class Workbench:
         if payload.get("expectedRevision", state["revision"]) != state["revision"]:
             raise WorkspaceError("班表已改变，请重新选择人员")
         plan = deepcopy(state["plans"][plan_id])
-        scenario, _ = self._scenario(plan)
+        scenario, _ = plan_scenario(plan)
         try:
             if "cellId" in payload:
                 self._edit_cell(plan, payload)
             else:
                 if scenario is None:
                     raise WorkspaceError("请先完成当天航班与人员准备，原安排保留")
-                plan["draft"] = _assignment_data(replace_slot(scenario, _assignments(plan["draft"]), payload["taskId"], payload["slot"], payload.get("memberId", "")))
+                plan["draft"] = _assignment_data(replace_slot(scenario, read_assignments(plan["draft"]), payload["taskId"], payload["slot"], payload.get("memberId", "")))
         except (ValueError, TypeError) as error:
             return {"valid": False, "revision": state["revision"], "issues": [{"code":"edit", "message":str(error), "taskId":payload.get("taskId"), "memberId":None, "relatedTaskIds":[]}], "suggestions":name_suggestions(payload.get("text", ""), plan["day"].get("roster", []))}
-        scenario, issues = self._scenario(plan)
+        scenario, issues = plan_scenario(plan)
         if scenario:
-            issues += issue_data(scenario, validate_schedule(scenario, _assignments(plan["draft"])))
-        issues += self._pending_issues(plan)
+            issues += issue_data(scenario, validate_schedule(scenario, read_assignments(plan["draft"])))
+        issues += pending_issues(plan)
         return {"valid": bool(scenario and scenario.tasks) and not issues, "revision":state["revision"], "issues":issues, "suggestions":[]}

@@ -6,7 +6,7 @@ from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available, scarce_role_groups, half_rest_period_violation
+from .domain import member_available, scarce_role_groups, half_rest_period_violation, task_coverage_priority, COVERAGE_PRIORITIES
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
@@ -115,12 +115,15 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
             if _eligible(scenario, member, task):
                 variables[member.id, task.id] = model.new_bool_var(f"assign_{member.id}_{task.id}")
 
-    vacancies = []
+    coverage_terms = {priority: [] for priority in COVERAGE_PRIORITIES}
+    coverage_bounds = {priority: 0 for priority in COVERAGE_PRIORITIES}
     for task in scenario.tasks:
         candidates = [variable for (member_id, task_id), variable in variables.items() if task_id == task.id]
         if allow_partial:
             missing = model.new_int_var(0, task.required_count, f"missing_{task.id}")
-            vacancies.append(missing)
+            priority = task_coverage_priority(scenario, task)
+            coverage_terms[priority].append(missing)
+            coverage_bounds[priority] += task.required_count
             model.add(sum(candidates) + missing == task.required_count)
         else:
             model.add(sum(candidates) == task.required_count)
@@ -274,19 +277,23 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         leader_ids = {m.id for m in scenario.members if m.team_leader}
         leader_choices = [v for (member, _), v in variables.items() if member in leader_ids]
         priority_costs = ((sum(leader_choices), len(leader_choices)), *priority_costs)
+    # Each coverage tier outranks all following tiers and existing preferences.
+    # Equal-tier tasks share a sum; no incidental flight/role ordering is added.
+    coverage_costs = tuple((sum(coverage_terms[p]), coverage_bounds[p]) for p in COVERAGE_PRIORITIES if coverage_bounds[p])
+    priority_costs = (*coverage_costs, *priority_costs)
     for cost, bound in reversed(priority_costs):
         if bound:
             weight = preference_bound + 1
             objective += weight * cost
             preference_bound += weight * bound
-    weighted_bound = (preference_bound + 1) * sum(task.required_count for task in scenario.tasks) + preference_bound
+    weighted_bound = preference_bound
     if weighted_bound > 2 ** 60:
         # Large real models cannot encode every priority in one 64-bit weight.
         # Optimize the same tiers in order, fixing each proven optimum, within
         # the original total time budget; a timeout retains the last safe result.
-        objectives = ([sum(vacancies)] if vacancies else []) + [cost for cost, bound in priority_costs if bound] + [base_objective]
+        objectives = [cost for cost, bound in priority_costs if bound] + [base_objective]
     else:
-        objectives = [(preference_bound + 1) * sum(vacancies) + objective]
+        objectives = [objective]
     solver = cp_model.CpSolver()
     if control:
         control.stage("计算人员安排")

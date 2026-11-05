@@ -1,4 +1,4 @@
-import { html, type State, type Day, type Flight, type Cell, type FlightTemplate } from "./workbench-model";
+import { html, type State, type FlightTemplate } from "./workbench-model";
 import { handoffPreferences, bindHandoffPreferences } from "./handoff-preferences";
 
 export function templatePositions(state: State, mode: (role: State["configuration"]["roleConfigs"][number]) => string): string {
@@ -62,42 +62,6 @@ export function bindTemplateConfig(root: HTMLElement, state: State, save: (actio
     void save("save-flight-template", flight);
   });
   root.querySelectorAll<HTMLButtonElement>("[data-copy-template]").forEach(button => button.onclick = () => openCopy(button.dataset.copyTemplate!));
-}
-
-export function prepareWithConfiguration(day: Day, state: State, newCell: (flight: Flight, role: string) => Cell, useTemplates: boolean): void {
-  for (const person of state.people.filter(p => p.active)) {
-    if (!day.roster.includes(person.name)) day.roster.push(person.name);
-    let member = day.memberConfigs.find(m => m.memberName === person.name);
-    if (!member) { member = { memberName: person.name, eligibleRoleNames: [...person.eligibleRoleNames] }; day.memberConfigs.push(member); }
-    else if (useTemplates) member.eligibleRoleNames = [...person.eligibleRoleNames];
-    if (!day.memberAvailability.some(a => a.memberName === person.name)) day.memberAvailability.push({ memberName: person.name, participating: false, availableFrom: null, availableUntil: null });
-  }
-  for (const entry of day.memberAvailability) if (!state.people.some(p => p.active && (p.status ?? "正常") === "正常" && p.name === entry.memberName)) entry.participating = false;
-  const defaults = state.configuration.roleConfigs.map(r => structuredClone(state.newRoleDefaults[r.roleName] ?? r));
-  day.roleConfigs = useTemplates ? defaults : [...day.roleConfigs, ...defaults.filter(r=>!day.roleConfigs.some(existing=>existing.roleName===r.roleName))];
-  for (const role of day.roleConfigs) {
-    if (!day.roleNames.includes(role.roleName)) day.roleNames.push(role.roleName);
-    for (const flight of day.flights) if (!day.cells.some(c => c.flightId === flight.id && c.roleName === role.roleName)) {
-      const cell = newCell(flight, role.roleName);
-      const template = state.flightLibrary.find(f => f.flightNo === flight.flightNo);
-      if (template?.roleNames && !template.roleNames.includes(role.roleName)) cell.requiredCountOverride = 0;
-      day.cells.push(cell);
-    }
-  }
-  if (!useTemplates) return;
-  day.transitionMinutes = state.configuration.transitionMinutes;
-  for (const flight of day.flights) {
-    const template = state.flightLibrary.find(f => f.flightNo === flight.flightNo);
-    if (!template) continue;
-    flight.windowStart = template.windowStart; flight.windowEnd = template.windowEnd;
-    for (const cell of day.cells.filter(c => c.flightId === flight.id)) {
-      const role = template.roles?.find(r => r.roleName === cell.roleName);
-      const included = !template.roleNames || template.roleNames.includes(cell.roleName);
-      cell.requiredCountOverride = included ? role?.requiredCount ?? null : 0;
-      cell.workModeOverride = included ? role?.workModeOverride ?? null : null;
-      cell.workStart = included ? role?.workStart ?? null : null; cell.workEnd = included ? role?.workEnd ?? null : null;
-    }
-  }
 }
 
 export function templateForm(flight?: FlightTemplate): string {

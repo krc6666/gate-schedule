@@ -380,6 +380,7 @@ class Scenario:
     balance_exempt_team_leaders: bool = True
     balance_exempt_half_rest: bool = True
     priority_flight_roles: tuple[tuple[str, str], ...] = ()
+    coverage_priorities: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, order=True)
@@ -391,6 +392,29 @@ class Assignment:
 def task_flight_ids(task: Task) -> tuple[str, ...]:
     """Actual flight identities served by one task; shared coverage takes precedence."""
     return tuple(dict.fromkeys(task.covered_flight_ids)) if task.covered_flight_ids else ((task.flight_id,) if task.flight_id is not None else ())
+
+
+COVERAGE_PRIORITIES = {'protect': '优先保岗', 'normal': '正常安排', 'leave-empty': '缺人时优先留空'}
+
+
+def validate_coverage_priorities(items, role_names=None):
+    if not isinstance(items, list):
+        raise ValueError('保岗优先级必须为列表')
+    seen = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {'roleName', 'priority'}
+                or any(not isinstance(v, str) or not v or v != v.strip() for v in item.values())
+                or item['priority'] not in COVERAGE_PRIORITIES):
+            raise ValueError('保岗优先级需明确岗位及有效档位')
+        role = item['roleName']
+        if role in seen or role_names is not None and role not in role_names:
+            raise ValueError('保岗优先级重复或引用未知岗位')
+        seen.add(role)
+
+
+def task_coverage_priority(scenario: Scenario, task: Task) -> str:
+    """One role policy applies across flights, shared tasks and rotation segments."""
+    return dict(scenario.coverage_priorities).get(task.role_id, 'normal')
 
 
 def member_flight_participation(scenario: Scenario, assignments) -> dict[str, frozenset[str]]:
@@ -524,7 +548,8 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
     from datetime import date
     import re
 
-    if not isinstance(value, dict) or set(value) not in (set(default_balance_settings()), set(default_balance_settings()) | {'priorityFlightRoles'}):
+    required = set(default_balance_settings())
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'priorityFlightRoles', 'coveragePriorities'}:
         raise ValueError("重点轮换与航班数设置字段不完整或未知")
     gap = value["flightCountGap"]
     if gap is not None and (type(gap) is not int or gap < 0):
@@ -533,6 +558,8 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
         raise ValueError("重点岗位轮换开关必须是布尔值")
     roles = value["priorityRoleNames"]
     catalog = set(role_names)
+    if 'coveragePriorities' in value:
+        validate_coverage_priorities(value['coveragePriorities'], catalog)
     if 'priorityFlightRoles' in value:
         validate_priority_flight_roles(value['priorityFlightRoles'], catalog)
     if (not isinstance(roles, list)

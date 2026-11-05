@@ -17,7 +17,9 @@ async function until(fn, label) {
   throw new Error(`等待超时：${label}`);
 }
 
-test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采用换人、备份恢复与正式导出", { timeout: 360000 }, async t => {
+// This flow includes all configuration transfers, server restarts and fourteen
+// browser subtests. Keep each wait bounded while allowing the complete suite to finish.
+test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采用换人、备份恢复与正式导出", { timeout: 600000 }, async t => {
   assert.ok(chrome, "需要 Chrome/Edge");
   assert.ok(existsSync(python), "先按 README 创建 .venv-local，或设置 GATE_TEST_PYTHON");
   const temporaryRoot = join(repo, ".tmp");

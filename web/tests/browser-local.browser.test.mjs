@@ -53,9 +53,9 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
     catch(error) { throw Error(String(error)+"; "+await evaluate("document.body.innerText")); }
   };
   const reload=async()=>{
-    await evaluate("window.__reloadPending=true");
-    await call("Page.reload");
-    await until(()=>evaluate("!window.__reloadPending && document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000);
+    await evaluate("window.__reloadPending=true; location.reload(); true");
+    try { await until(()=>evaluate("!window.__reloadPending && document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000); }
+    catch(error) { throw Error(String(error)+'; '+await evaluate("JSON.stringify({pending:window.__reloadPending,local:document.documentElement?.dataset.gateLocal,isolated:crossOriginIsolated,text:document.body.innerText})")); }
   };
   await ready();
   assert.equal(await evaluate("crossOriginIsolated"),true);
@@ -106,6 +106,26 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   assert.equal((await state("A")).people[0].name,"网页甲");
   assert.deepEqual((await state("A")).plans[planId].adopted.assignments,imported.plans[planId].draft);
   assert.deepEqual((await report("priority-statistics?month=2026-08")).roles,priority.roles);
+  await click('[data-view="rules"]');
+  assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'新设置不得替用户预选岗位');
+  await evaluate('document.querySelector("#coverage-priority-rules").open=true');
+  await click('[data-coverage-role="登机主验"][data-coverage-priority="protect"]');
+  await click('#save-rules');
+  await until(async()=> (await state('A')).balanceSettings.coveragePriorities?.some(i=>i.roleName==='登机主验'&&i.priority==='protect'),'保岗勾选真实保存');
+  await until(()=>evaluate('!document.querySelector("#save-rules").disabled'),'保存完成');
+  const bBalance=(await state('B')).balanceSettings;
+  await command('B','update-balance-settings',{balanceSettings:{...bBalance,coveragePriorities:[{roleName:'登机主验',priority:'leave-empty'}]}});
+  await reload();
+  await click('[data-view="rules"]');
+  assert.equal(await evaluate('document.querySelector("[data-coverage-role=登机主验][data-coverage-priority=protect]").checked'),true,'刷新后保岗勾选保持');
+  await evaluate('document.querySelector("#coverage-priority-rules").open=true');
+  for(const width of [1440,390]){
+    await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<500});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,'优先级勾选不撑宽页面');
+    assert.equal(await evaluate('[...document.querySelectorAll("[data-coverage-role]")].every(el=>el.getBoundingClientRect().right<=innerWidth)'),true,'小屏同时看得到两列勾选，无需横向找控件');
+    await writeFile(join(repo,`.tmp/coverage-rules-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  }
+  await call('Emulation.clearDeviceMetricsOverride');
   // Export through the actual sidebar, then start with empty browser storage.
   await click("#export-complete-configuration");
   const exported=await until(async()=>{const names=await readdir(directory);return names.find(n=>n.endsWith('.xlsx'))},"实际配置下载");
@@ -131,6 +151,7 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   const normalizedPeople=people=>people.map(p=>({teamLeader:false,status:"正常",remark:"",...p}));
   assert.deepEqual(normalizedPeople(restoredA.people),normalizedPeople(savedA.people));
   assert.deepEqual(restoredA.balanceSettings,savedA.balanceSettings);
+  assert.deepEqual(restoredB.balanceSettings.coveragePriorities,[{roleName:'登机主验',priority:'leave-empty'}],'另一组相反选择随文件迁移');
   assert.deepEqual(restoredA.dutyRoster,savedA.dutyRoster);
   assert.deepEqual(restoredA.plans[planId].adopted,savedA.plans[planId].adopted);
   assert.deepEqual(normalizedPeople(restoredB.people),normalizedPeople(savedB.people));

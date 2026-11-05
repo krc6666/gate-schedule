@@ -1,49 +1,49 @@
 import { groupFetch, selectApiGroup } from "./group-api";
-import { relaxedSummaryHtml, bindRelaxedRules, bindRelaxedStatistics, type RelaxedSettings } from "./relaxed-shifts";
+import { relaxedSummaryHtml, bindRelaxedRules, bindRelaxedStatistics } from "./relaxed-shifts";
+import { WorkbenchEdits } from "./workbench-edits";
 import { halfRestSelector, bindHalfRest, syncHalfRest, halfRestLabel } from "./half-rest";
 import { statisticsPage, bindDutyStatistics } from "./duty-statistics";
 import { bindRulesSearch } from "./rules-view";
 import "./workbench.css";
 import { runSchedule } from "./schedule-run";
 import { flightGrid, flightHeader, shareSheet, sharedBaggageGroups } from "./schedule-layout";
-import { bindTemplateConfig, prepareWithConfiguration, templateForm, flightLibraryHtml } from "./template-config";
+import { bindTemplateConfig, templateForm, flightLibraryHtml } from "./template-config";
 import { bindHandoffPreferences } from "./handoff-preferences";
-import { weeklyFlightsHtml, bindWeeklyFlights, addTemplates, weekdayOf } from "./weekly-flights";
+import { weeklyFlightsHtml, bindWeeklyFlights } from "./weekly-flights";
+import { startPreparation, loadPreparationConfiguration, applyWeeklyFlights, copyPreparationAttendance, confirmPreparation, weekdayOf, newCell, type Preparation } from "./day-preparation";
 import { ScheduleEditor } from "./schedule-editor";
 import { ScheduleDrag } from "./schedule-drag";
 import { paletteHtml, bindPalette } from "./schedule-palette";
 import { scheduleExtras, bindScheduleExtras } from "./schedule-extras";
 import { bindPriorityStatistics } from "./priority-statistics";
 import { bindRoleStatistics } from "./role-statistics";
-import { html, type State, type Day, type Plan, type Flight, type Cell, type Candidate, type BalanceSettings, type QualificationImport, type CompleteConfigurationImport } from "./workbench-model";
+import { html, type State, type Day, type Plan, type Flight, type Candidate, type BalanceSettings, type QualificationImport, type CompleteConfigurationImport } from "./workbench-model";
 import { configPage, flightsPage, rulesPage, historyPage, modal } from "./workbench-pages";
 
 type Section = "config" | "flights" | "schedule" | "rules" | "statistics" | "history";
 type DragSource = { memberId: string; taskIds: string[]; planId: string; revision: number };
-type Dialog = ({ kind: "prepare"; mode: "reschedule" | "archive"; day: Day; selected: Set<string> } | { kind: "template"; flightNo?: string } | { kind: "copy-template"; sourceNo: string } | { kind: "move"; source: DragSource; targetIds: string[]; targetMember?: string } | { kind: "cell-settings"; cellId: string } | { kind: "assignment"; role: string; column: string; taskIds?: string[] } | { kind: "complete-configuration"; preview: CompleteConfigurationImport } | { kind: "person"; personId: string | null } | { kind: "role" } | { kind: "flight" } | { kind: "qualification-import"; preview: QualificationImport } | { kind: "qualification"; role: string; scope: "base" | "day"; selected: Set<string> }) & { fields?: Record<string, string | boolean> };
+type Dialog = ({ kind: "prepare" } & Preparation | { kind: "template"; flightNo?: string } | { kind: "copy-template"; sourceNo: string } | { kind: "move"; source: DragSource; targetIds: string[]; targetMember?: string } | { kind: "cell-settings"; cellId: string } | { kind: "assignment"; role: string; column: string; taskIds?: string[] } | { kind: "complete-configuration"; preview: CompleteConfigurationImport } | { kind: "person"; personId: string | null } | { kind: "role" } | { kind: "flight" } | { kind: "qualification-import"; preview: QualificationImport } | { kind: "qualification"; role: string; scope: "base" | "day"; selected: Set<string> }) & { fields?: Record<string, string | boolean> };
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let state: State;
 let activeGroup: "A" | "B" = "A";
 let section: Section = "config";
-let editable: Day | null = null;
-let dirty = false;
 let busy = false;
 let message = "";
 let dialogError = "";
-let configurationDraft: State["configuration"] | null = null;
-let balanceDraft: BalanceSettings | null = null;
-let relaxedDraft: RelaxedSettings | null = null;
 const relaxedSelection = { month: "", query: "" };
 let disposeRelaxedStatistics = () => {};
-let halfRestDraft: State["halfRestSettings"] | null = null;
-let leaderDraft: State["teamLeaderSettings"] | null = null;
-let handoffDraft: State["handoffPreferences"] | null = null;
-let dutyDraft: State["dutyRoster"] | null = null;
 const dutySelection = { month: "" };
 let disposeDutyStatistics = () => {};
 let rulesQuery = "";
-let leavePending: ((answer: boolean) => void) | null = null;
-const hasUnsaved = () => !!(dirty || configurationDraft || balanceDraft || halfRestDraft || relaxedDraft || leaderDraft || handoffDraft || dutyDraft || cellEdits.size);
+const edits = new WorkbenchEdits({
+  context: () => ({ state, plan: plan() }),
+  execute: run,
+  validate: validateRuleInputs,
+  confirmDayChange: () => confirm("修改当天资料会清除当前草稿分配与预览，已采用结果保留。确定保存？"),
+  saveCells: flushCells,
+  changed: () => { dialogError = ""; render(); },
+});
+const hasUnsaved = () => edits.hasChanges;
 function updateSaveStatus(): void {
   const text = hasUnsaved() ? "有未保存的修改" : "已保存";
   root.querySelectorAll(".save-state, #rules-save-status").forEach(el => el.textContent = text);
@@ -57,10 +57,8 @@ let previousSection: Section | null = null;
 let dialog: Dialog | null = null;
 let selectedPaletteTarget = "";
 let disposePalette = () => {};
-let rotationDraft: { enabled: boolean; minutes: number } | null = null;
 let viewingFormal = false;
 let scheduleLayout: "flights" | "matrix" = "flights";
-const cellEdits = new Map<string, string>();
 let dragSource: DragSource | null = null;
 let placingPerson: DragSource | null = null;
 let warningMessage = false;
@@ -68,14 +66,14 @@ let editToast = false;
 let editSaved = false;
 const manualActions = new Set(["assign", "edit-cell", "edit-slot", "configure-cell", "move-assignment", "clear-draft", "undo-edit"]);
 const editor = new ScheduleEditor(root, {
-  context: () => ({ state, plan: plan()!, disabled: busy || dirty || viewingFormal || !!dialog }),
-  changed: (id, text) => { cellEdits.set(id, text); root.querySelector(".save-state")!.textContent = "姓名待保存（回车确认）"; },
+  context: () => ({ state, plan: plan()!, disabled: busy || edits.dayDirty || viewingFormal || !!dialog }),
+  changed: (id, text) => { edits.cells.set(id, text); root.querySelector(".save-state")!.textContent = "姓名待保存（回车确认）"; },
   save: saveCell,
-  cancel: id => { cellEdits.delete(id); render(); },
+  cancel: id => { edits.cells.delete(id); render(); },
   slot: (taskId, slot, memberId) => run("edit-slot", { taskId, slot, memberId }),
 });
 const pointerDrag = new ScheduleDrag<DragSource>(root, {
-  source: el => busy || dirty || viewingFormal || cellEdits.size || dialog || !plan() ? null : { memberId: el.dataset.dragMember!, taskIds: JSON.parse(el.dataset.taskIds!), planId: plan()!.id, revision: state.revision },
+  source: el => busy || edits.dayDirty || viewingFormal || edits.cells.size || dialog || !plan() ? null : { memberId: el.dataset.dragMember!, taskIds: JSON.parse(el.dataset.taskIds!), planId: plan()!.id, revision: state.revision },
   started: () => editor.dismiss(),
   drop: (source, target) => { void requestDrop(source, target.ids, target.member, target.cellId); },
 });
@@ -107,34 +105,24 @@ function markBusy(): void {
   if (busy) root.querySelectorAll<HTMLElement>("[contenteditable=true]").forEach(el => el.contentEditable = "false");
 }
 async function canLeave(): Promise<boolean> {
-  if (!hasUnsaved()) return true;
-  if (leavePending) return false;
-  return new Promise(resolve => { dialogError = ""; leavePending = resolve; render(); });
+  return edits.beforeContinue();
 }
 function discardChanges(): void {
-  configurationDraft = null; balanceDraft = null; leaderDraft = null; halfRestDraft = null; relaxedDraft = null; handoffDraft = null; dutyDraft = null; cellEdits.clear(); resetEditable();
+  edits.discard(); resetEditable();
 }
-async function saveRules(): Promise<boolean> {
-  if (dutyDraft) return run("save-duty-settings", dutyDraft, null);
+function validateRuleInputs(): boolean {
   for (const input of root.querySelectorAll<HTMLInputElement>(".view-root input[type=number]")) {
     if (!input.disabled && (input.value === "" || !input.checkValidity())) {
       input.closest<HTMLDetailsElement>("details")!.open = true;
-      if (leavePending) { dialogError = "有数字未填写或超出范围，请选择继续编辑后检查。修改尚未保存。"; render(); return false; }
+      if (edits.confirming) { dialogError = "有数字未填写或超出范围，请选择继续编辑后检查。修改尚未保存。"; render(); return false; }
       input.reportValidity(); return false;
     }
   }
-  if (dirty && plan()?.draft.length && !confirm("修改当天资料会清除当前草稿分配与预览，已采用结果保留。确定保存？")) return false;
-  return run("save-rules", {
-    configuration: configurationDraft ?? state.configuration,
-    balanceSettings: balanceDraft ?? state.balanceSettings,
-    teamLeaderSettings: leaderDraft ?? state.teamLeaderSettings, halfRestSettings: halfRestDraft ?? state.halfRestSettings, relaxedShiftSettings: relaxedDraft ?? state.relaxedShiftSettings,
-    preferences: handoffDraft ?? state.handoffPreferences,
-    ...(dirty && editable && plan() ? { input: { day: editable, rotationMinutes: rotationDraft?.minutes ?? plan()!.rotationMinutes, rotationEnabled: rotationDraft?.enabled ?? plan()!.rotationEnabled } } : {}),
-  });
+  return true;
 }
 
 function resetEditable(): void {
-  editable = plan() ? structuredClone(plan()!.day) : null; dirty = false; rotationDraft = null;
+  edits.resetDay(plan());
   viewingFormal = !!plan()?.adopted && !plan()?.schedule?.tasks.length;
 }
 async function run(action: string, payload: unknown = {}, id = plan()?.id ?? null): Promise<boolean> {
@@ -151,25 +139,25 @@ async function run(action: string, payload: unknown = {}, id = plan()?.id ?? nul
   try {
     const command = { expectedRevision: state.revision, action, planId: id, payload };
     state = ["solve", "prepare-solve", "archive-next"].includes(action) ? await runSchedule(command, activeGroup) : await responseJson(await groupFetch(`/api/groups/${activeGroup}/workspace/command`, { method: "POST", headers: { "Content-Type": "application/json", "X-Gate-Rule-Schema": "flight-role-v1" }, body: JSON.stringify(command) }));
-    if (["new-plan", "select-plan", "import-complete-configuration", "archive-next", "prepare-solve", "phase-plan"].includes(action)) { selectedDate = state.plans[state.selectedPlanId!]!.day.serviceDate; configurationDraft = null; balanceDraft = null; leaderDraft = null; halfRestDraft = null; relaxedDraft = null; cellEdits.clear(); }
-    if (["save-input", "new-plan", "select-plan", "refresh-people", "apply-config", "import-complete-configuration", "configure-cell", "archive-next", "prepare-solve", "phase-plan", "cancel-preview"].includes(action)) resetEditable();
+    const selectedPlan = state.selectedPlanId ? state.plans[state.selectedPlanId] : null;
+    const effect = edits.committed(action, selectedPlan);
+    if (effect.followPlan && selectedPlan) selectedDate = selectedPlan.day.serviceDate;
+    if (effect.resetDay) viewingFormal = !!plan()?.adopted && !plan()?.schedule?.tasks.length;
     message = action === "import-qualifications" ? "人员与资质已补充；原有资格、当天计划和正式结果保留。新计划会沿用，已有计划如需更新请载入最新人员。" : ["save-role", "save-roles", "save-person", "save-config", "save-flight-template", "copy-flight-roles"].includes(action) ? "配置已保存；已有当天资料和正式结果保持。" : plan()?.message ?? "已保存";
-    if (["save-role", "save-roles", "save-flight-template", "copy-flight-roles", "save-person", "import-qualifications", "import-complete-configuration", "configure-cell", "archive-next", "prepare-solve", "move-assignment"].includes(action)) dialog = null;
+    if (effect.closeDialog) dialog = null;
     if (action === "save-rules") {
-      configurationDraft = null; balanceDraft = null; leaderDraft = null; halfRestDraft = null; relaxedDraft = null; handoffDraft = null; resetEditable();
       message = "配置已保存；长期规则在重新排班后生效，原正式班表保留。";
     }
-    if (action === "save-config") configurationDraft = null;
-    if (action === "save-duty-settings") { dutyDraft = null; message = "轮值配置已保存，并随完整Excel和备份迁移。"; }
+    if (action === "save-duty-settings") message = "轮值配置已保存，并随完整Excel和备份迁移。";
     if (["update-duty-roster", "reset-duty-roster", "rebalance-duty-month", "import-duty-roster"].includes(action)) message = "值班备勤已保存，航班班表与正式历史保留。";
     if (action === "delete-person") message = "人员已删除；已有班表与历史记录保留，重新排班后不再安排。";
-    if (action === "update-balance-settings") { balanceDraft = null; message = "重点轮换与航班数规则已保存；重新排班后生效，原班表保留。"; }
+    if (action === "update-balance-settings") message = "重点轮换与航班数规则已保存；重新排班后生效，原班表保留。";
     if (action === "adjust-priority-count") message = "累计次数已修正，原历史保留；下次重新排班使用最新次数。";
     if (action === "save-handoff-preferences") message = "岗位接续偏好已保存，重新排班后生效；当前安排保留。";
     if (["save-flight-template", "add-template-role", "copy-flight-roles"].includes(action)) message = "航班岗位配置已保存，新一天自动沿用。本日需点“重新排班 → 载入最新岗位配置”再确认；原班表保留。新岗位请设置人数、工作环节及资质。";
     if (action === "save-display-preferences") message = "表格设置已保存，并随完整配置导出。";
     if (action === "edit-cell" && dialog?.kind === "assignment") dialog.fields = {};
-    if (["import-complete-configuration", "archive-next", "prepare-solve", "phase-plan"].includes(action)) { section = "schedule"; viewingFormal = false; }
+    if (effect.schedule) { section = "schedule"; viewingFormal = false; }
     if (manualActions.has(action)) {
       const feedback = plan()?.editFeedback;
       warningMessage = !!feedback?.hasWarnings;
@@ -184,7 +172,7 @@ async function run(action: string, payload: unknown = {}, id = plan()?.id ?? nul
 }
 function status(p: Plan): string {
   if (p.preparationNotice) return "草稿已保存 · 待选择当天人员";
-  if (cellEdits.size) return "姓名待保存";
+  if (edits.cells.size) return "姓名待保存";
   if (!p.valid) return `草稿已保存 · ${p.issues.length}项待处理`;
   const same = p.adopted && p.adopted.inputRevision === p.inputRevision &&
     JSON.stringify([...p.adopted.assignments].sort((a,b)=>(a.taskId+a.memberId).localeCompare(b.taskId+b.memberId))) === JSON.stringify([...p.draft].sort((a,b)=>(a.taskId+a.memberId).localeCompare(b.taskId+b.memberId)));
@@ -206,10 +194,10 @@ function render(): void {
   const noticeTag = section === "schedule" ? "div" : "details";
   const noticeHeadingTag = section === "schedule" ? "div" : "summary";
   const notice = state.trialInfo ? `<aside id="trial-notice" class="trial-notice"><${noticeTag}><${noticeHeadingTag}><strong>${html(state.trialInfo.label)}</strong><span>出勤、人数和时段含试用假设${section === "schedule" ? "" : " · 查看说明"}</span></${noticeHeadingTag}><p>航班和人员取自历史资料；出勤、岗位人数及时段含试用假设。可直接自动排班或手动调整。</p><p>${html(state.trialInfo.source)}</p>${plan()?.day.roleConfigs.some(r=>r.workMode && r.workMode!=="timed") ? "<p>当前为环节方案：旧试用的20/25分钟不用于环节岗位计算，以当前岗位性质和航班衔接为准。</p>" : ""}<ul>${state.trialInfo.assumptions.map(item => `<li>${html(item)}</li>`).join("")}</ul></${noticeTag}></aside>` : "";
-  const body = section === "config" ? configPage(state, editable, dirty) : section === "flights" ? (weeklyFlightsHtml(state, editable, selectedDate) + flightLibraryHtml(state) + `<details id="day-preparation-details" class="workspace-section"><summary>当天航班与人员 · 临时调整</summary>${flightsPage(p, editable, selectedDate, dirty)}</details>`) : section === "rules" ? rulesPage({ ...state, configuration: configurationDraft ?? state.configuration, balanceSettings: balanceDraft ?? state.balanceSettings, teamLeaderSettings: leaderDraft ?? state.teamLeaderSettings, halfRestSettings: halfRestDraft ?? state.halfRestSettings, relaxedShiftSettings: relaxedDraft ?? state.relaxedShiftSettings, handoffPreferences: handoffDraft ?? state.handoffPreferences }, p, editable) : section === "statistics" ? statisticsPage(state,dutyDraft,selectedDate) : section === "history" ? historyPage(state) : scheduleHtml(p);
-  root.innerHTML = `<header class="app-header"><div class="app-header-inner"><div class="brand-mark">${icon("calendar")}</div><div class="brand-copy"><h1>自动排班</h1><div>${document.documentElement.dataset.gateLocal === "true" ? "本机保存 · 换设备请导出" : "登机口保障 · 本地工作台"}</div></div><div class="group-switcher" role="group" aria-label="排班组"><label for="active-group">当前组</label><select id="active-group" aria-label="当前组"><option value="A" ${activeGroup === "A" ? "selected" : ""}>A 组</option><option value="B" ${activeGroup === "B" ? "selected" : ""}>B 组</option></select></div><label class="date-control">${icon("calendar")}<input id="service-date" type="date" value="${html(selectedDate)}" aria-label="排班日期" /></label><span class="save-state">${busy ? "正在保存…" : dirty || configurationDraft || balanceDraft || halfRestDraft || relaxedDraft || leaderDraft || cellEdits.size ? "有未保存修改" : "✓ 已保存"}</span></div></header>
+  const body = section === "config" ? configPage(state, edits.day, edits.dayDirty) : section === "flights" ? (weeklyFlightsHtml(state, edits.day, selectedDate) + flightLibraryHtml(state) + `<details id="day-preparation-details" class="workspace-section"><summary>当天航班与人员 · 临时调整</summary>${flightsPage(p, edits.day, selectedDate, edits.dayDirty)}</details>`) : section === "rules" ? rulesPage({ ...state, configuration: edits.settings.configuration ?? state.configuration, balanceSettings: edits.settings.balanceSettings ?? state.balanceSettings, teamLeaderSettings: edits.settings.teamLeaderSettings ?? state.teamLeaderSettings, halfRestSettings: edits.settings.halfRestSettings ?? state.halfRestSettings, relaxedShiftSettings: edits.settings.relaxedShiftSettings ?? state.relaxedShiftSettings, handoffPreferences: edits.settings.handoffPreferences ?? state.handoffPreferences }, p, edits.day) : section === "statistics" ? statisticsPage(state,edits.settings.dutyRoster??null,selectedDate) : section === "history" ? historyPage(state) : scheduleHtml(p);
+  root.innerHTML = `<header class="app-header"><div class="app-header-inner"><div class="brand-mark">${icon("calendar")}</div><div class="brand-copy"><h1>自动排班</h1><div>${document.documentElement.dataset.gateLocal === "true" ? "本机保存 · 换设备请导出" : "登机口保障 · 本地工作台"}</div></div><div class="group-switcher" role="group" aria-label="排班组"><label for="active-group">当前组</label><select id="active-group" aria-label="当前组"><option value="A" ${activeGroup === "A" ? "selected" : ""}>A 组</option><option value="B" ${activeGroup === "B" ? "selected" : ""}>B 组</option></select></div><label class="date-control">${icon("calendar")}<input id="service-date" type="date" value="${html(selectedDate)}" aria-label="排班日期" /></label><span class="save-state">${busy ? "正在保存…" : hasUnsaved() ? "有未保存修改" : "✓ 已保存"}</span></div></header>
   <div class="app-layout"><nav class="app-nav" aria-label="主要导航">${navigation.map(n => `<button class="nav-item ${section === n.id ? "active" : ""}" data-view="${n.id}" ${section === n.id ? 'aria-current="page"' : ""}>${icon(n.icon)}<span>${n.title}</span></button>`).join("")}<div class="nav-spacer"></div><label class="nav-item nav-data-action">${icon("upload")}<span>导入数据</span><input id="restore-workspace" type="file" accept=".xlsx,.json" hidden /></label><button id="export-complete-configuration" class="nav-item nav-data-action" title="导出人员、规则、航班与全部历史班表">${icon("download")}<span>导出配置</span></button></nav>
-  <main class="app-main wb-main"><div class="content-head"><div><h2>${current.title}</h2><div class="text-muted">${p?.day.flights.length ?? 0} 个航班 · ${p?.day.memberAvailability.filter(a => a.participating).length ?? 0} 人出勤 · ${p?.draft.length ?? 0} 个岗位已排${dirty ? ' · <span class="text-danger">当天资料未保存</span>' : ""}</div></div><select id="plan-picker" aria-label="选择当天方案"><option value="">选择当天方案</option>${Object.values(state.plans).filter(v => v.day.serviceDate === selectedDate).map((v, i) => `<option value="${html(v.id)}" ${p?.id === v.id ? "selected" : ""}>方案${i + 1} · ${html(v.day.title)} · ${v.adopted ? "已采用" : "草稿"}</option>`).join("")}</select></div>${message ? `<div class="app-message ${warningMessage ? "edit-warning" : ""}" role="${warningMessage ? "alert" : "status"}">${html(message)}</div>` : ""}${notice}<div class="view-root">${body}</div></main></div>${dialog && !leavePending ? dialogHtml(dialog) : ""}${leavePending ? modal("有未保存的修改", `<p>是否先保存本次修改，再继续刚才的操作？</p>${dialogError ? `<p class="text-danger" role="alert">${html(dialogError)}</p>` : ""}`, '<button id="leave-save" class="btn btn-primary">保存并继续</button><button id="leave-discard" class="btn btn-outline-danger">放弃修改</button><button id="leave-stay" class="btn btn-outline-secondary">继续编辑</button>', null) : ""}`;
+  <main class="app-main wb-main"><div class="content-head"><div><h2>${current.title}</h2><div class="text-muted">${p?.day.flights.length ?? 0} 个航班 · ${p?.day.memberAvailability.filter(a => a.participating).length ?? 0} 人出勤 · ${p?.draft.length ?? 0} 个岗位已排${edits.dayDirty ? ' · <span class="text-danger">当天资料未保存</span>' : ""}</div></div><select id="plan-picker" aria-label="选择当天方案"><option value="">选择当天方案</option>${Object.values(state.plans).filter(v => v.day.serviceDate === selectedDate).map((v, i) => `<option value="${html(v.id)}" ${p?.id === v.id ? "selected" : ""}>方案${i + 1} · ${html(v.day.title)} · ${v.adopted ? "已采用" : "草稿"}</option>`).join("")}</select></div>${message ? `<div class="app-message ${warningMessage ? "edit-warning" : ""}" role="${warningMessage ? "alert" : "status"}">${html(message)}</div>` : ""}${notice}<div class="view-root">${body}</div></main></div>${dialog && !edits.confirming ? dialogHtml(dialog) : ""}${edits.confirming ? modal("有未保存的修改", `<p>是否先保存本次修改，再继续刚才的操作？</p>${dialogError ? `<p class="text-danger" role="alert">${html(dialogError)}</p>` : ""}`, '<button id="leave-save" class="btn btn-primary">保存并继续</button><button id="leave-discard" class="btn btn-outline-danger">放弃修改</button><button id="leave-stay" class="btn btn-outline-secondary">继续编辑</button>', null) : ""}`;
   root.querySelectorAll<HTMLDetailsElement>(".view-root details").forEach((d,i) => { const wasOpen = openDetails.get(d.id || String(i)); if (wasOpen !== undefined) d.open = wasOpen; });
   bindShared(); bindDayInputs();
   if (section === "config") bindConfig();
@@ -221,16 +209,16 @@ function render(): void {
     disposePriorityStatistics = bindPriorityStatistics(root,state,priorityStatisticsSelection,run);
     disposeRelaxedStatistics = bindRelaxedStatistics(root,state,relaxedSelection);
     disposeRoleStatistics = bindRoleStatistics(root,state,roleStatisticsSelection);
-    disposeDutyStatistics = bindDutyStatistics(root,state,dutyDraft,dutySelection,selectedDate,run,value=>{dutyDraft=value;updateSaveStatus();},saveRules,canLeave);
+    disposeDutyStatistics = bindDutyStatistics(root,()=>state,edits.settings.dutyRoster??null,dutySelection,selectedDate,run,value=>{edits.settings.dutyRoster=value;updateSaveStatus();},()=>edits.save(),canLeave);
   }
-  if (dialog && !leavePending) bindDialog();
+  if (dialog && !edits.confirming) bindDialog();
   if (dialog?.kind === "assignment" && plan()?.editFeedback?.hasWarnings) {
     const warning = root.querySelector(".assignment-validation");
     if (warning) { warning.setAttribute("role", "alert"); warning.textContent = plan()!.editFeedback!.message; }
   }
-  if (rotationDraft && section === "rules") {
-    root.querySelector<HTMLInputElement>("#day-rotation-enabled")!.checked = rotationDraft.enabled;
-    root.querySelector<HTMLInputElement>("#day-rotation-minutes")!.value = String(rotationDraft.minutes);
+  if (edits.rotation && section === "rules") {
+    root.querySelector<HTMLInputElement>("#day-rotation-enabled")!.checked = edits.rotation.enabled;
+    root.querySelector<HTMLInputElement>("#day-rotation-minutes")!.value = String(edits.rotation.minutes);
   }
   updateSaveStatus();
   root.querySelector<HTMLElement>(".view-root")?.addEventListener("change", updateSaveStatus);
@@ -238,18 +226,14 @@ function render(): void {
     const input = event.target as HTMLInputElement;
     if (input.matches('input:not([type=checkbox]):not([type=search])')) input.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  if (leavePending) {
-    const finish = (answer: boolean) => { const resolve = leavePending; leavePending = null; render(); resolve?.(answer); };
+  if (edits.confirming) {
     const prompt = root.querySelector<HTMLDialogElement>("#app-dialog")!;
     prompt.showModal();
-    prompt.oncancel = event => { event.preventDefault(); finish(false); };
-    prompt.querySelector<HTMLButtonElement>("[data-close-dialog]")!.onclick = () => finish(false);
-    root.querySelector<HTMLButtonElement>("#leave-stay")!.onclick = () => finish(false);
-    root.querySelector<HTMLButtonElement>("#leave-discard")!.onclick = () => { discardChanges(); finish(true); };
-    root.querySelector<HTMLButtonElement>("#leave-save")!.onclick = async () => {
-      const ok = section === "rules" || configurationDraft || balanceDraft || halfRestDraft || relaxedDraft || leaderDraft || handoffDraft || dutyDraft ? await saveRules() : cellEdits.size ? await flushCells() : (await saveDay(), !dirty);
-      if (ok) finish(true);
-    };
+    prompt.oncancel = event => { event.preventDefault(); void edits.resolveLeave("stay"); };
+    prompt.querySelector<HTMLButtonElement>("[data-close-dialog]")!.onclick = () => void edits.resolveLeave("stay");
+    root.querySelector<HTMLButtonElement>("#leave-stay")!.onclick = () => void edits.resolveLeave("stay");
+    root.querySelector<HTMLButtonElement>("#leave-discard")!.onclick = () => void edits.resolveLeave("discard");
+    root.querySelector<HTMLButtonElement>("#leave-save")!.onclick = () => void edits.resolveLeave("save");
   }
   markBusy();
   if (editToast && message && section === "schedule" && !dialog) {
@@ -262,8 +246,7 @@ function render(): void {
 }
 async function navigate(next: Section): Promise<void> {
   if (busy || next === section) return;
-  if (cellEdits.size && !dirty && !configurationDraft && !balanceDraft && !leaderDraft && !handoffDraft) { if (!await flushCells()) return; }
-  else if (!await canLeave()) return;
+  if (!await edits.beforeContinue(true)) return;
   section = next; dialog = null; render(); window.scrollTo(0, 0);
 }
 
@@ -335,38 +318,33 @@ function bindShared(): void {
   root.querySelectorAll<HTMLSelectElement>("[data-role-mode]").forEach(input => input.onchange = () => {
     const name = input.dataset.roleMode!;
     if(input.dataset.scope === 'base') { void run('save-role', {roleName:name,workMode:input.value}); return; }
-    let r=editable!.roleConfigs.find(r=>r.roleName===name);
-    if(!r) {r={roleName:name,requiredCount:null};editable!.roleConfigs.push(r);}
-    r.workMode=input.value; editable!.releasePolicy='task'; dirty=true; render();
+    let r=edits.day!.roleConfigs.find(r=>r.roleName===name);
+    if(!r) {r={roleName:name,requiredCount:null};edits.day!.roleConfigs.push(r);}
+    r.workMode=input.value; edits.day!.releasePolicy='task'; edits.dayDirty=true; render();
   });
   root.querySelectorAll<HTMLInputElement>("[data-role-concurrent]").forEach(input => input.onchange = () => {
     const name=input.dataset.roleConcurrent!;
     if(input.dataset.scope==='base') {void run('save-role',{roleName:name,concurrent:input.checked});return;}
-    let r=editable!.roleConfigs.find(r=>r.roleName===name);
-    if(!r) {r={roleName:name,requiredCount:null};editable!.roleConfigs.push(r);}
-    r.concurrent=input.checked; dirty=true;
+    let r=edits.day!.roleConfigs.find(r=>r.roleName===name);
+    if(!r) {r={roleName:name,requiredCount:null};edits.day!.roleConfigs.push(r);}
+    r.concurrent=input.checked; edits.dayDirty=true;
   });
   root.querySelectorAll<HTMLInputElement>("[data-role-exclusive]").forEach(input => input.onchange = () => {
     const name = input.dataset.roleExclusive!;
     if (input.dataset.scope === "base") { void run("save-role", { roleName: name, exclusiveSameFlight: input.checked }); return; }
-    let role = editable!.roleConfigs.find(role => role.roleName === name);
-    if (!role) { role = { roleName: name, requiredCount: null }; editable!.roleConfigs.push(role); }
-    role.exclusiveSameFlight = input.checked; dirty = true;
+    let role = edits.day!.roleConfigs.find(role => role.roleName === name);
+    if (!role) { role = { roleName: name, requiredCount: null }; edits.day!.roleConfigs.push(role); }
+    role.exclusiveSameFlight = input.checked; edits.dayDirty = true;
   });
   root.querySelectorAll<HTMLInputElement>("[data-phase-source]").forEach(input=>input.onchange=()=>{
     const source=input.dataset.phaseSource!,target=input.dataset.phaseTarget!;
-    editable!.phaseHandoffs=(editable!.phaseHandoffs??[]).filter(([a,b])=>a!==source||b!==target);
-    if(input.checked) editable!.phaseHandoffs.push([source,target]);
-    dirty=true;
+    edits.day!.phaseHandoffs=(edits.day!.phaseHandoffs??[]).filter(([a,b])=>a!==source||b!==target);
+    if(input.checked) edits.day!.phaseHandoffs.push([source,target]);
+    edits.dayDirty=true;
   });
 }
 async function saveDay(): Promise<void> {
-  if (!editable || !plan()) return;
-  if (plan()!.draft.length && !confirm("修改当天资料会清除当前草稿分配与预览，已采用结果保留。确定保存？")) return;
-  await run("save-input", { day: editable, rotationMinutes: rotationDraft?.minutes ?? plan()!.rotationMinutes, rotationEnabled: rotationDraft?.enabled ?? plan()!.rotationEnabled });
-}
-function newCell(flight: Flight, roleName: string): Cell {
-  return { id: crypto.randomUUID(), flightId: flight.id, flightNo: flight.flightNo, roleName, rawValue: "", internalNames: [], externalLabels: [], semantics: "empty", workStart: null, workEnd: null, fixedMemberNames: [], requiredCountOverride: null };
+  await edits.save("day");
 }
 function bindConfig(): void {
   root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-person-field]").forEach(input => input.onchange = () => {
@@ -425,7 +403,7 @@ function bindConfig(): void {
   root.querySelectorAll<HTMLInputElement>("[data-default-demand]").forEach(input => input.onchange = () => void run("save-role", { roleName: input.dataset.defaultDemand, requiredCount: input.value === "" ? null : Number(input.value) }));
   root.querySelectorAll<HTMLButtonElement>("[data-qualification]").forEach(b => b.onclick = () => {
     const role = b.dataset.qualification!; const scope = b.dataset.scope as "base" | "day";
-    const selected = scope === "base" ? state.people.filter(p => p.eligibleRoleNames.includes(role)).map(p => p.id) : editable!.memberConfigs.filter(c => c.eligibleRoleNames.includes(role)).map(c => c.memberName);
+    const selected = scope === "base" ? state.people.filter(p => p.eligibleRoleNames.includes(role)).map(p => p.id) : edits.day!.memberConfigs.filter(c => c.eligibleRoleNames.includes(role)).map(c => c.memberName);
     dialog = { kind: "qualification", role, scope, selected: new Set(selected) }; render();
   });
   root.querySelector<HTMLButtonElement>("#apply-config")?.addEventListener("click", async () => {
@@ -436,9 +414,9 @@ function bindConfig(): void {
 function bindFlights(): void {
   root.querySelector<HTMLButtonElement>("#new-flight-template")!.onclick = event => { event.preventDefault(); dialog = { kind: "template" }; render(); };
   root.querySelectorAll<HTMLButtonElement>("[data-edit-template]").forEach(button=>button.onclick=()=>{dialog={kind:"template",flightNo:button.dataset.editTemplate!};render();});
-  bindWeeklyFlights(root,state,editable,selectedDate,
+  bindWeeklyFlights(root,state,edits.day,selectedDate,
     async (weekday,flights,remove) => { const ok=await run("save-weekly-flights",{weekday,flights,remove}); if(ok){message="每周常用航班已保存；当天班表未改变";render();}return ok; },
-    flights=>{if(!editable){void run("new-plan",{serviceDate:selectedDate,flightNos:flights.map(f=>f.flightNo)});return;}const day=editable!;addTemplates(day,flights,newCell);const chosen=new Set(flights.map(f=>f.flightNo));day.flights=day.flights.filter(f=>chosen.has(f.flightNo));day.cells=day.cells.filter(c=>day.flights.some(f=>f.id===c.flightId));day.phaseHandoffs=(day.phaseHandoffs??[]).filter(([a,b])=>day.flights.some(f=>f.id===a)&&day.flights.some(f=>f.id===b));prepareWithConfiguration(day,state,newCell,true);dirty=true;message="已填入当天，核对航班后保存当天资料";render();});
+    flights=>{if(!edits.day){void run("new-plan",{serviceDate:selectedDate,flightNos:flights.map(f=>f.flightNo)});return;}applyWeeklyFlights(edits.day,state,flights);edits.dayDirty=true;message="已填入当天，核对航班后保存当天资料";render();});
   root.querySelector<HTMLButtonElement>("#new-plan")!.onclick = async () => { if (await canLeave()) await run("new-plan", { serviceDate: selectedDate }); };
   root.querySelector<HTMLInputElement>("#import-workspace")!.onchange = async event => {
     const file = (event.target as HTMLInputElement).files?.[0]; if (busy || !file || !await canLeave()) return;
@@ -448,90 +426,101 @@ function bindFlights(): void {
     finally { busy = false; render(); }
   };
   root.querySelector<HTMLButtonElement>("#open-flight")?.addEventListener("click", () => { dialog = { kind: "flight" }; render(); });
-  root.querySelectorAll<HTMLButtonElement>("[data-remove-flight]").forEach(b => b.onclick = () => { editable!.flights = editable!.flights.filter(f => f.id !== b.dataset.removeFlight); editable!.cells = editable!.cells.filter(c => c.flightId !== b.dataset.removeFlight); editable!.phaseHandoffs=(editable!.phaseHandoffs??[]).filter(([a,c])=>a!==b.dataset.removeFlight&&c!==b.dataset.removeFlight); dirty = true; render(); });
-  root.querySelectorAll<HTMLButtonElement>("[data-config-flight]").forEach(b => b.onclick = () => { section = "config"; render(); const group = [...root.querySelectorAll<HTMLDetailsElement>(".day-flight-group")].find(g => g.querySelector("summary strong")?.textContent === editable?.flights.find(f => f.id === b.dataset.configFlight)?.flightNo); if (group) { group.open = true; group.scrollIntoView({ block: "start", behavior: "smooth" }); } });
+  root.querySelectorAll<HTMLButtonElement>("[data-remove-flight]").forEach(b => b.onclick = () => { edits.day!.flights = edits.day!.flights.filter(f => f.id !== b.dataset.removeFlight); edits.day!.cells = edits.day!.cells.filter(c => c.flightId !== b.dataset.removeFlight); edits.day!.phaseHandoffs=(edits.day!.phaseHandoffs??[]).filter(([a,c])=>a!==b.dataset.removeFlight&&c!==b.dataset.removeFlight); edits.dayDirty = true; render(); });
+  root.querySelectorAll<HTMLButtonElement>("[data-config-flight]").forEach(b => b.onclick = () => { section = "config"; render(); const group = [...root.querySelectorAll<HTMLDetailsElement>(".day-flight-group")].find(g => g.querySelector("summary strong")?.textContent === edits.day?.flights.find(f => f.id === b.dataset.configFlight)?.flightNo); if (group) { group.open = true; group.scrollIntoView({ block: "start", behavior: "smooth" }); } });
   root.querySelector<HTMLButtonElement>("#refresh-people")?.addEventListener("click", async () => { if (await canLeave() && confirm("更新当天人员及资质会清除草稿分配；正式结果保留。继续？")) await run("refresh-people"); });
 }
 function bindRules(): void {
-  bindRelaxedRules(root, { ...state, relaxedShiftSettings: relaxedDraft ?? state.relaxedShiftSettings }, value => { relaxedDraft = value; updateSaveStatus(); });
+  bindRelaxedRules(root, { ...state, relaxedShiftSettings: edits.settings.relaxedShiftSettings ?? state.relaxedShiftSettings }, value => { edits.settings.relaxedShiftSettings = value; updateSaveStatus(); });
   bindRulesSearch(root, rulesQuery, value => { rulesQuery = value; });
-  bindHandoffPreferences(root, { ...state, handoffPreferences: handoffDraft ?? state.handoffPreferences }, async (_action, payload) => {
-    handoffDraft = (payload as { preferences: State["handoffPreferences"] }).preferences; render(); return true;
+  bindHandoffPreferences(root, { ...state, handoffPreferences: edits.settings.handoffPreferences ?? state.handoffPreferences }, async (_action, payload) => {
+    edits.settings.handoffPreferences = (payload as { preferences: State["handoffPreferences"] }).preferences; render(); return true;
   });
   const readBalance = (): BalanceSettings => ({
-    ...state.balanceSettings,
+    ...(edits.settings.balanceSettings ?? state.balanceSettings),
     priorityEnabled: root.querySelector<HTMLInputElement>("#priority-enabled")!.checked,
     priorityRoleNames: [],
     priorityFlightRoles: [...root.querySelectorAll<HTMLInputElement>("[data-priority-role]:checked")].map(input=>({flightNo: input.dataset.priorityFlight!, roleName: input.dataset.priorityRole!})),
     flightCountGap: root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked ? root.querySelector<HTMLInputElement>("#flight-count-gap")!.valueAsNumber : null,
   });
+  root.querySelectorAll<HTMLInputElement>('[data-coverage-role]').forEach(input => input.onchange = () => {
+    const balance = structuredClone(edits.settings.balanceSettings ?? state.balanceSettings);
+    const roleName = input.dataset.coverageRole!;
+    balance.coveragePriorities = (balance.coveragePriorities ?? []).filter(item => item.roleName !== roleName);
+    if (input.checked) {
+      root.querySelectorAll<HTMLInputElement>('[data-coverage-role]').forEach(other => { if (other !== input && other.dataset.coverageRole === roleName) other.checked = false; });
+      balance.coveragePriorities.push({ roleName, priority: input.dataset.coveragePriority as NonNullable<BalanceSettings['coveragePriorities']>[number]['priority'] });
+    }
+    edits.settings.balanceSettings = balance;
+    updateSaveStatus();
+  });
   for (const input of root.querySelectorAll<HTMLInputElement>("#priority-enabled, [data-priority-role], #flight-count-gap-enabled, #flight-count-gap")) input.onchange=()=>{
     root.querySelector<HTMLInputElement>("#flight-count-gap")!.disabled=!root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked;
-    balanceDraft=readBalance(); root.querySelector(".save-state")!.textContent="有未保存修改";
-    root.querySelector('#priority-selected-summary')!.textContent = `已选：${balanceDraft.priorityFlightRoles!.map(p => `${p.flightNo} · ${p.roleName}`).join('、') || '尚未选择，请先选航班，再勾选岗位。'}`;
+    edits.settings.balanceSettings=readBalance(); root.querySelector(".save-state")!.textContent="有未保存修改";
+    root.querySelector('#priority-selected-summary')!.textContent = `已选：${edits.settings.balanceSettings.priorityFlightRoles!.map(p => `${p.flightNo} · ${p.roleName}`).join('、') || '尚未选择，请先选航班，再勾选岗位。'}`;
   };
   root.querySelector<HTMLSelectElement>('#priority-rule-flight')!.onchange = event => {
     const flight = (event.target as HTMLSelectElement).value;
     root.querySelectorAll<HTMLElement>('[data-priority-flight-group]').forEach(group => group.hidden = group.dataset.priorityFlightGroup !== flight);
   };
   for (const input of root.querySelectorAll<HTMLInputElement>("#team-leader-last, #team-leader-exempt")) input.onchange = () => {
-    leaderDraft = { lastUsed: root.querySelector<HTMLInputElement>("#team-leader-last")!.checked, exemptFlightCount: root.querySelector<HTMLInputElement>("#team-leader-exempt")!.checked };
+    edits.settings.teamLeaderSettings = { lastUsed: root.querySelector<HTMLInputElement>("#team-leader-last")!.checked, exemptFlightCount: root.querySelector<HTMLInputElement>("#team-leader-exempt")!.checked };
     root.querySelector(".save-state")!.textContent = "有未保存修改";
   };
   root.querySelector<HTMLInputElement>("#half-rest-exempt")!.onchange = event => {
-    halfRestDraft = { exemptFlightCount: (event.target as HTMLInputElement).checked }; updateSaveStatus();
+    edits.settings.halfRestSettings = { exemptFlightCount: (event.target as HTMLInputElement).checked }; updateSaveStatus();
   };
   const summaries = () => {
     const set = (id: string, text: string) => { const el = root.querySelector(`#${id} [data-rule-summary]`); if (el) el.textContent = text; };
-    const balance = balanceDraft ?? state.balanceSettings;
-    const config = configurationDraft ?? state.configuration;
-    const leaders = leaderDraft ?? state.teamLeaderSettings;
-    set("half-rest-rules", (halfRestDraft ?? state.halfRestSettings).exemptFlightCount ? "上午 / 下午 · 不比较航班数" : "上午 / 下午 · 参与航班数比较");
+    const balance = edits.settings.balanceSettings ?? state.balanceSettings;
+    const config = edits.settings.configuration ?? state.configuration;
+    const leaders = edits.settings.teamLeaderSettings ?? state.teamLeaderSettings;
+    set("half-rest-rules", (edits.settings.halfRestSettings ?? state.halfRestSettings).exemptFlightCount ? "上午 / 下午 · 不比较航班数" : "上午 / 下午 · 参与航班数比较");
     set("team-leader-rules", `${leaders.lastUsed ? "最后使用" : "正常参与"} · ${leaders.exemptFlightCount ? "不比较航班数" : "参与航班数比较"}`);
     set("priority-role-rules", balance.priorityEnabled ? `已启用 · ${balance.priorityFlightRoles?.length ?? 0} 个航班岗位` : "未启用");
     set("flight-balance-rules", balance.flightCountGap != null ? `硬约束 · 差距不超过 ${Number.isNaN(balance.flightCountGap) ? "待填写" : balance.flightCountGap}` : "未启用");
     set("base-rule-settings", `${config.rotationEnabled ? `轮换 ${config.rotationMinutes} 分钟` : "轮换关闭"} · 走动 ${config.transitionMinutes} 分钟`);
-    set("phase-handoff-rules", `当天确认 · ${editable?.phaseHandoffs?.length ?? 0} 项衔接`);
+    set("phase-handoff-rules", `当天确认 · ${edits.day?.phaseHandoffs?.length ?? 0} 项衔接`);
   };
   root.querySelector(".view-root")!.addEventListener("change", summaries);
-  root.querySelector<HTMLButtonElement>("#save-rules")!.onclick = () => { void saveRules(); };
+  root.querySelector<HTMLButtonElement>("#save-rules")!.onclick = () => { void edits.save("rules"); };
   for (const selector of ["#base-rotation-enabled", "#base-rotation-minutes", "#base-transition-minutes"]) root.querySelector<HTMLInputElement>(selector)!.onchange = () => {
-    configurationDraft = { ...state.configuration, rotationEnabled: root.querySelector<HTMLInputElement>("#base-rotation-enabled")!.checked, rotationMinutes: root.querySelector<HTMLInputElement>("#base-rotation-minutes")!.valueAsNumber, transitionMinutes: root.querySelector<HTMLInputElement>("#base-transition-minutes")!.valueAsNumber };
+    edits.settings.configuration = { ...state.configuration, rotationEnabled: root.querySelector<HTMLInputElement>("#base-rotation-enabled")!.checked, rotationMinutes: root.querySelector<HTMLInputElement>("#base-rotation-minutes")!.valueAsNumber, transitionMinutes: root.querySelector<HTMLInputElement>("#base-transition-minutes")!.valueAsNumber };
     root.querySelector(".save-state")!.textContent = "有未保存修改";
   };
 
-  for (const selector of ["#day-rotation-enabled", "#day-rotation-minutes"]) root.querySelector<HTMLInputElement>(selector)?.addEventListener("change", () => { rotationDraft = { enabled: root.querySelector<HTMLInputElement>("#day-rotation-enabled")!.checked, minutes: root.querySelector<HTMLInputElement>("#day-rotation-minutes")!.valueAsNumber }; dirty = true; });
-  root.querySelector<HTMLInputElement>("#day-transition-minutes")?.addEventListener("change", event => { editable!.transitionMinutes = (event.target as HTMLInputElement).valueAsNumber; dirty = true; });
-  root.querySelector<HTMLInputElement>("#remarks-reviewed")?.addEventListener("change", event => { editable!.remarksReviewed = (event.target as HTMLInputElement).checked; dirty = true; });
-  root.querySelector<HTMLButtonElement>("#add-occupancy")?.addEventListener("click", () => { editable!.extraOccupancies.push({ id: crypto.randomUUID(), label: "", memberNames: [], start: "", end: "" }); dirty = true; render(); });
-  root.querySelectorAll<HTMLButtonElement>("[data-remove-occupancy]").forEach(b => b.onclick = () => { editable!.extraOccupancies = editable!.extraOccupancies.filter(o => o.id !== b.dataset.removeOccupancy); dirty = true; render(); });
+  for (const selector of ["#day-rotation-enabled", "#day-rotation-minutes"]) root.querySelector<HTMLInputElement>(selector)?.addEventListener("change", () => { edits.rotation = { enabled: root.querySelector<HTMLInputElement>("#day-rotation-enabled")!.checked, minutes: root.querySelector<HTMLInputElement>("#day-rotation-minutes")!.valueAsNumber }; edits.dayDirty = true; });
+  root.querySelector<HTMLInputElement>("#day-transition-minutes")?.addEventListener("change", event => { edits.day!.transitionMinutes = (event.target as HTMLInputElement).valueAsNumber; edits.dayDirty = true; });
+  root.querySelector<HTMLInputElement>("#remarks-reviewed")?.addEventListener("change", event => { edits.day!.remarksReviewed = (event.target as HTMLInputElement).checked; edits.dayDirty = true; });
+  root.querySelector<HTMLButtonElement>("#add-occupancy")?.addEventListener("click", () => { edits.day!.extraOccupancies.push({ id: crypto.randomUUID(), label: "", memberNames: [], start: "", end: "" }); edits.dayDirty = true; render(); });
+  root.querySelectorAll<HTMLButtonElement>("[data-remove-occupancy]").forEach(b => b.onclick = () => { edits.day!.extraOccupancies = edits.day!.extraOccupancies.filter(o => o.id !== b.dataset.removeOccupancy); edits.dayDirty = true; render(); });
 }
 function bindDayInputs(): void {
-  root.querySelectorAll<HTMLInputElement>("[data-flight]").forEach(input => input.onchange = () => { const f = editable!.flights.find(f => f.id === input.dataset.flight)!; if (input.dataset.field === "windowStart") f.windowStart = input.value; else f.windowEnd = input.value; dirty = true; });
-  root.querySelectorAll<HTMLInputElement>("[data-demand]").forEach(input => input.onchange = () => { const roleName = input.dataset.demand!; const prior=editable!.roleConfigs.find(c=>c.roleName===roleName); editable!.roleConfigs = editable!.roleConfigs.filter(c => c.roleName !== roleName); editable!.roleConfigs.push({ ...prior, roleName, requiredCount: input.value === "" ? null : Number(input.value) }); dirty = true; });
-  root.querySelectorAll<HTMLSelectElement>('[data-cell-mode]').forEach(input=>input.onchange=()=>{editable!.cells.find(c=>c.id===input.dataset.cellMode)!.workModeOverride=input.value||null;dirty=true;render();});
+  root.querySelectorAll<HTMLInputElement>("[data-flight]").forEach(input => input.onchange = () => { const f = edits.day!.flights.find(f => f.id === input.dataset.flight)!; if (input.dataset.field === "windowStart") f.windowStart = input.value; else f.windowEnd = input.value; edits.dayDirty = true; });
+  root.querySelectorAll<HTMLInputElement>("[data-demand]").forEach(input => input.onchange = () => { const roleName = input.dataset.demand!; const prior=edits.day!.roleConfigs.find(c=>c.roleName===roleName); edits.day!.roleConfigs = edits.day!.roleConfigs.filter(c => c.roleName !== roleName); edits.day!.roleConfigs.push({ ...prior, roleName, requiredCount: input.value === "" ? null : Number(input.value) }); edits.dayDirty = true; });
+  root.querySelectorAll<HTMLSelectElement>('[data-cell-mode]').forEach(input=>input.onchange=()=>{edits.day!.cells.find(c=>c.id===input.dataset.cellMode)!.workModeOverride=input.value||null;edits.dayDirty=true;render();});
   root.querySelectorAll<HTMLInputElement>("[data-cell]").forEach(input => input.onchange = () => {
-    const cell = editable!.cells.find(c => c.id === input.dataset.cell)!;
-    switch (input.dataset.field) { case "workStart": cell.workStart = input.value || null; break; case "workEnd": cell.workEnd = input.value || null; break; case "requiredCountOverride": cell.requiredCountOverride = input.value === "" ? null : Number(input.value); break; case "fixedMemberNames": cell.fixedMemberNames = split(input.value); break; } dirty = true;
+    const cell = edits.day!.cells.find(c => c.id === input.dataset.cell)!;
+    switch (input.dataset.field) { case "workStart": cell.workStart = input.value || null; break; case "workEnd": cell.workEnd = input.value || null; break; case "requiredCountOverride": cell.requiredCountOverride = input.value === "" ? null : Number(input.value); break; case "fixedMemberNames": cell.fixedMemberNames = split(input.value); break; } edits.dayDirty = true;
   });
-  root.querySelectorAll<HTMLSelectElement>("[data-semantics]").forEach(input => input.onchange = () => { editable!.cells.find(c => c.id === input.dataset.semantics)!.semantics = input.value; dirty = true; });
+  root.querySelectorAll<HTMLSelectElement>("[data-semantics]").forEach(input => input.onchange = () => { edits.day!.cells.find(c => c.id === input.dataset.semantics)!.semantics = input.value; edits.dayDirty = true; });
   root.querySelectorAll<HTMLInputElement>("[data-attendance-name]").forEach(input => input.onchange = () => {
-    const name = input.dataset.attendanceName!; let entry = editable!.memberAvailability.find(a => a.memberName === name);
-    if (!entry) { entry = { memberName: name, participating: false, availableFrom: null, availableUntil: null }; editable!.memberAvailability.push(entry); }
-    if (input.dataset.attendanceField === "participating") { entry.participating = input.checked; if (!entry.participating) entry.halfRest = null; dirty = true; render(); }
+    const name = input.dataset.attendanceName!; let entry = edits.day!.memberAvailability.find(a => a.memberName === name);
+    if (!entry) { entry = { memberName: name, participating: false, availableFrom: null, availableUntil: null }; edits.day!.memberAvailability.push(entry); }
+    if (input.dataset.attendanceField === "participating") { entry.participating = input.checked; if (!entry.participating) entry.halfRest = null; edits.dayDirty = true; render(); }
     else if (input.dataset.attendanceField === "availableFrom") entry.availableFrom = input.value || null;
-    else entry.availableUntil = input.value || null; dirty = true;
+    else entry.availableUntil = input.value || null; edits.dayDirty = true;
   });
   root.querySelectorAll<HTMLSelectElement>("[data-attendance-half-rest]").forEach(input => input.onchange = () => {
-    const entry = editable!.memberAvailability.find(a=>a.memberName===input.dataset.attendanceHalfRest)!;
-    entry.halfRest = input.value as import("./workbench-model").HalfRest || null; dirty = true; updateSaveStatus();
+    const entry = edits.day!.memberAvailability.find(a=>a.memberName===input.dataset.attendanceHalfRest)!;
+    entry.halfRest = input.value as import("./workbench-model").HalfRest || null; edits.dayDirty = true; updateSaveStatus();
   });
   root.querySelectorAll<HTMLInputElement>("[data-occupancy]").forEach(input => input.onchange = () => {
-    const occupancy = editable!.extraOccupancies.find(o => o.id === input.dataset.occupancy)!;
+    const occupancy = edits.day!.extraOccupancies.find(o => o.id === input.dataset.occupancy)!;
     if (input.dataset.field === "memberNames") occupancy.memberNames = split(input.value);
     else if (input.dataset.field === "label") occupancy.label = input.value;
     else if (input.dataset.field === "start") occupancy.start = input.value;
-    else occupancy.end = input.value; dirty = true;
+    else occupancy.end = input.value; edits.dayDirty = true;
   });
 }
 function bindHistory(): void {
@@ -559,7 +548,7 @@ function dialogHtml(d: Dialog): string {
     const effectiveMode=cell.workModeOverride ?? roleConfig?.workMode ?? "timed";
     const phase=effectiveMode!=="timed";
     const count = cell.requiredCountOverride ?? roleConfig?.requiredCount;
-    return modal(`${html(cell.flightNo)} · ${html(cell.roleName)} · 岗位资料`, `<p class="section-note">这格会作为真实岗位参与排班。请明确人数；环节岗位无需逐格时间，输入的姓名不会自动授予资质；资料未齐可先保存草稿。</p><div class="form-grid"><label>本航班工作方式<select id="cell-settings-mode" ${cell.roleName === "大件行李拦截" ? "disabled" : ""}><option value="">沿用岗位环节</option>${Object.entries(state.workModes).map(([k,v])=>`<option value="${k}" ${cell.workModeOverride===k ? "selected" : ""}>${html(v)}</option>`).join("")}</select></label><label>人员姓名<input id="cell-settings-text" value="${html(p.cellDrafts?.[cell.id] ?? cellEdits.get(cell.id) ?? "")}" placeholder="甲 / 乙" /></label><label>同时需要人数<input id="cell-settings-count" type="number" min="0" value="${count ?? ""}" /></label><label>${phase ? html(state.workModes[effectiveMode])+"（无需填写）" : "实际开始"}<input id="cell-settings-start" value="${html(cell.workStart)}" ${cell.roleName === "大件行李拦截" || phase ? "disabled" : ""} /></label><label>实际结束<input id="cell-settings-end" value="${html(cell.workEnd)}" ${cell.roleName === "大件行李拦截" || phase ? "disabled" : ""} /></label></div>${cell.roleName === "大件行李拦截" ? '<p class="section-note">大件按航班窗口共享轮换，轮换人选到格子详情逐段填写。</p>' : ""}`, '<button id="save-cell-settings" class="btn btn-primary">保存岗位资料</button>');
+    return modal(`${html(cell.flightNo)} · ${html(cell.roleName)} · 岗位资料`, `<p class="section-note">这格会作为真实岗位参与排班。请明确人数；环节岗位无需逐格时间，输入的姓名不会自动授予资质；资料未齐可先保存草稿。</p><div class="form-grid"><label>本航班工作方式<select id="cell-settings-mode" ${cell.roleName === "大件行李拦截" ? "disabled" : ""}><option value="">沿用岗位环节</option>${Object.entries(state.workModes).map(([k,v])=>`<option value="${k}" ${cell.workModeOverride===k ? "selected" : ""}>${html(v)}</option>`).join("")}</select></label><label>人员姓名<input id="cell-settings-text" value="${html(p.cellDrafts?.[cell.id] ?? edits.cells.get(cell.id) ?? "")}" placeholder="甲 / 乙" /></label><label>同时需要人数<input id="cell-settings-count" type="number" min="0" value="${count ?? ""}" /></label><label>${phase ? html(state.workModes[effectiveMode])+"（无需填写）" : "实际开始"}<input id="cell-settings-start" value="${html(cell.workStart)}" ${cell.roleName === "大件行李拦截" || phase ? "disabled" : ""} /></label><label>实际结束<input id="cell-settings-end" value="${html(cell.workEnd)}" ${cell.roleName === "大件行李拦截" || phase ? "disabled" : ""} /></label></div>${cell.roleName === "大件行李拦截" ? '<p class="section-note">大件按航班窗口共享轮换，轮换人选到格子详情逐段填写。</p>' : ""}`, '<button id="save-cell-settings" class="btn btn-primary">保存岗位资料</button>');
   }
   if (d.kind === "move") {
     const p = plan()!, tasks = p.schedule!.tasks;
@@ -592,7 +581,7 @@ function dialogHtml(d: Dialog): string {
   if (d.kind === "role") return modal("批量新增岗位", '<form id="role-form" class="form-grid"><label>岗位名称（多个用逗号分隔）<input id="new-role" required /></label><label>同时需要人数<input id="new-role-count" type="number" min="0" placeholder="可暂不填写" /></label></form>', '<button id="save-role" class="btn btn-primary">保存</button>');
   if (d.kind === "flight") return modal("添加航班", '<form id="flight-form" class="form-grid"><label>航班号<input id="flight-number" required placeholder="例如 AK151" /></label><label>保障开始<input id="flight-start" required placeholder="例如 23:05" /></label><label>保障结束<input id="flight-end" required placeholder="例如 次日00:05" /></label></form><p class="section-note">航班保障窗口仍需明确；普通环节岗无需逐格时间，特殊实际时段可在“配置”单独设置。</p>', '<button id="add-flight" class="btn btn-primary">添加</button>');
   if (d.kind !== "qualification") return "";
-  const choices = d.scope === "base" ? state.people.map(p => ({ id: p.id, name: p.name, active: p.active })) : editable!.roster.map(name => ({ id: name, name, active: state.people.find(p => p.name === name)?.active !== false }));
+  const choices = d.scope === "base" ? state.people.map(p => ({ id: p.id, name: p.name, active: p.active })) : edits.day!.roster.map(name => ({ id: name, name, active: state.people.find(p => p.name === name)?.active !== false }));
   return modal(`${html(d.role)} · 资质人员`, `<div class="qualification-tools"><span>${d.scope === "base" ? "基础岗位资质" : "当天岗位资质，同岗各航班共用"}</span><div class="button-row"><button id="select-all" class="btn btn-sm btn-outline-secondary">全选</button><button id="select-none" class="btn btn-sm btn-outline-secondary">全不选</button></div></div><div class="qualified-grid">${choices.map(p => `<label class="qualified-check"><input type="checkbox" data-qualified-person="${html(p.id)}" ${d.selected.has(p.id) ? "checked" : ""} /><span>${html(p.name)}<small>${p.active ? "正常" : "停用，历史资质保留"}</small></span></label>`).join("") || '<p class="text-muted">暂无人员，请先新增人员。</p>'}</div>`, '<button id="save-qualification" class="btn btn-primary">保存</button>');
 }
 function bindDialog(): void {
@@ -636,7 +625,7 @@ function bindDialog(): void {
     root.querySelector<HTMLButtonElement>("#prepare-weekly-flights")!.onclick=useWeekly;
     root.querySelector<HTMLButtonElement>("#prepare-latest-config")!.onclick=()=>{
       if (!confirm("以长期配置替换本次准备中的人数、资质和岗位设置？当前已保存班表不变，确认排班后才使用。")) return;
-      prepareWithConfiguration(d.day,state,newCell,true); render();
+      loadPreparationConfiguration(d.day,state); render();
     };
     root.querySelector<HTMLInputElement>("#prepare-date")!.onchange=()=>{const date=root.querySelector<HTMLInputElement>("#prepare-date")!.value;d.day.serviceDate=date;if(state.weeklyFlightPresets[weekdayOf(date)])useWeekly();};
     root.querySelectorAll<HTMLInputElement>("[data-prepare-flight]").forEach(input => input.onchange = () => { if (input.checked) d.selected.add(input.dataset.prepareFlight!); else d.selected.delete(input.dataset.prepareFlight!); updatePreparationStatus(); });
@@ -664,23 +653,13 @@ function bindDialog(): void {
       const date = root.querySelector<HTMLInputElement>("#prepare-date")!;
       const confirmTimes = root.querySelector<HTMLInputElement>("#confirm-role-times");
       d.fields = { ...d.fields, "prepare-date": date.value, ...(confirmTimes ? { "confirm-role-times": confirmTimes.checked } : {}) };
-      d.day.serviceDate = date.value; d.day.memberAvailability = structuredClone(plan()!.day.memberAvailability); if (d.mode === "archive") d.day.memberAvailability.forEach(a=>a.halfRest=null); render();
+      d.day.serviceDate = date.value; copyPreparationAttendance(d,plan()!.day); render();
     };
     root.querySelector<HTMLButtonElement>("#confirm-prepare")!.onclick = async () => {
-      const day = structuredClone(d.day);
-      day.serviceDate = root.querySelector<HTMLInputElement>("#prepare-date")!.value;
-      const copyTimes = root.querySelector<HTMLInputElement>("#confirm-role-times")?.checked;
-      day.flights = day.flights.filter(f => d.selected.has(f.id)); day.cells = day.cells.filter(c => d.selected.has(c.flightId));
-      if (!day.serviceDate) { dialogError = "请填写排班日期"; render(); return; }
-      if (d.mode !== "archive" && !day.flights.length) { dialogError = "请至少选择一个航班"; render(); return; }
-      if (d.mode !== "archive" && !day.memberAvailability.some(a => a.participating)) { dialogError = "请选择当天参加人员"; render(); return; }
-      if (d.mode === "archive") {
-        day.title = `${day.serviceDate} 保障计划`;
-        for (const c of day.cells) { c.rawValue = ""; c.internalNames = []; c.externalLabels = []; c.semantics = "empty"; c.fixedMemberNames = []; if (!copyTimes) { c.workStart = null; c.workEnd = null; } }
-        day.extraOccupancies = []; day.remarks = []; day.remarksReviewed = true;
-      }
-      if(day.phaseHandoffs) day.phaseHandoffs=day.phaseHandoffs.filter(([a,b])=>day.flights.some(f=>f.id===a)&&day.flights.some(f=>f.id===b));
-      if(d.mode==='archive' && day.phaseHandoffs && !root.querySelector<HTMLInputElement>('#confirm-role-times')!.checked) day.phaseHandoffs=[];
+      let day: Day;
+      try {
+        day = confirmPreparation(d,root.querySelector<HTMLInputElement>("#prepare-date")!.value,root.querySelector<HTMLInputElement>("#confirm-role-times")?.checked ?? false);
+      } catch (error) { dialogError = (error as Error).message; render(); return; }
       await run(d.mode === "archive" ? "archive-next" : "prepare-solve", d.mode === "archive" ? { day, rotationMinutes: state.configuration.rotationMinutes, rotationEnabled: state.configuration.rotationEnabled } : { day });
     };
   }
@@ -698,7 +677,7 @@ function bindDialog(): void {
       const count = root.querySelector<HTMLInputElement>("#cell-settings-count")!.value;
       if (count === "") { dialogError = "请明确填写同时需要人数"; render(); return; }
       const ok = await run("configure-cell", { cellId: d.cellId, text: root.querySelector<HTMLInputElement>("#cell-settings-text")!.value, requiredCount: Number(count), workModeOverride: root.querySelector<HTMLSelectElement>("#cell-settings-mode")!.value || null, workStart: root.querySelector<HTMLInputElement>("#cell-settings-start")!.value, workEnd: root.querySelector<HTMLInputElement>("#cell-settings-end")!.value });
-      if (ok) cellEdits.delete(d.cellId);
+      if (ok) edits.cells.delete(d.cellId);
     };
   }
   if (dialog!.kind === "move") {
@@ -738,9 +717,9 @@ function bindDialog(): void {
   if (dialog!.kind === "flight") root.querySelector<HTMLButtonElement>("#add-flight")!.onclick = () => {
     if (!root.querySelector<HTMLFormElement>("#flight-form")!.reportValidity()) return;
     const flightNo = root.querySelector<HTMLInputElement>("#flight-number")!.value.trim();
-    if (editable!.flights.some(f => f.flightNo === flightNo)) { dialogError = "当天已有该航班号"; dialog!.fields = Object.fromEntries([...element.querySelectorAll<HTMLInputElement>("input[id]")].map(el => [el.id, el.value])); render(); return; }
+    if (edits.day!.flights.some(f => f.flightNo === flightNo)) { dialogError = "当天已有该航班号"; dialog!.fields = Object.fromEntries([...element.querySelectorAll<HTMLInputElement>("input[id]")].map(el => [el.id, el.value])); render(); return; }
     const f: Flight = { id: crypto.randomUUID(), flightNo, windowStart: root.querySelector<HTMLInputElement>("#flight-start")!.value, windowEnd: root.querySelector<HTMLInputElement>("#flight-end")!.value };
-    editable!.flights.push(f); editable!.cells.push(...editable!.roleNames.map(r => newCell(f, r))); dirty = true; close();
+    edits.day!.flights.push(f); edits.day!.cells.push(...edits.day!.roleNames.map(r => newCell(f, r))); edits.dayDirty = true; close();
   };
   for (const [formId, buttonId] of [["person-form", "save-person"], ["role-form", "save-role"], ["flight-form", "add-flight"]]) root.querySelector<HTMLFormElement>(`#${formId}`)?.addEventListener("submit", event => { event.preventDefault(); root.querySelector<HTMLButtonElement>(`#${buttonId}`)?.click(); });
   if (dialog!.kind === "qualification") {
@@ -751,12 +730,12 @@ function bindDialog(): void {
     root.querySelector<HTMLButtonElement>("#save-qualification")!.onclick = () => {
       if (d.scope === "base") void run("save-role", { roleName: d.role, qualifiedMemberIds: [...d.selected] });
       else {
-        for (const name of editable!.roster) {
-          let c = editable!.memberConfigs.find(c => c.memberName === name);
-          if (!c) { c = { memberName: name, eligibleRoleNames: [] }; editable!.memberConfigs.push(c); }
+        for (const name of edits.day!.roster) {
+          let c = edits.day!.memberConfigs.find(c => c.memberName === name);
+          if (!c) { c = { memberName: name, eligibleRoleNames: [] }; edits.day!.memberConfigs.push(c); }
           c.eligibleRoleNames = c.eligibleRoleNames.filter(r => r !== d.role); if (d.selected.has(name)) c.eligibleRoleNames.push(d.role);
         }
-        dirty = true; close();
+        edits.dayDirty = true; close();
       }
     };
   }
@@ -774,7 +753,7 @@ function scheduleHtml(p: Plan | null): string {
   roles.sort((a, b) => (p.day.roleNames.indexOf(a) < 0 ? Infinity : p.day.roleNames.indexOf(a)) - (p.day.roleNames.indexOf(b) < 0 ? Infinity : p.day.roleNames.indexOf(b)));
   const rows = schedule ? roles.map(role => {
     const cells = schedule.matrix[role] ?? {};
-    const shared = role === "大件行李拦截" ? sharedBaggageGroups(columns, cells).filter(g => g.columns.length > 1 && !p.day.cells.some(c => c.roleName === role && g.columns.includes(c.flightNo) && (cellEdits.has(c.id) || p.cellDrafts?.[c.id]))) : [];
+    const shared = role === "大件行李拦截" ? sharedBaggageGroups(columns, cells).filter(g => g.columns.length > 1 && !p.day.cells.some(c => c.roleName === role && g.columns.includes(c.flightNo) && (edits.cells.has(c.id) || p.cellDrafts?.[c.id]))) : [];
     return `<tr><th scope="row">${html(role)}</th>${columns.map(column => {
     const merged = shared.find(g => g.columns.includes(column));
     if (merged && merged.columns[0] !== column) return "";
@@ -812,12 +791,12 @@ function scheduleHtml(p: Plan | null): string {
     const contents = grouped.map(group => Array.from({ length: Math.max(group.count, group.members.length) }, (_, i) => {
       const id = group.members[i];
       const name = schedule.members.find(m => m.id === id)?.name ?? id;
-      return id ? `<span class="schedule-name" contenteditable="false" draggable="${!dirty}" data-drag-member="${html(id)}" data-task-ids="${html(JSON.stringify(group.ids))}" data-drop-member="${html(id)}"><span class="schedule-drag-handle" data-drag-handle role="button" tabindex="0" aria-label="拖动 ${html(name)}" title="按住拖动到另一岗位；拖到姓名上交换"><svg viewBox="0 0 12 18" width="10" height="15" aria-hidden="true"><path d="M3 3h1m4 0h1M3 9h1m4 0h1M3 15h1m4 0h1" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></span>${html(name)}</span>` : '<span class="unfilled-name" aria-label="待安排">待安排</span>';
+      return id ? `<span class="schedule-name" contenteditable="false" draggable="${!edits.dayDirty}" data-drag-member="${html(id)}" data-task-ids="${html(JSON.stringify(group.ids))}" data-drop-member="${html(id)}"><span class="schedule-drag-handle" data-drag-handle role="button" tabindex="0" aria-label="拖动 ${html(name)}" title="按住拖动到另一岗位；拖到姓名上交换"><svg viewBox="0 0 12 18" width="10" height="15" aria-hidden="true"><path d="M3 3h1m4 0h1M3 9h1m4 0h1M3 15h1m4 0h1" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></span>${html(name)}</span>` : '<span class="unfilled-name" aria-label="待安排">待安排</span>';
     }).join(' / ')).join(' / ');
-    const pending = cell ? cellEdits.get(cell.id) ?? p.cellDrafts?.[cell.id] : undefined;
-    return `<td ${span} class="${hasIssue ? "schedule-cell-issue" : ""} ${hasConflict ? "schedule-cell-conflict" : hasVacancy ? "schedule-cell-vacancy" : ""}" data-drop-ids="${html(JSON.stringify(segments.map(s => s.task_id)))}" ${cell ? `data-cell-id="${html(cell.id)}"` : ""} title="${html(cellIssues.map(i=>i.message).join("；"))}"><div class="schedule-cell" data-edit-cell="${html(role)}" data-column="${html(column)}" ${cell && !merged ? `data-cell-text="${html(cell.id)}"` : ""} ${merged ? `data-shared-editor title="共享轮换：点击姓名或＋选人，双击此格逐段输入姓名"` : ""} contenteditable="${!dirty && !!cell && !merged}" role="textbox" aria-label="${html(column)} ${html(role)} 人员姓名" aria-multiline="false" tabindex="0">${pending === undefined ? contents : html(pending)}</div>${!viewingFormal ? `<button class="cell-pick-button" data-pick-cell aria-label="${html(column)} ${html(role)} 选择人员" ${dirty ? "disabled" : ""}>＋</button>` : ""}${hasIssue ? `<button class="cell-warning" data-cell-issues="${html(cell?.id ?? segments[0]?.task_id ?? "")}" aria-label="查看本格问题">!</button>` : ""}<button class="cell-detail-button" data-cell-detail="${html(role)}" data-column="${html(column)}" ${merged ? `data-shared-tasks="${html(JSON.stringify(segments.map(s => s.task_id)))}"` : ""} aria-label="${html(column)} ${html(role)} 选人及岗位详情" ${dirty ? "disabled" : ""}>⋯</button></td>`;
+    const pending = cell ? edits.cells.get(cell.id) ?? p.cellDrafts?.[cell.id] : undefined;
+    return `<td ${span} class="${hasIssue ? "schedule-cell-issue" : ""} ${hasConflict ? "schedule-cell-conflict" : hasVacancy ? "schedule-cell-vacancy" : ""}" data-drop-ids="${html(JSON.stringify(segments.map(s => s.task_id)))}" ${cell ? `data-cell-id="${html(cell.id)}"` : ""} title="${html(cellIssues.map(i=>i.message).join("；"))}"><div class="schedule-cell" data-edit-cell="${html(role)}" data-column="${html(column)}" ${cell && !merged ? `data-cell-text="${html(cell.id)}"` : ""} ${merged ? `data-shared-editor title="共享轮换：点击姓名或＋选人，双击此格逐段输入姓名"` : ""} contenteditable="${!edits.dayDirty && !!cell && !merged}" role="textbox" aria-label="${html(column)} ${html(role)} 人员姓名" aria-multiline="false" tabindex="0">${pending === undefined ? contents : html(pending)}</div>${!viewingFormal ? `<button class="cell-pick-button" data-pick-cell aria-label="${html(column)} ${html(role)} 选择人员" ${edits.dayDirty ? "disabled" : ""}>＋</button>` : ""}${hasIssue ? `<button class="cell-warning" data-cell-issues="${html(cell?.id ?? segments[0]?.task_id ?? "")}" aria-label="查看本格问题">!</button>` : ""}<button class="cell-detail-button" data-cell-detail="${html(role)}" data-column="${html(column)}" ${merged ? `data-shared-tasks="${html(JSON.stringify(segments.map(s => s.task_id)))}"` : ""} aria-label="${html(column)} ${html(role)} 选人及岗位详情" ${edits.dayDirty ? "disabled" : ""}>⋯</button></td>`;
   }).join("")}</tr>`; }).join("") : "";
-  return `<div class="wb-title"><h2>${html(p.day.serviceDate)} · 航班排班</h2><span class="wb-tag">${html(status(p))}</span><p>格子可直接打字，回车或离开保存；姓名可拖动，拖到姓名上交换。</p></div>${waitingForPeople ? `<section id="choose-people-notice" class="wb-card preparation-next"><div><strong>下一步：选择当天人员</strong><p>${html(p.preparationNotice)}</p></div><button id="choose-duty-workers" class="btn btn-primary">选择当天人员</button></section>` : ""}${dirty ? '<p class="wb-warning">当天资料有未保存修改，请先到航班或配置页保存；当前矩阵仍对应上次已保存输入。</p>' : ""}<div class="wb-actionbar toolbar-band schedule-toolbar"><div class="toolbar-primary"><button id="solve-draft" class="btn btn-primary" ${dirty ? "disabled" : ""}>↻ 重新排班</button><button id="archive-next" class="btn btn-success" ${dirty ? "disabled" : ""}>归档并排后天</button><button id="export-formal" class="btn btn-outline-success" ${!dirty ? "" : "disabled"}>导出结果</button><button id="share-html" class="btn btn-outline-secondary" title="导出HTML" ${!dirty ? "" : "disabled"}>HTML</button><button id="share-png" class="btn btn-outline-secondary" title="导出图片" ${!dirty ? "" : "disabled"}>图片</button><button id="archive-only" class="btn btn-outline-secondary" ${!dirty ? "" : "disabled"}>仅归档</button><button id="configure-half-rest" class="btn btn-outline-secondary" ${viewingFormal ? "disabled" : ""}>半休人员 ${p.day.memberAvailability.filter(a=>a.participating&&a.halfRest).length || ""}</button><button id="previous-schedule" class="btn btn-outline-secondary">上班对照</button><button id="undo-move" class="btn btn-outline-secondary" ${p.undoAvailable && !cellEdits.size ? "" : "disabled"}>撤销修改</button><div class="schedule-secondary-actions"><button id="schedule-flights">航班 / 当天人员</button><button id="phase-config">岗位性质 / 兼任</button><button id="clear-draft">清空排班</button>${p.preview ? '<button id="cancel-preview">取消本次预览</button>' : ""}<button id="adopt-draft" ${!dirty ? "" : "disabled"}>采用并保存</button><button id="view-formal" ${p.adopted ? "" : "disabled"}>${viewingFormal ? "返回草稿编辑" : "查看正式结果"}</button><button id="toggle-schedule-layout">${scheduleLayout === "flights" ? "原保障表布局" : "按航班布局"}</button></div></div><div class="toolbar-meta"><span>${waitingForPeople ? "先核对当天人员" : p.valid ? "✓ 可归档" : `草稿 · ${p.issues.length} 项待处理`}</span></div></div><section id="schedule-issues" class="wb-card schedule-issues"><h3 class="schedule-panel-heading">${html(issueSummary)}</h3><ul>${waitingForPeople ? `<li>${html(p.preparationNotice)}</li>${shownIssues.map(i=>`<li>${html(issueText(i.message,p))}</li>`).join("")}` : !viewingFormal && p.needsPreparation && shownIssues.length ? '<li>点击“重新排班”，选择当天人员；普通岗位和正常出勤无需填写起止时间。原方案保留。</li>' : shownIssues.map(i => `<li><button class="issue-jump" data-issue-tasks="${html(JSON.stringify(i.relatedTaskIds?.length ? i.relatedTaskIds : [i.taskId].filter(Boolean)))}">${html(issueText(i.message, p))}</button></li>`).join("") || "<li>当前草稿可采用</li>"}</ul></section>${schedule?.members.some(m=>m.halfRest) ? `<p class="section-note half-rest-summary">半休：${schedule.members.filter(m=>m.halfRest).map(m=>`${html(m.name)}（${halfRestLabel(m.halfRest)}${schedule.assignments.some(a=>a.memberId===m.id)?"":"，当天无安排，保留休息"}）`).join("、")}</p>` : ""}${!viewingFormal ? paletteHtml(p, schedule, selectedPaletteTarget, placingPerson?.memberId ?? "") + '<p class="schedule-legend"><span class="legend-vacancy">琥珀色：岗位缺人</span><span class="legend-conflict">红色：安排有冲突或资料待处理</span></p>' : ""}<section class="wb-card wb-scroll schedule-sheet" data-zoom-sheet><table class="wb-table wb-matrix ${scheduleLayout === "flights" ? "flight-grid" : ""}" ${scheduleLayout === "flights" ? `style="min-width:${Math.max(660,columns.length*270)}px"` : ""}><caption>服务 ${html(p.day.serviceDate.slice(5).replace("-", "."))}</caption>${scheduleLayout === "flights" && rows ? flightGrid(rows, columns, schedule?.flights ?? p.day.flights) : `<thead><tr><th>岗位</th>${columns.map(c => `<th scope="col">${flightHeader(c, schedule?.flights ?? p.day.flights)}</th>`).join("")}</tr></thead><tbody>${rows || '<tr><td>当前资料尚未形成任务，原姓名和问题保留在归档中。</td></tr>'}</tbody>`}</table></section>${relaxedSummaryHtml(viewingFormal ? state.formalRelaxedShiftSummary : state.relaxedShiftSummary)}${scheduleExtras(state, p, schedule)}`;
+  return `<div class="wb-title"><h2>${html(p.day.serviceDate)} · 航班排班</h2><span class="wb-tag">${html(status(p))}</span><p>格子可直接打字，回车或离开保存；姓名可拖动，拖到姓名上交换。</p></div>${waitingForPeople ? `<section id="choose-people-notice" class="wb-card preparation-next"><div><strong>下一步：选择当天人员</strong><p>${html(p.preparationNotice)}</p></div><button id="choose-duty-workers" class="btn btn-primary">选择当天人员</button></section>` : ""}${edits.dayDirty ? '<p class="wb-warning">当天资料有未保存修改，请先到航班或配置页保存；当前矩阵仍对应上次已保存输入。</p>' : ""}<div class="wb-actionbar toolbar-band schedule-toolbar"><div class="toolbar-primary"><button id="solve-draft" class="btn btn-primary" ${edits.dayDirty ? "disabled" : ""}>↻ 重新排班</button><button id="archive-next" class="btn btn-success" ${edits.dayDirty ? "disabled" : ""}>归档并排后天</button><button id="export-formal" class="btn btn-outline-success" ${!edits.dayDirty ? "" : "disabled"}>导出结果</button><button id="share-html" class="btn btn-outline-secondary" title="导出HTML" ${!edits.dayDirty ? "" : "disabled"}>HTML</button><button id="share-png" class="btn btn-outline-secondary" title="导出图片" ${!edits.dayDirty ? "" : "disabled"}>图片</button><button id="archive-only" class="btn btn-outline-secondary" ${!edits.dayDirty ? "" : "disabled"}>仅归档</button><button id="configure-half-rest" class="btn btn-outline-secondary" ${viewingFormal ? "disabled" : ""}>半休人员 ${p.day.memberAvailability.filter(a=>a.participating&&a.halfRest).length || ""}</button><button id="previous-schedule" class="btn btn-outline-secondary">上班对照</button><button id="undo-move" class="btn btn-outline-secondary" ${p.undoAvailable && !edits.cells.size ? "" : "disabled"}>撤销修改</button><div class="schedule-secondary-actions"><button id="schedule-flights">航班 / 当天人员</button><button id="phase-config">岗位性质 / 兼任</button><button id="clear-draft">清空排班</button>${p.preview ? '<button id="cancel-preview">取消本次预览</button>' : ""}<button id="adopt-draft" ${!edits.dayDirty ? "" : "disabled"}>采用并保存</button><button id="view-formal" ${p.adopted ? "" : "disabled"}>${viewingFormal ? "返回草稿编辑" : "查看正式结果"}</button><button id="toggle-schedule-layout">${scheduleLayout === "flights" ? "原保障表布局" : "按航班布局"}</button></div></div><div class="toolbar-meta"><span>${waitingForPeople ? "先核对当天人员" : p.valid ? "✓ 可归档" : `草稿 · ${p.issues.length} 项待处理`}</span></div></div><section id="schedule-issues" class="wb-card schedule-issues"><h3 class="schedule-panel-heading">${html(issueSummary)}</h3><ul>${waitingForPeople ? `<li>${html(p.preparationNotice)}</li>${shownIssues.map(i=>`<li>${html(issueText(i.message,p))}</li>`).join("")}` : !viewingFormal && p.needsPreparation && shownIssues.length ? '<li>点击“重新排班”，选择当天人员；普通岗位和正常出勤无需填写起止时间。原方案保留。</li>' : shownIssues.map(i => `<li><button class="issue-jump" data-issue-tasks="${html(JSON.stringify(i.relatedTaskIds?.length ? i.relatedTaskIds : [i.taskId].filter(Boolean)))}">${html(issueText(i.message, p))}</button></li>`).join("") || "<li>当前草稿可采用</li>"}</ul></section>${schedule?.members.some(m=>m.halfRest) ? `<p class="section-note half-rest-summary">半休：${schedule.members.filter(m=>m.halfRest).map(m=>`${html(m.name)}（${halfRestLabel(m.halfRest)}${schedule.assignments.some(a=>a.memberId===m.id)?"":"，当天无安排，保留休息"}）`).join("、")}</p>` : ""}${!viewingFormal ? paletteHtml(p, schedule, selectedPaletteTarget, placingPerson?.memberId ?? "") + '<p class="schedule-legend"><span class="legend-vacancy">琥珀色：岗位缺人</span><span class="legend-conflict">红色：安排有冲突或资料待处理</span></p>' : ""}<section class="wb-card wb-scroll schedule-sheet" data-zoom-sheet><table class="wb-table wb-matrix ${scheduleLayout === "flights" ? "flight-grid" : ""}" ${scheduleLayout === "flights" ? `style="min-width:${Math.max(660,columns.length*270)}px"` : ""}><caption>服务 ${html(p.day.serviceDate.slice(5).replace("-", "."))}</caption>${scheduleLayout === "flights" && rows ? flightGrid(rows, columns, schedule?.flights ?? p.day.flights) : `<thead><tr><th>岗位</th>${columns.map(c => `<th scope="col">${flightHeader(c, schedule?.flights ?? p.day.flights)}</th>`).join("")}</tr></thead><tbody>${rows || '<tr><td>当前资料尚未形成任务，原姓名和问题保留在归档中。</td></tr>'}</tbody>`}</table></section>${relaxedSummaryHtml(viewingFormal ? state.formalRelaxedShiftSummary : state.relaxedShiftSummary)}${scheduleExtras(state, p, schedule)}`;
 }
 
 
@@ -841,12 +820,12 @@ function openCellDetails(role: string, column: string, taskIds?: string[]): void
 }
 
 async function saveCell(cellId: string): Promise<boolean> {
-  const text = cellEdits.get(cellId);
+  const text = edits.cells.get(cellId);
   if (text === undefined) return true;
-  if (busy || dirty || viewingFormal) return false;
+  if (busy || edits.dayDirty || viewingFormal) return false;
   const ok = await run("edit-cell", { cellId, text });
   if (ok) {
-    cellEdits.delete(cellId);
+    edits.cells.delete(cellId);
     if (plan()?.cellDrafts?.[cellId]) dialog = { kind: "cell-settings", cellId };
     render();
   }
@@ -854,42 +833,29 @@ async function saveCell(cellId: string): Promise<boolean> {
 }
 
 async function flushCells(): Promise<boolean> {
-  for (const id of [...cellEdits.keys()]) if (!await saveCell(id)) return false;
+  for (const id of [...edits.cells.keys()]) if (!await saveCell(id)) return false;
   return true;
 }
 
-async function openPreparation(mode: "archive" | "reschedule"): Promise<void> {
-  if (busy || dirty || !await flushCells()) return;
-  const p = plan()!, day = structuredClone(p.preparationDay);
-  if (mode === "archive") {
-    const date = new Date(`${day.serviceDate}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + 2);
-    day.serviceDate = date.toISOString().slice(0, 10);
-    day.memberAvailability = day.memberAvailability.map(a => ({ ...a, availableFrom: null, availableUntil: null, halfRest: null }));
-  }
-  const selected = new Set(day.flights.map(f => f.id));
-  addTemplates(day,state.flightTemplates,newCell);
-  if (mode === "archive") {
-    const preset=state.weeklyFlightPresets[weekdayOf(day.serviceDate)];
-    if (preset) {addTemplates(day,preset,newCell);selected.clear();day.flights.filter(f=>preset.some(t=>t.flightNo===f.flightNo)).forEach(f=>selected.add(f.id));}
-  }
-  prepareWithConfiguration(day, state, newCell, mode === "archive");
-  dialog = { kind: "prepare", mode, day, selected }; dialogError = ""; render();
+async function openPreparation(mode: Preparation["mode"]): Promise<void> {
+  if (busy || edits.dayDirty || !await flushCells()) return;
+  dialog = { kind: "prepare", ...startPreparation(plan()!.preparationDay,state,mode) }; dialogError = ""; render();
 }
 
 async function performMove(source: DragSource, sourceTaskId: string | undefined, targetTaskId: string, targetMemberId?: string): Promise<void> {
-  if (busy || dirty || viewingFormal) return;
+  if (busy || edits.dayDirty || viewingFormal) return;
   if (source.planId !== plan()?.id || source.revision !== state.revision) { message = "班表已改变，请重新拖动"; render(); return; }
   await run("move-assignment", { memberId: source.memberId, sourceTaskId, targetTaskId, targetMemberId });
 }
 
 async function requestDrop(source: DragSource, ids: string[], targetMember?: string, cellId?: string): Promise<void> {
-  if (busy || dirty || viewingFormal) return;
-  if (cellEdits.size) { message = "请先回车保存正在输入的姓名，再拖动"; render(); return; }
+  if (busy || edits.dayDirty || viewingFormal) return;
+  if (edits.cells.size) { message = "请先回车保存正在输入的姓名，再拖动"; render(); return; }
   if (source.revision !== state.revision || source.planId !== plan()?.id) { message = "班表已改变，请重新选择人员"; render(); return; }
   if (!ids.length) {
     if (cellId && !source.taskIds.length) {
       const name = plan()!.schedule!.members.find(m => m.id === source.memberId)!.name;
-      cellEdits.set(cellId, name); await saveCell(cellId);
+      edits.cells.set(cellId, name); await saveCell(cellId);
     } else { message = "请先点击该格详情确认岗位人数和工作方式，再移动人员"; render(); }
     return;
   }
@@ -910,7 +876,7 @@ function bindScheduleEditing(): void {
     el.addEventListener("keydown", event => { if (event.target === el && event.key === "Enter") { event.preventDefault(); open(); } });
   });
   root.querySelector<HTMLButtonElement>("#undo-move")?.addEventListener("click", async () => {
-    if (!plan()?.undoAvailable || cellEdits.size) return;
+    if (!plan()?.undoAvailable || edits.cells.size) return;
     await run("undo-edit");
   });
   root.querySelector<HTMLButtonElement>("#clear-draft")?.addEventListener("click", async () => { if (await flushCells() && confirm("清空当前草稿中的人员安排？已采用的正式班表保留。")) await run("clear-draft"); });
@@ -935,7 +901,7 @@ function bindScheduleEditing(): void {
     pointerDrag.bind(scope);
     scope.querySelectorAll<HTMLElement>('[draggable="true"][data-drag-member]').forEach(el => {
       el.ondragstart = event => {
-        if (busy || dirty || viewingFormal || cellEdits.size || !event.dataTransfer) { event.preventDefault(); return; }
+        if (busy || edits.dayDirty || viewingFormal || edits.cells.size || !event.dataTransfer) { event.preventDefault(); return; }
         dragSource = { memberId: el.dataset.dragMember!, taskIds: JSON.parse(el.dataset.taskIds!), planId: plan()!.id, revision: state.revision };
         event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-gate-schedule", JSON.stringify(dragSource));
         el.classList.add("is-dragging");
@@ -943,7 +909,7 @@ function bindScheduleEditing(): void {
       el.ondragend = () => { dragSource = null; clearTargets(); el.classList.remove("is-dragging"); };
     });
     scope.querySelectorAll<HTMLButtonElement>("[data-palette-member]:not(:disabled)").forEach(button => button.onclick = () => {
-      if (busy || dirty || viewingFormal) return;
+      if (busy || edits.dayDirty || viewingFormal) return;
       placingPerson = placingPerson?.memberId === button.dataset.paletteMember ? null : { memberId: button.dataset.paletteMember!, taskIds: [], planId: plan()!.id, revision: state.revision };
       message = placingPerson ? "已选人员，请点击要安排的岗位格；再次点击姓名取消" : "已取消选择"; render();
     });
@@ -954,7 +920,7 @@ function bindScheduleEditing(): void {
     peopleChanged: bindPersonnel,
   });
   root.querySelectorAll<HTMLElement>("[data-drop-ids]").forEach(cell => {
-    cell.ondragover = event => { if (dragSource && !busy && !dirty && !viewingFormal) { event.preventDefault(); clearTargets(); cell.classList.add("is-drop-target"); if (event.dataTransfer) event.dataTransfer.dropEffect = "move"; } };
+    cell.ondragover = event => { if (dragSource && !busy && !edits.dayDirty && !viewingFormal) { event.preventDefault(); clearTargets(); cell.classList.add("is-drop-target"); if (event.dataTransfer) event.dataTransfer.dropEffect = "move"; } };
     cell.ondragleave = event => { if (!cell.contains(event.relatedTarget as Node | null)) cell.classList.remove("is-drop-target"); };
     cell.ondrop = event => {
       event.preventDefault(); clearTargets();
@@ -997,11 +963,11 @@ function bindSchedule(): void {
     await openPreparation("reschedule"); const selector=root.querySelector<HTMLDetailsElement>("#half-rest-selector");
     if(selector){selector.open=true;selector.scrollIntoView({block:"center"});}
   });
-  root.querySelector<HTMLButtonElement>("#solve-draft")?.addEventListener("click", () => { if (!dirty) void openPreparation("reschedule"); });
-  root.querySelector<HTMLButtonElement>("#archive-next")?.addEventListener("click", () => { if (!dirty) void openPreparation("archive"); });
+  root.querySelector<HTMLButtonElement>("#solve-draft")?.addEventListener("click", () => { if (!edits.dayDirty) void openPreparation("reschedule"); });
+  root.querySelector<HTMLButtonElement>("#archive-next")?.addEventListener("click", () => { if (!edits.dayDirty) void openPreparation("archive"); });
   bindScheduleEditing();
   root.querySelector<HTMLButtonElement>("#cancel-preview")?.addEventListener("click", async () => { if (await flushCells()) await run("cancel-preview"); });
-  root.querySelector<HTMLButtonElement>("#adopt-draft")?.addEventListener("click", async () => { if (!dirty && await flushCells() && !dialog && confirm("保存当前草稿为归档班表？原安排、空缺和校验问题都会保留，并替换此计划的归档结果。")) await run("adopt"); });
+  root.querySelector<HTMLButtonElement>("#adopt-draft")?.addEventListener("click", async () => { if (!edits.dayDirty && await flushCells() && !dialog && confirm("保存当前草稿为归档班表？原安排、空缺和校验问题都会保留，并替换此计划的归档结果。")) await run("adopt"); });
   root.querySelector<HTMLButtonElement>("#export-formal")?.addEventListener("click", async () => {
     if (!viewingFormal && (!await flushCells() || !await run("adopt"))) return;
     try {
@@ -1011,12 +977,12 @@ function bindSchedule(): void {
     } catch (error) { message = String(error); render(); }
   });
   root.querySelectorAll<HTMLButtonElement>("[data-cell-detail]").forEach(button => button.onclick = async () => {
-    if (busy || dirty || viewingFormal) return;
+    if (busy || edits.dayDirty || viewingFormal) return;
     if (!await flushCells()) return;
     openCellDetails(button.dataset.cellDetail!, button.dataset.column!, button.dataset.sharedTasks ? JSON.parse(button.dataset.sharedTasks) : undefined);
   });
   root.querySelectorAll<HTMLSelectElement>("[data-assignment-task]").forEach(input => input.onchange = async () => {
-    if (busy || dirty) return;
+    if (busy || edits.dayDirty) return;
     await run("edit-slot", {taskId:input.dataset.assignmentTask!,slot:Number(input.dataset.slot),memberId:input.value});
   });
   root.querySelectorAll<HTMLSelectElement>("[data-assignment-task]").forEach(input => {
@@ -1034,7 +1000,7 @@ function bindSchedule(): void {
           option.disabled=!(candidate?.available || candidate?.manualAllowed);
           if(candidate) option.textContent=`${candidate.name}（${!candidate.available && candidate.manualAllowed ? "填入后报警" : candidate.label ?? (candidate.available ? "可安排" : "不可安排")}${candidate.reasons.length ? `：${candidate.reasons.join("；")}` : ""}）`;
         }
-        input.disabled=busy||dirty; input.title="已按该位置核对人选";
+        input.disabled=busy||edits.dayDirty; input.title="已按该位置核对人选";
       })
       .catch(error=>{if(input.isConnected){input.disabled=true;input.title=String(error);input.insertAdjacentHTML("afterend",'<small class="text-danger" role="alert">人选检查未完成，请关闭后重试。</small>');}});
   });

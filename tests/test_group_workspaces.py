@@ -135,6 +135,18 @@ class GroupWorkspaceTests(unittest.TestCase):
         target.workbench('B').execute(state['revision'], 'solve', {}, state['selectedPlanId'])
         self.assertEqual(a_before, target.workbench('A').backup())
 
+    def test_export_prepares_both_groups_without_decoding_intermediate_excels(self):
+        before = self.groups.backup()
+        with patch('gate_schedule.excel_io.import_complete_configuration',
+                   side_effect=AssertionError('group export must not decode intermediate workbooks')):
+            content = self.groups.export_configuration('A')
+        decoded = import_complete_configuration(content)
+        self.assertEqual({'A', 'B'}, set(decoded['groupTransfer']['configurations']))
+        for group in ('A', 'B'):
+            self.assertEqual(before['groups'][group],
+                             decoded['groupTransfer']['configurations'][group]['history']['state'])
+        self.assertEqual(before, self.groups.backup())
+
     def test_backup_restore_all_groups_and_legacy_restore_only_selected(self):
         b = self.groups.workbench('B')
         b.execute(b.snapshot()['revision'], 'save-person', {'name': 'B独有'})

@@ -52,6 +52,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   const settings={flightCountGap:null,priorityEnabled:false,priorityFlightRoles:[{flightNo:'F0',roleName:'\u4e3b\u9a8c'}],priorityRoleNames:['主验'],priorityAdjustments:[{month:'2026-08',memberId:'a',flightNo:'F0',roleName:'主验',delta:2}]};
   const stats=month=>({revision:state.revision,month,months:['2026-08','2026-07','2026-06'],totals:[{memberId:'a',count:23},{memberId:'b',count:1}],scopedTotals:[{flightNo:'',roleName:'核验',totals:[{memberId:'a',count:0}]},{flightNo:'F1',roleName:'',totals:[{memberId:'a',count:7}]}],roles:[{flightNo:'F0',roleName:'主验',members:[{memberId:'a',memberName:'甲',qualified:true,historyCount:3,adjustment:state.balanceSettings.priorityAdjustments.filter(item=>item.month===month).reduce((sum,item)=>sum+item.delta,0),effectiveCount:3+state.balanceSettings.priorityAdjustments.filter(item=>item.month===month).reduce((sum,item)=>sum+item.delta,0),dates:[`${month}-02`]},{memberId:'b',memberName:'乙',qualified:false,historyCount:1,adjustment:0,effectiveCount:1,dates:[`${month}-04`]}]},{flightNo:'F0',roleName:'核验',members:[{memberId:'a',memberName:'甲',qualified:true,historyCount:0,adjustment:0,effectiveCount:0,dates:[]}]},{flightNo:'F1',roleName:'主验',members:[{memberId:'a',memberName:'甲',qualified:true,historyCount:7,adjustment:0,effectiveCount:7,dates:[]}]}]});
   const state={relaxedShiftSettings:{earlyDepartureCutoffTime:'12:00',afternoonRestStartTime:'12:00',afternoonRestEndTime:'18:00',lateShiftEndTime:'23:00',lateFlightNos:[]},halfRestSettings:{exemptFlightCount:true},personnelStatuses:["正常","病假","休假"],teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},revision:51,selectedPlanId:null,plans:{},balanceSettings:settings,people:[{id:'a',name:'甲',active:true,eligibleRoleNames:['主验','核验']}],configuration:{roleConfigs:[{roleName:'接机1',requiredCount:1,workMode:'arrival'},{roleName:'主验',requiredCount:1,workMode:'boarding'},{roleName:'核验',requiredCount:1,workMode:'boarding'}],rotationEnabled:false,rotationMinutes:60,transitionMinutes:0},displayPreferences:{layout:'flights',zoom:100},flightLibrary:[{flightNo:'F0'},{flightNo:'F1'}],flightTemplates:[],weeklyFlightPresets:{},newRoleDefaults:{},workModes:{boarding:'登机环节'},handoffPreferences:[],suggestedHandoffPreferences:[],migrationReport:[]};
+  state.coveragePolicy={choices:{protect:'优先保岗',normal:'正常安排','leave-empty':'缺人时优先留空'}};
   const snapshot=()=>({...state,priorityStatistics:stats('2026-08')});
   let rejectSettings=false,queryMode='normal';const commands=[],held=[];
   const server=createServer((request,response)=>{
@@ -106,8 +107,26 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   const target=await call('Target.createTarget',{url:'about:blank'});sessionId=(await call('Target.attachToTarget',{targetId:target.targetId,flatten:true})).sessionId;await call('Page.enable');await call('Page.navigate',{url:base});await until(()=>evaluate('!!document.querySelector("[data-view=rules]")'),'工作台启动');
   await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await click('[data-view=rules]');
+  assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]").length'),6,'每个岗位两项勾选，两个航班也只设置一次');
+  assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'初始全部不勾，不替用户选择');
+  await change('[data-coverage-role="主验"][data-coverage-priority="protect"]',true,true);
+  await change('[data-coverage-role="主验"][data-coverage-priority="leave-empty"]',true,true);
+  assert.equal(await evaluate('document.querySelector("[data-coverage-role=主验][data-coverage-priority=protect]").checked'),false,'两项互斥');
+  await change('[data-coverage-role="主验"][data-coverage-priority="leave-empty"]',false,true);
+  assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'取消勾选恢复正常安排');
+  await change('[data-handoff-source=接机1] [data-handoff-target=主验]',true,true);
+  await click('#export-complete-configuration');
+  assert.equal(await evaluate('document.querySelector("#app-dialog").open'),true);
+  assert.match(await evaluate('document.querySelector(".save-state").textContent'),/未保存/,
+    '只修改接续偏好后打开导出确认，重绘也必须保持未保存提示');
+  await click('#leave-stay');
+  assert.equal(await evaluate('document.querySelector("[data-handoff-source=接机1] [data-handoff-target=主验]").checked'),true);
+  await click('[data-view=statistics]');await click('#leave-discard');
+  await until(()=>evaluate('!!document.querySelector("#duty-report")'),'放弃后继续切页');
+  await click('[data-view=rules]');
+  assert.equal(commands.length,0,'放弃临时修改不能写入');
   assert.equal(await evaluate('document.querySelectorAll("#save-rules").length'),1);
-  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),8);
+  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),9);
   await evaluate('(()=>{const el=document.querySelector("#rules-search");el.value="稀缺";el.dispatchEvent(new Event("input",{bubbles:true}));})()');
   assert.equal(await evaluate('document.querySelector("#base-rule-settings").hidden'),false);
   assert.equal(await evaluate('document.querySelector("#base-rule-settings").open'),true);
@@ -123,6 +142,8 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   assert.equal(await evaluate('document.querySelector("#priority-role-rules").open'),true);
   assert.equal(await evaluate('document.querySelector("#flight-balance-rules").open'),false);
   assert.equal(commands.length,0,'搜索折叠不写库');
+  await change('[data-coverage-role="主验"][data-coverage-priority="protect"]',true,true);
+  await change('[data-coverage-role="核验"][data-coverage-priority="leave-empty"]',true,true);
   await change('#priority-enabled' ,true,true);await change('[data-priority-role="核验"]',true,true);await change('#flight-count-gap-enabled',true,true);await change('#flight-count-gap','1');
   await change('#priority-rule-flight','F1');await change('[data-priority-flight="F1"][data-priority-role="主验"]',true,true);
   await change('#priority-rule-flight','F0');assert.equal(await evaluate('document.querySelector("[data-priority-flight=F0][data-priority-role=核验]").checked'),true,'切换航班保留各自勾选');
@@ -140,7 +161,8 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   await click('#leave-stay');
   await click('[data-view=statistics]');await click('#leave-stay');assert.equal(await evaluate('document.querySelector("[data-priority-role=核验]").checked'),true,'未保存草稿切页保留');
   rejectSettings=false;await click('[data-view=statistics]');await click('#leave-save');await until(()=>state.revision===52,'规则保存');await until(()=>evaluate('!!document.querySelector("#priority-statistics-root")'),'保存后继续');await click('[data-view=rules]');
-  assert.deepEqual(commands.at(-1).payload.balanceSettings,{...settings,priorityEnabled:true,priorityRoleNames:[],priorityFlightRoles:[{flightNo:'F0',roleName:'主验'},{flightNo:'F0',roleName:'核验'},{flightNo:'F1',roleName:'主验'}],flightCountGap:1},'规则保存保留原人工修正及跨航班勾选');
+  assert.deepEqual(commands.at(-1).payload.balanceSettings,{...settings,coveragePriorities:[{roleName:'主验',priority:'protect'},{roleName:'核验',priority:'leave-empty'}],priorityEnabled:true,priorityRoleNames:[],priorityFlightRoles:[{flightNo:'F0',roleName:'主验'},{flightNo:'F0',roleName:'核验'},{flightNo:'F1',roleName:'主验'}],flightCountGap:1},'规则保存保留保岗选择、人工修正及跨航班重点勾选');
+  assert.equal(await evaluate('document.querySelector("[data-coverage-role=主验][data-coverage-priority=protect]").checked'),true,'失败后保存并继续，勾选保留');
   await evaluate('document.querySelectorAll("#balance-rules details").forEach(detail=>detail.open=true)');await screenshot('rules-1440.png');
   await change('#base-transition-minutes','9');
   await change('#service-date','2026-08-05');

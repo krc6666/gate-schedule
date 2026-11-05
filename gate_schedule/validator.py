@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .domain import Assignment, Scenario, ValidationIssue, has_role_qualification, task_pair_conflict, member_flight_participation, task_flight_ids, flight_balance_members
-from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_rest_period_violation, validate_priority_flight_roles
+from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_rest_period_violation, validate_priority_flight_roles, validate_coverage_priorities
 
 
 def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
@@ -28,6 +28,10 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
     if scenario.flight_count_gap is not None and (type(scenario.flight_count_gap) is not int or scenario.flight_count_gap < 0):
         issues.append(ValidationIssue("invalid_flight_count_gap", "当天航班数最大差距必须为空或非负整数"))
     priority_roles = scenario.priority_role_ids
+    try:
+        validate_coverage_priorities([{'roleName': r, 'priority': p} for r, p in scenario.coverage_priorities])
+    except (ValueError, TypeError):
+        issues.append(ValidationIssue('invalid_coverage_priority', '保岗优先级无效'))
     try:
         validate_priority_flight_roles([{'flightNo': f, 'roleName': r} for f, r in scenario.priority_flight_roles])
     except (ValueError, TypeError):

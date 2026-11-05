@@ -10,7 +10,9 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 from .storage import LocalStateStore
-from .workbench import Workbench, WorkspaceError
+from .workbench import Workbench
+from .workspace_document import WorkspaceError, normalize_document, validate_document
+from .configuration_transfer import prepare_import, prepare_export
 
 
 GROUPS = ('A', 'B')
@@ -80,14 +82,13 @@ class GroupWorkspaces:
     def __init__(self, database_path, *, store=None):
         self.path = database_path
         self.store = store if store is not None else LocalStateStore(database_path)
-        self.validator = Workbench(database_path, store=self.store)
 
     def initialize(self):
         if self.store.read_document(self.KEY) is not None:
             self._validate(self._load())
             return
-        a = self.validator._load()
-        self.validator._validate_document(a)
+        a = normalize_document(self.store.read_document(Workbench.KEY))
+        validate_document(a)
         b = deepcopy(a)
         b.update(revision=0, people=[], plans={}, selectedPlanId=None, migrationReport=[])
         b.pop('trialInfo', None)
@@ -118,7 +119,7 @@ class GroupWorkspaces:
             raise WorkspaceError('A/B班组数据缺失或版本无效；当前数据保持')
         for group in GROUPS:
             state = root['groups'][group]
-            self.validator._validate_document(state)
+            validate_document(state)
             if _shared(state) != root['shared']:
                 raise WorkspaceError('班组共享航班数据不一致；当前数据保持')
 
@@ -161,7 +162,8 @@ class GroupWorkspaces:
             return {**wb.preview_restore(backup), 'scopeLabel': f'仅替换{group}组（共享航班同步）'}
         candidate = deepcopy(backup)
         self._validate(candidate)
-        return {'expectedRevision': wb._load()['revision'], 'expectedGroupsRevision': self._load()['revision'],
+        root = self._load()
+        return {'expectedRevision': root['groups'][check_group(group)]['revision'], 'expectedGroupsRevision': root['revision'],
                 'scopeLabel': '替换A/B两组全部数据',
                 'historyPlanCount': sum(len(s['plans']) for s in candidate['groups'].values()),
                 'peopleCount': sum(len(s['people']) for s in candidate['groups'].values())}
@@ -193,18 +195,16 @@ class GroupWorkspaces:
         return self.workbench(group).snapshot()
 
     def export_configuration(self, group, plan_id=None, service_date=None):
-        from .excel_io import import_complete_configuration
         from .group_excel import append_groups
         root = self._load()
         # Export both from the same captured revision, even during background work.
-        configs = {}
-        contents = {}
+        check_group(group)
+        prepared = {}
         for g in GROUPS:
-            wb = Workbench(self.path, store=_CapturedStore(_project(root['groups'][g], root['shared'])))
-            contents[g] = wb.export_complete_configuration(plan_id if g == group else None,
-                                                           service_date=service_date)
-            configs[g] = import_complete_configuration(contents[g])
-        book = load_workbook(BytesIO(contents[check_group(group)]))
+            prepared[g] = prepare_export(_project(root['groups'][g], root['shared']),
+                                         plan_id if g == group else None, service_date)
+        configs = {g: prepared[g].payload for g in GROUPS}
+        book = load_workbook(BytesIO(prepared[group].excel()))
         append_groups(book, {'formatVersion': 1, 'selectedGroupId': group, 'configurations': configs})
         stream = BytesIO()
         book.save(stream)
@@ -212,7 +212,6 @@ class GroupWorkspaces:
         return stream.getvalue()
 
     def _configuration_candidate(self, group, payload):
-        from .excel_io import validate_complete_configuration
         root = self._load()
         transfer = payload.get('groupTransfer')
         if transfer is None:
@@ -223,11 +222,9 @@ class GroupWorkspaces:
         for g in GROUPS:
             data = payload if g == group else transfer['configurations'][g]
             state = _project(root['groups'][g], root['shared'])
-            # Existing configuration importer owns IDs, history merging and rules.
-            self.validator._apply_complete_configuration(state, validate_complete_configuration(data))
-            self.validator._validate_document(state)
-            state['revision'] = root['groups'][g]['revision'] + 1
-            root['groups'][g] = state
+            # The same candidate preparation owns IDs, history and validation in
+            # both single-group and all-group imports. Nothing is saved here.
+            root['groups'][g] = prepare_import(state, data).state
         root['shared'] = _shared(root['groups'][group])
         root['activeGroupId'] = group
         for g in GROUPS:
@@ -256,12 +253,3 @@ class GroupWorkspaces:
             raise WorkspaceError('预览后班组数据已改变，请重新导入；两组原数据保持')
         self._save(candidate)
         return self.workbench(group).snapshot()
-
-
-class _CapturedStore:
-    """Read-only consistent workspace view for a multi-group export."""
-    def __init__(self, state):
-        self.state = state
-
-    def read_document(self, key):
-        return deepcopy(self.state)

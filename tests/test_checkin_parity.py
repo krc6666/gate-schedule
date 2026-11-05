@@ -7,6 +7,7 @@ from gate_schedule.solver import solve
 from gate_schedule.domain import Assignment, draft_blocking_issues
 from gate_schedule.validator import validate_schedule
 from gate_schedule.workbench import WorkspaceError
+from gate_schedule.workspace_document import plan_scenario
 
 
 class ParityTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class ParityTests(unittest.TestCase):
         expected = ["CX937", "KE166", "AK151", "TW616"]
         self.assertEqual(expected, [f["flightNo"] for f in plan["schedule"]["flights"]])
         self.assertEqual(expected, plan["flightColumns"])
-        scenario, _ = self.workspace._scenario(before["state"]["plans"][plan_id])
+        scenario, _ = plan_scenario(before["state"]["plans"][plan_id])
         projected = schedule_data(scenario, (Assignment("imported-early", people[0]["id"]),))
         self.assertEqual(expected, [f["flightNo"] for f in projected["flights"]])
         self.assertEqual(["甲"], projected["matrix"]["接机1"]["CX937"][0]["members"])
@@ -48,7 +49,7 @@ class ParityTests(unittest.TestCase):
         self.assertFalse(plan["schedule"]["tasks"])
         self.assertEqual(expected, plan["flightColumns"])
         from unittest.mock import patch
-        with patch.object(self.workspace, "_scenario", return_value=(None, [])):
+        with patch('gate_schedule.workbench.plan_scenario', return_value=(None, [])):
             self.assertEqual(expected, self.workspace.snapshot()["plans"][plan_id]["flightColumns"])
 
     def test_progress_reports_full_pipeline_and_finishes_only_after_commit(self):
@@ -195,14 +196,14 @@ class ParityTests(unittest.TestCase):
         before = self.workspace.backup()
         saved = self.command("adopt", {}, plan_id)
         self.assertEqual({'coverage_shortfall'}, {i['code'] for i in saved['plans'][plan_id]['adopted']['issues']})
-        scenario, _ = self.workspace._scenario(plan)
+        scenario, _ = plan_scenario(plan)
         self.assertFalse(draft_blocking_issues(validate_schedule(scenario, tuple(Assignment(a["taskId"], a["memberId"]) for a in plan["draft"]))))
         broken = replace(scenario, members=tuple(replace(m, eligible_role_ids=()) for m in scenario.members))
         self.assertTrue(draft_blocking_issues(validate_schedule(broken, (Assignment(scenario.tasks[0].id, scenario.members[0].id),))))
 
     def test_previous_role_preference_does_not_create_shortfall(self):
         plan_id, _ = self.complete_plan()
-        scenario, _ = self.workspace._scenario(self.workspace.snapshot()["plans"][plan_id])
+        scenario, _ = plan_scenario(self.workspace.snapshot()["plans"][plan_id])
         result = solve(scenario)
         previous = {(a.member_id, scenario.tasks[0].role_id) for a in result.assignments}
         rotated = solve(scenario, allow_partial=True, previous_roles=previous)

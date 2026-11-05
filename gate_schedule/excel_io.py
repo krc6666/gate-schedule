@@ -1362,6 +1362,7 @@ def export_complete_configuration(data, *, history_schedules=None):
         ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。全部日期的航班、草稿与正式历史随本文件迁移，在历史页查看。"],
         ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）和重点轮换启用；新版重点在航班重点岗位表逐行填写航班号和岗位，空表清空。重点次数修正按月份、人员ID、航班号和岗位维护增减；可填负整数，有效次数最低为0。旧修正航班号空白时保留待归属，不猜测分配；核对后补填航班号。排班平衡、航班重点岗位、重点次数修正三表与范围版本一起保留。旧文件缺航班范围时保留本机新选择、空库不勾选；旧岗位名单仅兼容保留，不再作为新版重点。姓名只供核对，不授予资质。"],
         ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。历史附表保留全部草稿、正式班表和累计次数依据；请勿手改历史数据，历史班表应在工作台维护。"],
+        ["岗位空缺优先级", "规则页每岗自行勾选优先保岗或缺人时优先留空，两项互斥，不勾正常，初始全部不勾，所有航班共用。维护后本文件的保岗优先级表按岗位填写优先保岗、正常安排或缺人时优先留空，空表恢复正常；与排班平衡的保岗优先级版本及配套表一起保留。旧文件无本项保留本机选择，新设备全正常。依次优先补齐三个档位，再考虑轮岗等偏好；不突破资格、出勤、固定、专岗、冲突和差距。重新排班生效，原班表保留；与重点轮换统计设置分开。"],
         ["分队长维护", "人员状态表的分队长列填是/否。分队长设置表维护最后使用和不参与航班数比较，默认都是。先补齐岗位，再尽量少用分队长，之后考虑重点轮换/接续。豁免只影响航班数比较，其他人员硬差距不放松，分队长仍须有资质、出勤且无冲突。旧文件无新列/表时保留当前值，新设备默认不标记任何分队长；显式否取消。"],
         ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，可编辑名单只列现有人员；历史附表保留已删除人员的身份和旧班表。"],
         ["接续偏好维护", "适用范围填写通用，所有航班共用。旧航班号表导入时按来源岗合并目标、初始同等优先。优先登机岗位用顿号分隔。按顺序优先填是时，从左到右为第一、第二等优先；否或空白表示同等优先。启用填是/否；可在规则页勾选、上下移调整。旧四列表保持同等优先；不满足偏好仍可合法排班。表存在则以表更新，空表清空；旧文件无此表保留当前偏好。"],
@@ -1403,6 +1404,13 @@ def export_complete_configuration(data, *, history_schedules=None):
             selected.append(['航班号', '岗位'])
             for item in balance.get('priorityFlightRoles', []):
                 selected.append([item['flightNo'], item['roleName']])
+        if 'coveragePriorities' in balance:
+            from .domain import COVERAGE_PRIORITIES
+            sheet.append(['保岗优先级版本', 1])
+            coverage = book.create_sheet('保岗优先级')
+            coverage.append(['岗位', '缺人时安排'])
+            for item in balance['coveragePriorities']:
+                coverage.append([item['roleName'], COVERAGE_PRIORITIES[item['priority']]])
         adjustments = book.create_sheet("重点次数修正")
         adjustments.append(["月份", "人员ID", "姓名", "岗位", "修正次数"] + (['航班号'] if by_flight else []))
         names_by_id = {identity: name for name, identity in data.get("peopleIds", {}).items()}
@@ -1690,18 +1698,25 @@ def import_complete_configuration(content):
                     identities[name] = identity
             data["peopleIds"] = identities
         balance_sheets = {"排班平衡", "重点次数修正"}
+        if '保岗优先级' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
+            raise ValueError('保岗优先级、排班平衡和重点次数修正必须一起保留')
         if '航班重点岗位' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
             raise ValueError('航班重点岗位、排班平衡和重点次数修正必须一起保留')
         if balance_sheets & set(book.sheetnames):
             if not balance_sheets <= set(book.sheetnames):
                 raise ValueError("排班平衡和重点次数修正两张表必须一起保留")
             entries = pairs("排班平衡")
+            has_coverage = '保岗优先级版本' in entries
+            if has_coverage and (entries['保岗优先级版本'] != 1 or '保岗优先级' not in book.sheetnames):
+                raise ValueError('保岗优先级表缺失或版本无效')
+            if not has_coverage and '保岗优先级' in book.sheetnames:
+                raise ValueError('保岗优先级版本缺失')
             by_flight = '重点岗位范围版本' in entries
             if by_flight and (entries['重点岗位范围版本'] != 1 or '航班重点岗位' not in book.sheetnames):
                 raise ValueError('航班重点岗位表缺失或范围版本无效')
             if not by_flight and '航班重点岗位' in book.sheetnames:
                 raise ValueError('航班重点岗位范围版本缺失')
-            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"} | ({'重点岗位范围版本'} if by_flight else set()):
+            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"} | ({'重点岗位范围版本'} if by_flight else set()) | ({'保岗优先级版本'} if has_coverage else set()):
                 raise ValueError("排班平衡需完整填写差距开关值、重点轮换启用和重点岗位项目")
             if entries["重点岗位轮换启用"] not in {"是", "否"}:
                 raise ValueError("重点岗位轮换启用请明确填是或否")
@@ -1723,6 +1738,15 @@ def import_complete_configuration(content):
                 data['balanceSettings']['priorityFlightRoles'] = [
                     {'flightNo': _text(number), 'roleName': _text(role)}
                     for number, role in rows('航班重点岗位', ['航班号', '岗位'])]
+            if has_coverage:
+                from .domain import COVERAGE_PRIORITIES
+                levels = {label: key for key, label in COVERAGE_PRIORITIES.items()}
+                items = []
+                for role, priority in rows('保岗优先级', ['岗位', '缺人时安排']):
+                    if _text(priority) not in levels:
+                        raise ValueError('保岗优先级请填写优先保岗、正常安排或缺人时优先留空')
+                    items.append({'roleName': _text(role), 'priority': levels[_text(priority)]})
+                data['balanceSettings']['coveragePriorities'] = items
         if "每周航班" in book.sheetnames:
             weekly = {}
             empty = set()
