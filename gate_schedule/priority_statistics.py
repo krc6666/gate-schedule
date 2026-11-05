@@ -2,7 +2,7 @@
 from collections import defaultdict
 from datetime import date
 
-from .domain import Assignment, member_role_flight_counts, task_flight_ids
+from .domain import Assignment, member_role_flight_counts, member_flight_role_participation, task_flight_ids
 from .io import scenario_from_dict
 
 
@@ -47,7 +47,7 @@ def statistics_history(state, month, *, before=None, current=None):
     return history
 
 
-def _ledger(state, month, *, before=None, current=None):
+def _ledger(state, month, *, before=None, current=None, by_flight=False):
     counts = defaultdict(int)
     dates = defaultdict(list)
     history = statistics_history(state, month, before=before, current=current)
@@ -56,32 +56,30 @@ def _ledger(state, month, *, before=None, current=None):
             continue
         scenario = scenario_from_dict(formal['scenario'])
         assignments = tuple(Assignment(a['taskId'], a['memberId']) for a in formal['assignments'])
-        for key, count in member_role_flight_counts(scenario, assignments).items():
-            counts[key] += count
+        if not by_flight:
+            for key, count in member_role_flight_counts(scenario, assignments).items():
+                counts[key] += count
         flights = {f.id: f.flight_no for f in scenario.flights}
-        tasks = {t.id: t for t in scenario.tasks}
-        seen = set()
-        for assignment in assignments:
-            task = tasks[assignment.task_id]
-            for flight_id in task_flight_ids(task):
-                key = (assignment.member_id, task.role_id, flight_id)
-                if key not in seen:
-                    dates[key[:2]].append(f'{scenario.service_date} · {flights[flight_id]}')
-                    seen.add(key)
+        for member, flight_id, role in sorted(member_flight_role_participation(scenario, assignments)):
+            key = (member, flights[flight_id], role) if by_flight else (member, role)
+            if by_flight:
+                counts[key] += 1
+            dates[key].append(f'{scenario.service_date} · {flights[flight_id]}')
     return counts, dates
 
 
-def _adjustments(state, month):
-    return {(a['memberId'], a['roleName']): a['delta']
-        for a in state['balanceSettings']['priorityAdjustments'] if a['month'] == month}
+def _adjustments(state, month, *, by_flight=False):
+    return {(a['memberId'], a['flightNo'], a['roleName']) if by_flight else (a['memberId'], a['roleName']): a['delta']
+        for a in state['balanceSettings']['priorityAdjustments']
+        if a['month'] == month and ('flightNo' in a) == by_flight}
 
 
-def priority_counts_before(state, service_date):
+def priority_counts_before(state, service_date, *, by_flight=False):
     """Only earlier formal dates in target month; negative corrections floor at zero."""
     date.fromisoformat(service_date)
     month = service_date[:7]
-    counts, _ = _ledger(state, month, before=service_date)
-    adjustments = _adjustments(state, month)
+    counts, _ = _ledger(state, month, before=service_date, by_flight=by_flight)
+    adjustments = _adjustments(state, month, by_flight=by_flight)
     return {key: max(0, counts.get(key, 0) + adjustments.get(key, 0))
         for key in counts.keys() | adjustments.keys()}
 
@@ -95,17 +93,21 @@ def _statistics_month(state, month):
 
 def priority_statistics(state, month=None, *, current=None):
     month = _statistics_month(state, month)
-    counts, dates = _ledger(state, month, current=current)
-    adjustments = _adjustments(state, month)
+    by_flight = 'priorityFlightRoles' in state['balanceSettings']
+    counts, dates = _ledger(state, month, current=current, by_flight=by_flight)
+    adjustments = _adjustments(state, month, by_flight=by_flight)
     months = {month, *(record_date(f)[:7] for f in formal_history(state)),
         *(a['month'] for a in state['balanceSettings']['priorityAdjustments'])}
     if current:
         months.add(record_date(current)[:7])
     roles = []
-    for role in state['balanceSettings']['priorityRoleNames']:
+    groups = state['balanceSettings']['priorityFlightRoles'] if by_flight else [
+        {'roleName': role} for role in state['balanceSettings']['priorityRoleNames']]
+    for group in groups:
+        role = group['roleName']
         members = []
         for person in state['people']:
-            key = (person['id'], role)
+            key = (person['id'], group['flightNo'], role) if by_flight else (person['id'], role)
             history, adjustment = counts.get(key, 0), adjustments.get(key, 0)
             qualified = not person.get('deleted', False) and role in person['eligibleRoleNames']
             if not qualified and not history and not adjustment:
@@ -113,11 +115,23 @@ def priority_statistics(state, month=None, *, current=None):
             members.append({'memberId': person['id'], 'memberName': person['name'],
                 'qualified': qualified, 'historyCount': history, 'adjustment': adjustment,
                 'effectiveCount': max(0, history + adjustment), 'dates': dates.get(key, [])})
-        roles.append({'roleName': role, 'members': members})
+        roles.append({**group, 'members': members})
     totals = [{'memberId': person['id'], 'count': sum(
         row['effectiveCount'] for role in roles for row in role['members'] if row['memberId'] == person['id'])}
         for person in state['people']]
+    scopes = {(None, None), *((g.get('flightNo'), None) for g in roles),
+        *((None, g['roleName']) for g in roles), *((g.get('flightNo'), g['roleName']) for g in roles)}
+    scoped_totals = [{'flightNo': flight or '', 'roleName': role or '', 'totals': [
+        {'memberId': person['id'], 'count': sum(row['effectiveCount']
+            for group in roles if (flight is None or group.get('flightNo') == flight)
+            and (role is None or group['roleName'] == role)
+            for row in group['members'] if row['memberId'] == person['id'])}
+        for person in state['people']]} for flight, role in sorted(scopes, key=lambda p: (p[0] or '', p[1] or ''))]
     return {'month': month, 'months': sorted(months, reverse=True), 'roles': roles, 'totals': totals,
+        'scopedTotals': scoped_totals,
+        'legacyAdjustments': [{**a, 'memberName': next((p['name'] for p in state['people'] if p['id'] == a['memberId']), '未知人员')}
+            for a in state['balanceSettings']['priorityAdjustments']
+            if by_flight and a['month'] == month and 'flightNo' not in a],
         'revision': state['revision']}
 
 

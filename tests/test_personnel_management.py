@@ -58,15 +58,22 @@ class PersonnelManagementTests(unittest.TestCase):
 
     def test_delete_hides_from_config_but_preserves_formals_and_history_statistics(self):
         state=self.workspace.snapshot();pid=state['selectedPlanId']
-        settings=deepcopy(state['balanceSettings']);settings['priorityRoleNames']=['接机1']
+        settings=deepcopy(state['balanceSettings']);settings['priorityRoleNames']=[]
+        settings['priorityFlightRoles']=[{'flightNo':'F0','roleName':'接机1'},{'flightNo':'F1','roleName':'接机1'}]
         self.command('update-balance-settings',{'balanceSettings':settings})
         state=self.command('solve',{},pid);pid=state['selectedPlanId'];state=self.command('adopt',{},pid)
         before=deepcopy(state['plans']);person=self.person()
+        def actual_counts(snapshot):
+            return {group['flightNo']: member['historyCount']
+                    for group in snapshot['priorityStatistics']['roles'] for member in group['members']
+                    if member['memberId']==person['id'] and member['historyCount']}
+        counts_before=actual_counts(state)
+        self.assertTrue(counts_before)
         state=self.command('delete-person',{'id':person['id']})
         self.assertNotIn(person['id'],{p['id'] for p in state['people']})
         self.assertEqual(before,state['plans'])
-        self.assertTrue(any(p['memberId']==person['id'] and p['historyCount'] for p in state['priorityStatistics']['roles'][0]['members']))
-        self.command('adjust-priority-count',{'month':'2026-08','memberId':person['id'],'roleName':'接机1','delta':1})
+        self.assertEqual(counts_before,actual_counts(state))
+        self.command('adjust-priority-count',{'month':'2026-08','memberId':person['id'],'flightNo':next(iter(counts_before)),'roleName':'接机1','delta':1})
         # Retired history may still be corrected; current configuration contains
         # only current people, while full backups retain historical corrections.
         exported=import_complete_configuration(self.workspace.export_complete_configuration(pid))

@@ -1324,11 +1324,13 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await value('#role-statistics-month','2026-07');await waitElement('.role-statistics-table');
     await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".role-statistics-table tbody tr")).display'),'table-row','重点统计卡片样式不能覆盖所有岗位表');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".role-statistics-table thead")).position'),'static','所有岗位表头仍可见');
     await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     assert.deepEqual(await(await fetch(`${baseUrl}/api/workspace/backup`)).json(),before,'查看和筛选统计不改草稿、正式、资格或次数修正');
   });
   await t.test('手动临时调整即时计数，正式采用不双计，清空撤销同步', async()=>{
-    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2040-02-02";c["balanceSettings"]["priorityRoleNames"]=[c["day"]["roleNames"][0]];print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
+    const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2040-02-02";c["balanceSettings"]["priorityRoleNames"]=[];c["balanceSettings"]["priorityFlightRoles"]=[{"flightNo":"F0","roleName":c["day"]["roleNames"][0]}];print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
     let pid;
     const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
     const imported=await command('import-complete-configuration',config);pid=imported.selectedPlanId;
@@ -1351,6 +1353,43 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await command('clear-draft');await reloadPage();await check([0,0]);
     await command('undo-edit');await reloadPage();await check([1,1]);
     await command('adopt');await reloadPage();await check([1,1]);
+  });
+  await t.test('重点航班下拉保留勾选，筛选合计和修正按航班隔离', async()=>{
+    await click('[data-view="rules"]');
+    await evaluate('document.querySelector("#priority-role-rules").open=true');
+    await value('#priority-rule-flight','F1');
+    await value('[data-priority-flight="F1"][data-priority-role="接机1"]',true,true);
+    await value('#priority-rule-flight','F0');
+    assert.equal(await evaluate('document.querySelector("[data-priority-flight=F0][data-priority-role=接机1]").checked'),true);
+    await mutate(()=>click('#save-rules'));
+    assert.deepEqual((await state()).balanceSettings.priorityFlightRoles,[{flightNo:'F0',roleName:'接机1'},{flightNo:'F1',roleName:'接机1'}]);
+    await value('#priority-rule-flight','F0');
+    const ruleShot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
+    await writeFile(join(temporaryRoot,'priority-flight-rules-1440.png'),Buffer.from(ruleShot.data,'base64'));
+    await click('[data-view="statistics"]');await waitElement('#priority-statistics-flight');
+    await value('#priority-statistics-month','2040-02');
+    await until(()=>evaluate('!!document.querySelector("#priority-statistics-flight option[value=F1]")'),'重点航班列表');
+    await value('#priority-statistics-flight','F0');
+    assert.equal(await evaluate('document.querySelectorAll("#priority-statistics-root .priority-statistics-table thead th").length'),3);
+    assert.match(await evaluate('document.querySelector("#priority-statistics-root .priority-statistics-table thead").textContent'),/F0 · 接机1/);
+    const person=(await state()).people.find(p=>p.name==='乙');
+    const increase=`[data-member-id="${person.id}"][data-flight-no="F0"][data-priority-adjust="1"]`;
+    await mutate(()=>click(increase));
+    await until(()=>evaluate(`document.querySelector(${JSON.stringify(increase)})?.closest('details').querySelector('summary').textContent==='2'`),'对应航班次数更新');
+    await value('#priority-statistics-flight','F1');
+    assert.equal(await evaluate(`document.querySelector('[data-member-id="${person.id}"][data-flight-no="F1"]').closest('details').querySelector('summary').textContent`),'0','F0修正不混入F1');
+    assert.equal(await evaluate('document.querySelectorAll("#priority-statistics-root .priority-statistics-table thead th").length'),3);
+    const report=await(await fetch(`${baseUrl}/api/priority-statistics?month=2040-02`)).json();
+    assert.equal(report.roles.find(r=>r.flightNo==='F0').members.find(m=>m.memberId===person.id).effectiveCount,2);
+    assert.equal(report.roles.find(r=>r.flightNo==='F1').members.find(m=>m.memberId===person.id).effectiveCount,0);
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      await evaluate('document.querySelector("#priority-statistics-root").scrollIntoView()');
+      const shot=await call('Page.captureScreenshot',{format:'png'});
+      await writeFile(join(temporaryRoot,`priority-flight-statistics-${width}.png`),Buffer.from(shot.data,'base64'));
+    }
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   });
   await t.test('资质全选独立草稿；上午下午半休、取消重排、新日清空与规则保存', async()=>{
     await click('[data-view="statistics"]');await waitElement('#save-duty-settings');

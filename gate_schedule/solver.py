@@ -54,12 +54,20 @@ def _flight_participation_variables(model, scenario, variables, *, role_id=None)
 def _priority_costs(model, scenario, variables, previous_roles, priority_counts, *, role_ids=None):
     repeats, monthly, previous = [], [], []
     repeat_bound = monthly_bound = previous_bound = 0
-    for role in scenario.priority_role_ids if role_ids is None else role_ids:
+    groups = [(None, role) for role in (scenario.priority_role_ids if role_ids is None else role_ids)]
+    if role_ids is None:
+        groups.extend(scenario.priority_flight_roles)
+    for flight_no, role in groups:
         participation = _flight_participation_variables(model, scenario, variables, role_id=role)
+        if flight_no is not None:
+            flight_ids = {f.id for f in scenario.flights if f.flight_no == flight_no}
+            participation = {key: v for key, v in participation.items() if key[1] in flight_ids}
+        def count_key(member):
+            return (member, flight_no, role) if flight_no is not None else (member, role)
         eligible_members = {member_id for member_id, _ in participation}
         # Only ordering and ties matter: arbitrary manual corrections must not
         # turn large real counts into overflowing CP-SAT objective coefficients.
-        levels = sorted({priority_counts.get((member, role), 0) for member in eligible_members})
+        levels = sorted({priority_counts.get(count_key(member), 0) for member in eligible_members})
         ranks = {count: rank for rank, count in enumerate(levels)}
         for member in scenario.members:
             entries = [variable for (member_id, _), variable in participation.items() if member_id == member.id]
@@ -73,11 +81,11 @@ def _priority_costs(model, scenario, variables, previous_roles, priority_counts,
                 model.add_element(count, [n * (n - 1) // 2 for n in range(len(entries) + 1)], repeated)
                 repeats.append(repeated)
                 repeat_bound += bound
-            rank = ranks[priority_counts.get((member.id, role), 0)]
+            rank = ranks[priority_counts.get(count_key(member.id), 0)]
             if rank:
                 monthly.extend(rank * variable for variable in entries)
                 monthly_bound += rank * len(entries)
-            if (member.id, role) in previous_roles:
+            if count_key(member.id) in previous_roles:
                 previous.extend(entries)
                 previous_bound += len(entries)
     return (sum(repeats), repeat_bound), (sum(monthly), monthly_bound), (sum(previous), previous_bound)
@@ -87,7 +95,7 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     validate_handoff_preferences(list(handoff_preferences))
     priority_counts = {} if priority_counts is None else priority_counts
     if not isinstance(priority_counts, dict) or any(
-            not isinstance(key, tuple) or len(key) != 2
+            not isinstance(key, tuple) or len(key) not in (2, 3)
             or any(not isinstance(part, str) or not part for part in key)
             or type(count) is not int or count < 0
             for key, count in priority_counts.items()):

@@ -19,6 +19,7 @@ test('规则页无需当前日计划即可维护已导入的航班接续偏好',
     teamLeaderSettings:{lastUsed:true,exemptFlightCount:true},
     configuration: {roleConfigs:[{roleName:'接机2',workMode:'arrival'},{roleName:'登机核验',workMode:'boarding'}],rotationEnabled:false,rotationMinutes:60,transitionMinutes:0},
     newRoleDefaults:{}, flightLibrary:[], plans:{},
+    balanceSettings:{flightCountGap:null,priorityEnabled:false,priorityRoleNames:[],priorityFlightRoles:[],priorityAdjustments:[]},
     handoffPreferences:[{flightNo:'*',arrivalRole:'接机2',boardingRoles:['登机核验'],enabled:true}]
   };
   const markup=rulesPage(state,null,null);

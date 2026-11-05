@@ -38,7 +38,8 @@ class RoleStatisticsTests(unittest.TestCase):
             path = Path(directory)/'state.sqlite3'
             wb = Workbench(path)
             config = small_configuration(None)
-            config['balanceSettings']['priorityRoleNames'] = ['接机1']
+            config['balanceSettings']['priorityRoleNames'] = []
+            config['balanceSettings']['priorityFlightRoles'] = [{'flightNo': 'F0', 'roleName': '接机1'}]
             state = wb.execute(0, 'import-complete-configuration', config)
             pid = state['selectedPlanId']
             people = {p['name']: p['id'] for p in state['people']}
@@ -56,7 +57,7 @@ class RoleStatisticsTests(unittest.TestCase):
             rows = {r['memberId']: r for r in wb.priority_statistics('2026-08')['roles'][0]['members']}
             self.assertEqual(1, rows[people['乙']]['effectiveCount'])
             self.assertEqual({(people['甲'], '接机1'): 2}, {k: v for k, v in priority_counts_before(wb.backup()['state'], '2026-08-04').items() if v}, '显示草稿不改求解使用的正式账本')
-            command('adjust-priority-count', {'month': '2026-08', 'memberId': people['乙'], 'roleName': '接机1', 'delta': 1})
+            command('adjust-priority-count', {'month': '2026-08', 'memberId': people['乙'], 'flightNo': 'F0', 'roleName': '接机1', 'delta': 1})
             self.assertEqual(2, next(r['effectiveCount'] for r in wb.priority_statistics('2026-08')['roles'][0]['members'] if r['memberId'] == people['乙']))
             self.assertEqual(1, counts()[people['乙']], '重点修正不能混入所有岗位实际次数')
             before = wb.backup()

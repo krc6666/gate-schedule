@@ -3,7 +3,7 @@ from __future__ import annotations
 from .domain import ExternalSupportRequirement, Flight, Member, Rotation, Scenario, Task, parse_minutes, validate_balance_settings, default_team_leader_settings, validate_team_leader_settings
 
 
-from .domain import default_half_rest_settings, validate_half_rest_settings
+from .domain import default_half_rest_settings, validate_half_rest_settings, validate_priority_flight_roles
 
 
 def scenario_from_dict(data: dict) -> Scenario:
@@ -47,6 +47,7 @@ def scenario_from_dict(data: dict) -> Scenario:
         "priorityAdjustments": [],
     }, [role for role in priority_roles if isinstance(role, str)] if isinstance(priority_roles, list) else [])
     leaders = validate_team_leader_settings(data.get("teamLeaderSettings", default_team_leader_settings()))
+    validate_priority_flight_roles(data.get('priorityFlightRoles', []))
     return Scenario(
         service_date=data["serviceDate"],
         model_version=data.get("modelVersion", "phase-0"),
@@ -55,6 +56,7 @@ def scenario_from_dict(data: dict) -> Scenario:
         flight_count_gap=balance["flightCountGap"], priority_role_ids=tuple(balance["priorityRoleNames"]),
         team_leader_last=leaders["lastUsed"], balance_exempt_team_leaders=leaders["exemptFlightCount"],
         balance_exempt_half_rest=validate_half_rest_settings(data.get("halfRestSettings", default_half_rest_settings()))["exemptFlightCount"],
+        priority_flight_roles=tuple((p['flightNo'], p['roleName']) for p in data.get('priorityFlightRoles', [])),
         flights=flights,
         members=tuple(
             Member(
@@ -97,6 +99,7 @@ def scenario_from_dict(data: dict) -> Scenario:
 
 def scenario_to_dict(scenario: Scenario) -> dict:
     return {
+        **({'priorityFlightRoles': [{'flightNo': f, 'roleName': r} for f, r in scenario.priority_flight_roles]} if scenario.priority_flight_roles else {}),
         "serviceDate": scenario.service_date,
         "modelVersion": scenario.model_version,
         "minimumTransitionMinutes": scenario.minimum_transition_minutes,

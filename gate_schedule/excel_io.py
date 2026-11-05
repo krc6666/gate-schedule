@@ -1360,7 +1360,7 @@ def export_complete_configuration(data, *, history_schedules=None):
         ["跨航班衔接", "支援释放选择本人任务完成；航班衔接表填来源/目标航班和是，表示接机完成确实能接上目标登机。未确认不会自动复用；仍检查此人的其他任务。正数走动预留需实际时段来验证。"],
         ["固定与原文", "固定人员只有明确填写才锁定。岗位原文只保留旧名单/外援和已确认斜杠含义，不等同于新排班或资质。备注需核对，0910不猜占用。"],
         ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。全部日期的航班、草稿与正式历史随本文件迁移，在历史页查看。"],
-        ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）、重点岗位轮换启用及重点岗位名单（顿号分隔，留空清空）。重点次数修正按月份、人员ID和岗位维护增减次数；可填负整数，有效次数按正式历史加修正计算，最低为0。姓名只供核对，不授予资质。两张表应一起保留；旧文件两表均无时保留已有设置。"],
+        ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）和重点轮换启用；新版重点在航班重点岗位表逐行填写航班号和岗位，空表清空。重点次数修正按月份、人员ID、航班号和岗位维护增减；可填负整数，有效次数最低为0。旧修正航班号空白时保留待归属，不猜测分配；核对后补填航班号。排班平衡、航班重点岗位、重点次数修正三表与范围版本一起保留。旧文件缺航班范围时保留本机新选择、空库不勾选；旧岗位名单仅兼容保留，不再作为新版重点。姓名只供核对，不授予资质。"],
         ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。历史附表保留全部草稿、正式班表和累计次数依据；请勿手改历史数据，历史班表应在工作台维护。"],
         ["分队长维护", "人员状态表的分队长列填是/否。分队长设置表维护最后使用和不参与航班数比较，默认都是。先补齐岗位，再尽量少用分队长，之后考虑重点轮换/接续。豁免只影响航班数比较，其他人员硬差距不放松，分队长仍须有资质、出勤且无冲突。旧文件无新列/表时保留当前值，新设备默认不标记任何分队长；显式否取消。"],
         ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，可编辑名单只列现有人员；历史附表保留已删除人员的身份和旧班表。"],
@@ -1396,11 +1396,18 @@ def export_complete_configuration(data, *, history_schedules=None):
         sheet.append(["当天航班数最大差距", balance["flightCountGap"]])
         sheet.append(["重点岗位轮换启用", "是" if balance["priorityEnabled"] else "否"])
         sheet.append(["重点岗位", "、".join(balance["priorityRoleNames"])])
+        by_flight = 'priorityFlightRoles' in balance or any('flightNo' in item for item in balance['priorityAdjustments'])
+        if by_flight:
+            sheet.append(['重点岗位范围版本', 1])
+            selected = book.create_sheet('航班重点岗位')
+            selected.append(['航班号', '岗位'])
+            for item in balance.get('priorityFlightRoles', []):
+                selected.append([item['flightNo'], item['roleName']])
         adjustments = book.create_sheet("重点次数修正")
-        adjustments.append(["月份", "人员ID", "姓名", "岗位", "修正次数"])
+        adjustments.append(["月份", "人员ID", "姓名", "岗位", "修正次数"] + (['航班号'] if by_flight else []))
         names_by_id = {identity: name for name, identity in data.get("peopleIds", {}).items()}
         for item in balance["priorityAdjustments"]:
-            adjustments.append([item["month"], item["memberId"], names_by_id.get(item["memberId"], ""), item["roleName"], item["delta"]])
+            adjustments.append([item["month"], item["memberId"], names_by_id.get(item["memberId"], ""), item["roleName"], item["delta"]] + ([item.get('flightNo')] if by_flight else []))
     if "relaxedShiftSettings" in data:
         relaxed = book.create_sheet("轻松班次设置")
         relaxed.append(["项目", "内容"])
@@ -1681,26 +1688,39 @@ def import_complete_configuration(content):
                     identities[name] = identity
             data["peopleIds"] = identities
         balance_sheets = {"排班平衡", "重点次数修正"}
+        if '航班重点岗位' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
+            raise ValueError('航班重点岗位、排班平衡和重点次数修正必须一起保留')
         if balance_sheets & set(book.sheetnames):
             if not balance_sheets <= set(book.sheetnames):
                 raise ValueError("排班平衡和重点次数修正两张表必须一起保留")
             entries = pairs("排班平衡")
-            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"}:
+            by_flight = '重点岗位范围版本' in entries
+            if by_flight and (entries['重点岗位范围版本'] != 1 or '航班重点岗位' not in book.sheetnames):
+                raise ValueError('航班重点岗位表缺失或范围版本无效')
+            if not by_flight and '航班重点岗位' in book.sheetnames:
+                raise ValueError('航班重点岗位范围版本缺失')
+            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"} | ({'重点岗位范围版本'} if by_flight else set()):
                 raise ValueError("排班平衡需完整填写差距开关值、重点轮换启用和重点岗位项目")
             if entries["重点岗位轮换启用"] not in {"是", "否"}:
                 raise ValueError("重点岗位轮换启用请明确填是或否")
             names_by_id = {identity: name for name, identity in data.get("peopleIds", {}).items()}
             corrections = []
-            for month, identity, name, role, delta in rows("重点次数修正", ["月份", "人员ID", "姓名", "岗位", "修正次数"]):
+            for row in rows("重点次数修正", ["月份", "人员ID", "姓名", "岗位", "修正次数"] + (['航班号'] if by_flight else [])):
+                month, identity, name, role, delta = row[:5]
                 if _text(name) and names_by_id.get(identity) != _text(name):
                     raise ValueError("重点次数修正的人员ID与姓名不一致，请核对人员身份表")
-                corrections.append({"month": _text(month), "memberId": identity, "roleName": _text(role), "delta": delta})
+                corrections.append({"month": _text(month), "memberId": identity, "roleName": _text(role), "delta": delta,
+                    **({'flightNo': _text(row[5])} if by_flight and row[5] not in (None, '') else {})})
             data["balanceSettings"] = {
                 "flightCountGap": None if entries["当天航班数最大差距"] in (None, "") else entries["当天航班数最大差距"],
                 "priorityEnabled": entries["重点岗位轮换启用"] == "是",
                 "priorityRoleNames": [role.strip() for role in re.split(r"[、,，;；\n]+", _text(entries["重点岗位"])) if role.strip()],
                 "priorityAdjustments": corrections,
             }
+            if by_flight:
+                data['balanceSettings']['priorityFlightRoles'] = [
+                    {'flightNo': _text(number), 'roleName': _text(role)}
+                    for number, role in rows('航班重点岗位', ['航班号', '岗位'])]
         if "每周航班" in book.sheetnames:
             weekly = {}
             empty = set()

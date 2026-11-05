@@ -68,20 +68,21 @@ class PriorityWorkbenchTests(unittest.TestCase):
 
     def test_settings_adjustments_persist_and_rule_save_cannot_overwrite_counts(self):
         original = deepcopy(self.wb.backup()['state']['plans'])
-        value = {'flightCountGap': 1, 'priorityEnabled': True, 'priorityRoleNames': ['督导'], 'priorityAdjustments': []}
+        value = {'flightCountGap': 1, 'priorityEnabled': True, 'priorityRoleNames': [],
+            'priorityFlightRoles': [{'flightNo': 'CX937', 'roleName': '督导'}], 'priorityAdjustments': []}
         current = self.command('update-balance-settings', {'balanceSettings': value})
         person = current['people'][0]
-        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'roleName': '督导', 'delta': 1})
+        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'flightNo': 'CX937', 'roleName': '督导', 'delta': 1})
         before = self.wb.backup()
         self.assertEqual(original, before['state']['plans'])
         self.assertEqual(1, Workbench(self.path).priority_statistics('2026-08')['roles'][0]['members'][0]['effectiveCount'])
         with self.assertRaises(ValueError):
             self.command('update-balance-settings', {'balanceSettings': value})
         self.assertEqual(before, self.wb.backup())
-        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'roleName': '督导', 'delta': -1})
+        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'flightNo': 'CX937', 'roleName': '督导', 'delta': -1})
         before = self.wb.backup()
         with self.assertRaises(ValueError):
-            self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'roleName': '督导', 'delta': -1})
+            self.command('adjust-priority-count', {'month': '2026-08', 'memberId': person['id'], 'flightNo': 'CX937', 'roleName': '督导', 'delta': -1})
         self.assertEqual(before, self.wb.backup())
 
     def test_http_month_query_is_readonly_and_settings_do_not_rewrite_old_plans(self):
@@ -98,17 +99,18 @@ class PriorityWorkbenchTests(unittest.TestCase):
         member = current['people'][0]['id']
         config = example()
         config['balanceSettings'] = {'flightCountGap': None, 'priorityEnabled': True,
-            'priorityRoleNames': ['督导'], 'priorityAdjustments': [
-                {'month': '2026-08', 'memberId': member, 'roleName': '督导', 'delta': -5}]}
+            'priorityRoleNames': [], 'priorityFlightRoles': [{'flightNo': 'CX937', 'roleName': '督导'}], 'priorityAdjustments': [
+                {'month': '2026-08', 'memberId': member, 'flightNo': 'CX937', 'roleName': '督导', 'delta': -5}]}
         self.command('import-complete-configuration', config)
         self.assertEqual(0, self.wb.priority_statistics('2026-08')['roles'][0]['members'][0]['effectiveCount'])
-        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': member, 'roleName': '督导', 'delta': 1})
+        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': member, 'flightNo': 'CX937', 'roleName': '督导', 'delta': 1})
         self.assertEqual(1, self.wb.priority_statistics('2026-08')['roles'][0]['members'][0]['effectiveCount'])
 
     def test_new_archive_after_restore_wins_over_old_device_revision(self):
         source = Workbench(Path(self.directory.name)/'archive-source.sqlite3')
         config = small_configuration(None)
-        config['balanceSettings'].update(priorityEnabled=True, priorityRoleNames=['接机1'])
+        config['balanceSettings'].update(priorityEnabled=True, priorityRoleNames=[], priorityFlightRoles=[
+            {'flightNo': 'F0', 'roleName': '接机1'}, {'flightNo': 'F1', 'roleName': '接机1'}])
         data = source.execute(0, 'import-complete-configuration', config)
         pid = data['selectedPlanId']
         members = data['people']
@@ -126,5 +128,5 @@ class PriorityWorkbenchTests(unittest.TestCase):
         target = Workbench(Path(self.directory.name)/'archive-target.sqlite3')
         restored = target.restore(0, document)
         target.execute(restored['revision'], 'adopt', {}, 'later-draft')
-        rows = target.priority_statistics('2026-08')['roles'][0]['members']
-        self.assertEqual([0, 2], [r['historyCount'] for r in rows])
+        groups = target.priority_statistics('2026-08')['roles']
+        self.assertEqual([[0, 1], [0, 1]], [[r['historyCount'] for r in group['members']] for group in groups])

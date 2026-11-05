@@ -108,7 +108,49 @@
 .schedule-sheet .wb-matrix .schedule-cell-conflict{background:#ffe5e5;box-shadow:inset 0 -2px #c5303b}
 .schedule-cell-vacancy .cell-warning{background:#fff4cf;border-color:#b9850e;color:#815800}
 .wb-main .palette-person[draggable="true"]{touch-action:none;user-select:none}
-.priority-rule-content{padding:14px}.priority-rule-content .weekday-choices{display:flex;flex-wrap:wrap;gap:8px 16px}.priority-rule-content .weekday-choices label{display:flex;align-items:center;gap:6px}.priority-month{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.priority-month input{width:150px}.priority-filter{margin-bottom:10px}.priority-statistics [data-priority-statistics-notice]{margin:10px 0}.priority-statistics-table{min-width:440px}.priority-statistics-table th,.priority-statistics-table td{text-align:center}.priority-statistics-table th:first-child{text-align:left;min-width:85px}.priority-count-detail>summary{cursor:pointer;color:var(--primary);font-weight:650;list-style:none;padding:5px 10px;display:inline-block;border-radius:4px}.priority-count-detail>summary:hover{background:#fff1f2}.priority-count-controls{display:grid;gap:8px;min-width:190px;background:#fafbfc;border:1px solid var(--border);border-radius:5px;padding:10px;text-align:left}.priority-count-controls>span{display:flex;align-items:center;gap:8px}.priority-count-controls output{min-width:24px;text-align:center;font-weight:650}.priority-count-controls small{color:var(--muted);font-size:11px;white-space:normal}.priority-statistics .section-heading{flex-wrap:wrap}.priority-statistics .section-heading>div>span{font-size:12px;color:var(--muted)}
+.priority-rule-content{padding:14px}.priority-rule-content .weekday-choices{display:flex;flex-wrap:wrap;gap:8px 16px}.priority-rule-content .weekday-choices label{display:flex;align-items:center;gap:6px}
+.priority-filter{margin-bottom:10px}.priority-statistics-table{min-width:440px}.priority-statistics-table th,.priority-statistics-table td{text-align:center}.priority-statistics-table th:first-child{text-align:left;min-width:85px}
+.priority-count-detail>summary{cursor:pointer;color:var(--primary);font-weight:650;list-style:none;padding:5px 10px;display:inline-block;border-radius:4px}.priority-count-detail>summary:hover{background:#fff1f2}
+.priority-count-controls{display:grid;gap:8px;min-width:190px;background:#fafbfc;border:1px solid var(--border);border-radius:5px;padding:10px;text-align:left}.priority-count-controls>span{display:flex;align-items:center;gap:8px}.priority-count-controls output{min-width:24px;text-align:center;font-weight:650}.priority-count-controls small{color:var(--muted);font-size:11px;white-space:normal}
+/* 对照值机统计页的普通重点岗位：工具栏、合计表及原位次数修正。 */
+.priority-statistics .section-heading{flex-wrap:wrap}
+#priority-statistics-root .section-heading{align-items:flex-start}
+.priority-statistics .section-heading>div>span{font-size:12px;color:var(--muted)}
+.priority-statistics-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:.4rem;max-width:100%}
+.priority-month,.priority-flight-filter{display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
+.priority-month input{width:150px}.priority-flight-filter select{width:130px}
+.priority-statistics-filter{display:inline-flex;flex-wrap:wrap;align-items:center;gap:.25rem}
+.priority-statistics [data-priority-statistics-notice]{margin:10px 0}
+#priority-statistics-root .priority-statistics-table{min-width:max(640px,100%);margin:0}
+#priority-statistics-root .priority-statistics-table th:first-child,#priority-statistics-root .priority-statistics-table td:first-child{min-width:96px;white-space:nowrap;text-align:left}
+#priority-statistics-root .priority-statistics-table th:not(:first-child),#priority-statistics-root .priority-statistics-table td:not(:first-child){width:112px;text-align:center}
+#priority-statistics-root .priority-count-detail{position:relative}
+#priority-statistics-root .priority-count-detail>summary{display:inline-flex;min-width:28px;min-height:28px;align-items:center;justify-content:center;margin:0 auto;padding:0;border-radius:0;border-bottom:1px dotted #68737e;color:#20242a;cursor:pointer;list-style:none;font-weight:650}
+#priority-statistics-root .priority-count-detail>summary:hover{background:transparent}
+#priority-statistics-root .priority-count-detail>summary::-webkit-details-marker{display:none}
+#priority-statistics-root .priority-count-controls{display:grid;gap:3px;min-width:250px;margin-top:5px;padding:7px 8px;border:0;border-radius:0;border-left:2px solid #68737e;background:#f7f8f9;color:#515c67;font-size:11px;text-align:left}
+.priority-adjustment-row{display:grid;grid-template-columns:auto auto minmax(5.5rem,1fr);align-items:center;gap:.25rem;min-width:9.5rem;margin-bottom:.25rem}
+.priority-adjustments{display:inline-flex;gap:.15rem;vertical-align:middle}
+.priority-statistics .priority-adjustments .btn{width:1.75rem;height:1.75rem;min-height:1.75rem;padding:0;line-height:1}
+.priority-adjustments output{display:inline-flex;min-width:1.75rem;align-items:center;justify-content:center;font-weight:700}
+.priority-adjustment-row>small{color:var(--muted);white-space:nowrap;margin:0!important}
+#priority-statistics-root .priority-count-controls>.priority-detail-list{display:block;overflow-wrap:anywhere;color:var(--muted)}
+.priority-statistics-help{margin-top:12px;font-size:11px;color:var(--muted);line-height:1.7}.priority-statistics-help>summary{cursor:pointer;width:fit-content}.priority-statistics-help>p{margin-top:6px}
+@media(max-width:600px){
+  #priority-statistics-root .priority-statistics>.section-heading{flex-direction:column}
+  .priority-statistics-toolbar{width:100%;justify-content:flex-start}
+  #priority-statistics-root .priority-statistics-table{min-width:0}
+  #priority-statistics-root .priority-statistics-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  #priority-statistics-root .priority-statistics-table tbody,#priority-statistics-root .priority-statistics-table tr{display:grid}
+  #priority-statistics-root .priority-statistics-table tr{grid-template-columns:repeat(2,minmax(0,1fr));border-bottom:1px solid var(--border)}
+  #priority-statistics-root .priority-statistics-table td,#priority-statistics-root .priority-statistics-table td:not(:first-child){display:grid;grid-template-columns:minmax(4rem,auto) minmax(0,1fr);width:auto;min-width:0;align-items:center;gap:.4rem;text-align:right;white-space:normal}
+  #priority-statistics-root .priority-statistics-table td:nth-child(n+3),#priority-statistics-root .priority-statistics-table td.empty-cell{grid-column:1/-1}
+  #priority-statistics-root .priority-statistics-table td::before{content:attr(data-label);color:var(--muted);font-size:.72rem;font-weight:600;text-align:left}
+  #priority-statistics-root .priority-statistics-table td:has(details[open]){grid-template-columns:minmax(0,1fr)}
+  #priority-statistics-root .priority-count-controls{min-width:0;max-width:100%}
+  .priority-adjustment-row{grid-template-columns:minmax(0,1fr) auto}
+  .priority-adjustment-row>small{grid-column:1/-1}
+}
 .schedule-legend{display:flex;flex-wrap:wrap;gap:14px;margin:8px 0;color:#6a7078;font-size:12px}.schedule-legend span::before{content:"";display:inline-block;width:10px;height:10px;margin-right:5px;border-radius:2px}.legend-vacancy::before{background:#f1c453}.legend-conflict::before{background:#e87980}
 .schedule-palette label{display:flex;align-items:center;gap:7px;max-width:100%}.schedule-palette select{min-width:0;max-width:100%}.schedule-palette [data-palette-notice]{margin:0}.wb-main .palette-person small{display:block;max-width:260px;white-space:normal;font-size:11px;font-weight:400}.wb-main .palette-person.palette-available{border-color:#8abda3;background:#f0faf4;color:#246645}.wb-main .palette-person.palette-unavailable{background:#f6f6f6;border-color:#d8dadd;color:#767b83;cursor:default;opacity:1}
 .rules-toolbar { display:flex; align-items:end; gap:16px; position:sticky; top:0; z-index:5; padding:16px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; }
@@ -177,3 +219,4 @@
 .relaxed-statistics-table { font-size:12px; min-width:800px; }
 .relaxed-statistics-table td { vertical-align:top; }
 @media(max-width:650px) { .relaxed-summary-grid { grid-template-columns:1fr; } #relaxed-statistics-root .section-heading { display:block; } }
+.priority-flight-choice{display:flex;align-items:center;gap:8px;font-size:12px;margin:12px 0}.priority-flight-choice select{min-width:140px;max-width:100%}.priority-legacy-adjustments{margin:12px 0;padding:10px;border:1px solid var(--border);border-radius:5px}.priority-legacy-adjustments p{font-size:12px}

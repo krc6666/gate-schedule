@@ -113,6 +113,8 @@ def attach_workspace(app, database_path: Path):
             raise HTTPException(503, "请先保留原始文件并在独立目录恢复备份")
         try:
             data = await request.json()
+            if data["action"] in {"save-rules", "update-balance-settings"} and request.headers.get("X-Gate-Rule-Schema") != "flight-role-v1":
+                return JSONResponse(status_code=409, content={"detail": "页面版本已更新，请按 Ctrl+F5 刷新，选择航班后重新勾选重点岗位；本次未保存，原配置和班表保留"})
             return await run_in_threadpool(workspace.execute, data["expectedRevision"], data["action"], data.get("payload", {}), data.get("planId"))
         except WorkspaceError as error:
             return JSONResponse(status_code=409, content={"detail": str(error)})

@@ -188,7 +188,11 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
 
     def maintained(self):
         data = configuration()
+        data['balanceSettings']['priorityRoleNames'] = []
+        data['balanceSettings']['priorityFlightRoles'] = [
+            {'flightNo': 'A100', 'roleName': '登机主验'}, {'flightNo': 'B200', 'roleName': '登机主验'}]
         data['balanceSettings']['priorityAdjustments'] = data['balanceSettings']['priorityAdjustments'][:1]
+        data['balanceSettings']['priorityAdjustments'][0]['flightNo'] = 'A100'
         return data
 
     def test_modified_settings_excel_empty_database_restart_and_actual_hard_limit(self):
@@ -201,7 +205,7 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         settings = deepcopy(data['balanceSettings'])
         settings['flightCountGap'] = 1
         self.command('update-balance-settings', {'balanceSettings': settings})
-        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': 'stable-a', 'roleName': '登机主验', 'delta': 1})
+        self.command('adjust-priority-count', {'month': '2026-08', 'memberId': 'stable-a', 'flightNo': 'A100', 'roleName': '登机主验', 'delta': 1})
         settings['priorityAdjustments'][0]['delta'] = 4
         content = self.workspace.export_complete_configuration(original_plan)
         incoming = import_complete_configuration(content)
@@ -223,7 +227,8 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         self.assertEqual({1}, {len(tasks) for tasks in assigned.values()}, '配置迁移后的硬差距1实际约束两个航班分给两个人')
         adopted = self.command('adopt', {}, pid, other)['plans'][pid]['adopted']
         self.assertEqual(1, adopted['scenario']['flightCountGap'])
-        self.assertEqual(['登机主验'], adopted['scenario']['priorityRoleIds'])
+        self.assertEqual([], adopted['scenario']['priorityRoleIds'])
+        self.assertEqual(settings['priorityFlightRoles'], adopted['scenario']['priorityFlightRoles'])
         adopted_scenario = scenario_from_dict(adopted['scenario'])
         invalid_assignments = tuple(Assignment(task.id, 'stable-a') for task in adopted_scenario.tasks)
         self.assertTrue(any(issue.code == 'flight_count_spread' for issue in validate_schedule(adopted_scenario, invalid_assignments)))
@@ -256,7 +261,7 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         self.assertTrue(plan['valid'], plan['issues'])
         self.assertEqual({'stable-b'}, {a['memberId'] for a in plan['draft']}, '迁移的月内重点修正使做得更少的乙优先')
         for _ in range(4):
-            self.command('adjust-priority-count', {'month': '2026-08', 'memberId': 'stable-b', 'roleName': '登机主验', 'delta': 1}, workspace=restarted)
+            self.command('adjust-priority-count', {'month': '2026-08', 'memberId': 'stable-b', 'flightNo': 'A100', 'roleName': '登机主验', 'delta': 1}, workspace=restarted)
         state = self.command('solve', {}, pid, restarted)
         self.assertNotEqual(pid, state['selectedPlanId'], '设置变化新建排班快照，原草稿保留')
         self.assertEqual({'stable-a'}, {a['memberId'] for a in state['plans'][state['selectedPlanId']]['draft']}, '统计表调整后下一次计算使用最新修正')
@@ -272,13 +277,13 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         incoming = import_complete_configuration(export_complete_configuration(old))
         self.command('import-complete-configuration', incoming)
         self.assertEqual(settings, Workbench(self.path).snapshot()['balanceSettings'])
-        incoming['balanceSettings'] = {'flightCountGap': None, 'priorityEnabled': False, 'priorityRoleNames': [], 'priorityAdjustments': []}
+        incoming['balanceSettings'] = {'flightCountGap': None, 'priorityEnabled': False, 'priorityRoleNames': [], 'priorityFlightRoles': [], 'priorityAdjustments': []}
         self.command('import-complete-configuration', incoming)
         self.assertEqual(incoming['balanceSettings'], Workbench(self.path).snapshot()['balanceSettings'])
         empty = Workbench(Path(self.directory.name) / 'old-empty.sqlite3')
         incoming.pop('balanceSettings')
         state = self.command('import-complete-configuration', incoming, workspace=empty)
-        self.assertEqual({'flightCountGap': None, 'priorityEnabled': False, 'priorityRoleNames': [], 'priorityAdjustments': []}, state['balanceSettings'])
+        self.assertEqual({'flightCountGap': None, 'priorityEnabled': False, 'priorityRoleNames': [], 'priorityFlightRoles': [], 'priorityAdjustments': []}, state['balanceSettings'])
 
     def test_existing_name_identity_wins_and_adjustments_remap_without_changing_history(self):
         data = self.maintained()
@@ -306,6 +311,10 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
 
     def test_negative_correction_keeps_value_on_empty_device_and_effective_count_is_zero(self):
         data = configuration()
+        data['balanceSettings']['priorityRoleNames'] = []
+        data['balanceSettings']['priorityFlightRoles'] = [{'flightNo': 'A100', 'roleName': '登机主验'}]
+        for correction in data['balanceSettings']['priorityAdjustments']:
+            correction['flightNo'] = 'A100'
         incoming = import_complete_configuration(export_complete_configuration(data))
         state = self.command('import-complete-configuration', incoming)
         restarted = Workbench(self.path)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import sqlite3
@@ -13,6 +14,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .web import ROOT, create_app
 from .workspace_api import attach_workspace
+
+
+class LocalStaticFiles(StaticFiles):
+    def is_not_modified(self, response_headers, request_headers):
+        # A portable update must not leave an older entry page in the browser.
+        return False
 
 
 def runtime_root() -> Path:
@@ -41,7 +48,14 @@ def create_server_app(static_directory: Path | None = None, database_path: Path 
         from fastapi import FastAPI
         app = FastAPI(title="登机口保障排班 · 数据恢复")
     attach_workspace(app, database_path)
-    app.mount("/", StaticFiles(directory=static_directory, html=True), name="web")
+
+    @app.middleware("http")
+    async def prevent_stale_pages(request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    app.mount("/", LocalStaticFiles(directory=static_directory, html=True), name="web")
     return app
 
 
@@ -52,7 +66,8 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
     app = create_server_app()
-    address = f"http://{args.host}:{args.port}"
+    version = hashlib.sha256((runtime_root()/"web"/"dist"/"index.html").read_bytes()).hexdigest()[:12]
+    address = f"http://{args.host}:{args.port}/?v={version}"
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(address)).start()
     uvicorn.run(app, host=args.host, port=args.port)

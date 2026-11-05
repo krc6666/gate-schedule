@@ -128,6 +128,9 @@ class Workbench:
         state["handoffPreferences"] = general_handoff_preferences(state["handoffPreferences"])
         state.setdefault("displayPreferences", {"layout": "flights", "zoom": 100})
         state.setdefault("balanceSettings", default_balance_settings())
+        # Owner chose to reselect the new flight/role scope; legacy fields stay
+        # as migration evidence and never select new priority combinations.
+        state['balanceSettings'].setdefault('priorityFlightRoles', [])
         state.setdefault("teamLeaderSettings", default_team_leader_settings())
         state.setdefault("halfRestSettings", default_half_rest_settings())
         state.setdefault("relaxedShiftSettings", default_relaxed_shift_settings())
@@ -160,7 +163,9 @@ class Workbench:
             rotations=tuple(replace(r, candidate_member_ids=tuple(identities.get(n, n) for n in r.candidate_member_ids)) for r in scenario.rotations),
             flight_count_gap=plan.get("balanceSettings", default_balance_settings())["flightCountGap"],
             priority_role_ids=tuple(plan.get("balanceSettings", default_balance_settings())["priorityRoleNames"])
-                if plan.get("balanceSettings", default_balance_settings())["priorityEnabled"] else (),
+                if plan.get("balanceSettings", default_balance_settings())["priorityEnabled"] and 'priorityFlightRoles' not in plan.get('balanceSettings', {}) else (),
+            priority_flight_roles=tuple((p['flightNo'], p['roleName']) for p in plan.get('balanceSettings', {}).get('priorityFlightRoles', []))
+                if plan.get('balanceSettings', {}).get('priorityEnabled', False) else (),
             team_leader_last=plan.get("teamLeaderSettings", default_team_leader_settings())["lastUsed"],
             balance_exempt_team_leaders=plan.get("teamLeaderSettings", default_team_leader_settings())["exemptFlightCount"],
             balance_exempt_half_rest=plan.get("halfRestSettings", default_half_rest_settings())["exemptFlightCount"],
@@ -236,6 +241,8 @@ class Workbench:
         return self.snapshot()
 
     def _save_balance(self, state, payload):
+        if 'priorityFlightRoles' not in payload["balanceSettings"]:
+            raise WorkspaceError("页面版本已更新，请按 Ctrl+F5 刷新，选择航班后重新勾选重点岗位；本次未保存，原配置和班表保留")
         settings = validate_balance_settings(payload["balanceSettings"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
         if settings["priorityAdjustments"] != state["balanceSettings"]["priorityAdjustments"]:
             raise WorkspaceError("累计次数已改变，请刷新后重试；次数请在统计表用加减按钮调整")
@@ -683,7 +690,14 @@ class Workbench:
                 previous_date = previous["scenario"]["serviceDate"]
                 roles = {t["id"]: t["roleId"] for t in previous["scenario"]["tasks"]}
                 previous_roles = {(a["memberId"], roles[a["taskId"]]) for a in previous["assignments"]}
-        result = solve(scenario, allow_partial=True, previous_roles=previous_roles, priority_counts=priority_counts_before(state, scenario.service_date) if state else {}, handoff_preferences=state.get("handoffPreferences", []) if state else [], control=control)
+                from .domain import member_flight_role_participation
+                old_scenario = scenario_from_dict(previous['scenario'])
+                flight_nos = {f.id: f.flight_no for f in old_scenario.flights}
+                previous_roles.update((m, flight_nos[f], r) for m, f, r in
+                    member_flight_role_participation(old_scenario, _assignments(previous['assignments'])))
+        counts = {**priority_counts_before(state, scenario.service_date),
+            **priority_counts_before(state, scenario.service_date, by_flight=True)} if state else {}
+        result = solve(scenario, allow_partial=True, previous_roles=previous_roles, priority_counts=counts, handoff_preferences=state.get("handoffPreferences", []) if state else [], control=control)
         values = control.latest if control and control.stopped.is_set() and control.keep else result.assignments
         if control:
             control.stage("独立复查资格、冲突与缺口")
@@ -959,6 +973,7 @@ class Workbench:
                 state[key] = deepcopy(data[key])
         if "balanceSettings" in data:
             settings = deepcopy(data["balanceSettings"])
+            settings.setdefault('priorityFlightRoles', deepcopy(state['balanceSettings'].get('priorityFlightRoles', [])))
             identities = {identity: by_name[name]["id"] for name, identity in data.get("peopleIds", {}).items()}
             for adjustment in settings["priorityAdjustments"]:
                 adjustment["memberId"] = identities.get(adjustment["memberId"], adjustment["memberId"])
@@ -1169,22 +1184,23 @@ class Workbench:
         if type(delta) is not int or delta not in (-1, 1):
             raise WorkspaceError("每次请增加或减少1次")
         month, member, role = payload.get("month"), payload.get("memberId"), payload.get("roleName")
+        flight = payload.get('flightNo')
         report = priority_statistics(state, month, current=self._statistics_draft(state))
-        group = next((r for r in report["roles"] if r["roleName"] == role), None)
+        group = next((r for r in report["roles"] if r["roleName"] == role and r.get('flightNo') == flight), None)
         row = next((m for m in group["members"] if m["memberId"] == member), None) if group else None
         if row is None:
             raise WorkspaceError("请选择统计表中的人员与重点岗位")
         if delta < 0 and row["effectiveCount"] == 0:
             raise WorkspaceError("累计次数已经是0，不能继续减少")
         adjustments = state["balanceSettings"]["priorityAdjustments"]
-        existing = next((a for a in adjustments if (a["month"], a["memberId"], a["roleName"]) == (month, member, role)), None)
+        existing = next((a for a in adjustments if (a["month"], a["memberId"], a.get('flightNo'), a["roleName"]) == (month, member, flight, role)), None)
         correction = row["effectiveCount"] + delta - row["historyCount"]
         if existing:
             existing["delta"] = correction
             if existing["delta"] == 0:
                 adjustments.remove(existing)
         else:
-            adjustments.append({"month": month, "memberId": member, "roleName": role, "delta": correction})
+            adjustments.append({"month": month, "memberId": member, "flightNo": flight, "roleName": role, "delta": correction})
 
     def _restore_candidate(self, backup):
         if not isinstance(backup, dict) or not isinstance(backup.get("state"), dict):
@@ -1296,7 +1312,9 @@ class Workbench:
                 raise WorkspaceError("计划身份或版本无效")
             day = imported_day_from_dict(plan["day"])
             if "balanceSettings" in plan:
-                validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"] + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
+                validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"]
+                    + [r['roleName'] for r in plan['balanceSettings'].get('priorityFlightRoles', [])]
+                    + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
             BaggageRotationSettings(plan["rotationEnabled"], plan["rotationMinutes"])
             _validate_day_structure(day)
             pending = plan.get("cellDrafts", {})

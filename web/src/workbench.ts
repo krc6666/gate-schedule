@@ -47,7 +47,7 @@ function updateSaveStatus(): void {
   root.querySelectorAll(".save-state, #rules-save-status").forEach(el => el.textContent = text);
 }
 
-const priorityStatisticsSelection = { month: "", roleName: "" };
+const priorityStatisticsSelection = { month: "", roleName: "", flightNo: "" };
 let disposePriorityStatistics = () => {};
 const roleStatisticsSelection = { month: "", roleName: "", query: "" };
 let disposeRoleStatistics = () => {};
@@ -148,7 +148,7 @@ async function run(action: string, payload: unknown = {}, id = plan()?.id ?? nul
   let success = false;
   try {
     const command = { expectedRevision: state.revision, action, planId: id, payload };
-    state = ["solve", "prepare-solve", "archive-next"].includes(action) ? await runSchedule(command) : await responseJson(await fetch("/api/workspace/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) }));
+    state = ["solve", "prepare-solve", "archive-next"].includes(action) ? await runSchedule(command) : await responseJson(await fetch("/api/workspace/command", { method: "POST", headers: { "Content-Type": "application/json", "X-Gate-Rule-Schema": "flight-role-v1" }, body: JSON.stringify(command) }));
     if (["new-plan", "select-plan", "import-complete-configuration", "archive-next", "prepare-solve", "phase-plan"].includes(action)) { selectedDate = state.plans[state.selectedPlanId!]!.day.serviceDate; configurationDraft = null; balanceDraft = null; leaderDraft = null; halfRestDraft = null; relaxedDraft = null; cellEdits.clear(); }
     if (["save-input", "new-plan", "select-plan", "refresh-people", "apply-config", "import-complete-configuration", "configure-cell", "archive-next", "prepare-solve", "phase-plan", "cancel-preview"].includes(action)) resetEditable();
     message = action === "import-qualifications" ? "人员与资质已补充；原有资格、当天计划和正式结果保留。新计划会沿用，已有计划如需更新请载入最新人员。" : ["save-role", "save-roles", "save-person", "save-config", "save-flight-template", "copy-flight-roles"].includes(action) ? "配置已保存；已有当天资料和正式结果保持。" : plan()?.message ?? "已保存";
@@ -440,12 +440,18 @@ function bindRules(): void {
   const readBalance = (): BalanceSettings => ({
     ...state.balanceSettings,
     priorityEnabled: root.querySelector<HTMLInputElement>("#priority-enabled")!.checked,
-    priorityRoleNames: [...root.querySelectorAll<HTMLInputElement>("[data-priority-role]:checked")].map(input=>input.dataset.priorityRole!),
+    priorityRoleNames: [],
+    priorityFlightRoles: [...root.querySelectorAll<HTMLInputElement>("[data-priority-role]:checked")].map(input=>({flightNo: input.dataset.priorityFlight!, roleName: input.dataset.priorityRole!})),
     flightCountGap: root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked ? root.querySelector<HTMLInputElement>("#flight-count-gap")!.valueAsNumber : null,
   });
   for (const input of root.querySelectorAll<HTMLInputElement>("#priority-enabled, [data-priority-role], #flight-count-gap-enabled, #flight-count-gap")) input.onchange=()=>{
     root.querySelector<HTMLInputElement>("#flight-count-gap")!.disabled=!root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked;
     balanceDraft=readBalance(); root.querySelector(".save-state")!.textContent="有未保存修改";
+    root.querySelector('#priority-selected-summary')!.textContent = `已选：${balanceDraft.priorityFlightRoles!.map(p => `${p.flightNo} · ${p.roleName}`).join('、') || '尚未选择，请先选航班，再勾选岗位。'}`;
+  };
+  root.querySelector<HTMLSelectElement>('#priority-rule-flight')!.onchange = event => {
+    const flight = (event.target as HTMLSelectElement).value;
+    root.querySelectorAll<HTMLElement>('[data-priority-flight-group]').forEach(group => group.hidden = group.dataset.priorityFlightGroup !== flight);
   };
   for (const input of root.querySelectorAll<HTMLInputElement>("#team-leader-last, #team-leader-exempt")) input.onchange = () => {
     leaderDraft = { lastUsed: root.querySelector<HTMLInputElement>("#team-leader-last")!.checked, exemptFlightCount: root.querySelector<HTMLInputElement>("#team-leader-exempt")!.checked };
@@ -461,7 +467,7 @@ function bindRules(): void {
     const leaders = leaderDraft ?? state.teamLeaderSettings;
     set("half-rest-rules", (halfRestDraft ?? state.halfRestSettings).exemptFlightCount ? "上午 / 下午 · 不比较航班数" : "上午 / 下午 · 参与航班数比较");
     set("team-leader-rules", `${leaders.lastUsed ? "最后使用" : "正常参与"} · ${leaders.exemptFlightCount ? "不比较航班数" : "参与航班数比较"}`);
-    set("priority-role-rules", balance.priorityEnabled ? `已启用 · ${balance.priorityRoleNames.length} 个重点岗位` : "未启用");
+    set("priority-role-rules", balance.priorityEnabled ? `已启用 · ${balance.priorityFlightRoles?.length ?? 0} 个航班岗位` : "未启用");
     set("flight-balance-rules", balance.flightCountGap != null ? `硬约束 · 差距不超过 ${Number.isNaN(balance.flightCountGap) ? "待填写" : balance.flightCountGap}` : "未启用");
     set("base-rule-settings", `${config.rotationEnabled ? `轮换 ${config.rotationMinutes} 分钟` : "轮换关闭"} · 走动 ${config.transitionMinutes} 分钟`);
     set("phase-handoff-rules", `当天确认 · ${editable?.phaseHandoffs?.length ?? 0} 项衔接`);

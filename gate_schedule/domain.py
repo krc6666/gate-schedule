@@ -379,6 +379,7 @@ class Scenario:
     team_leader_last: bool = True
     balance_exempt_team_leaders: bool = True
     balance_exempt_half_rest: bool = True
+    priority_flight_roles: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, order=True)
@@ -408,14 +409,21 @@ def member_role_flight_counts(scenario: Scenario, assignments, role_ids=None) ->
     """Count each member/role/flight once, regardless of compatible duties or segments."""
     roles = tuple(dict.fromkeys(role_ids if role_ids is not None else (task.role_id for task in scenario.tasks)))
     result = {(member.id, role): set() for member in scenario.members for role in roles}
-    tasks = {task.id: task for task in scenario.tasks}
-    known_flights = {flight.id for flight in scenario.flights}
-    for assignment in assignments:
-        task = tasks.get(assignment.task_id)
-        key = (assignment.member_id, task.role_id) if task is not None else None
+    for member_id, flight_id, role in member_flight_role_participation(scenario, assignments):
+        key = member_id, role
         if key in result:
-            result[key].update(known_flights.intersection(task_flight_ids(task)))
+            result[key].add(flight_id)
     return {key: len(flights) for key, flights in result.items()}
+
+
+def member_flight_role_participation(scenario: Scenario, assignments) -> frozenset[tuple[str, str, str]]:
+    """Actual member/flight-id/role facts; split and shared tasks count once."""
+    tasks = {task.id: task for task in scenario.tasks}
+    members = {member.id for member in scenario.members}
+    flights = {flight.id for flight in scenario.flights}
+    return frozenset((a.member_id, flight_id, tasks[a.task_id].role_id)
+        for a in assignments if a.member_id in members and a.task_id in tasks
+        for flight_id in task_flight_ids(tasks[a.task_id]) if flight_id in flights)
 
 
 def default_balance_settings() -> dict:
@@ -496,13 +504,27 @@ def scarce_role_groups(scenario: Scenario) -> tuple[tuple[str, ...], ...]:
                  for count in sorted(set(counts.values())) if count < broadest)
 
 
+def validate_priority_flight_roles(items, role_names=None):
+    if not isinstance(items, list):
+        raise ValueError('航班重点岗位必须为列表')
+    seen = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {'flightNo', 'roleName'}
+                or any(not isinstance(v, str) or not v or v != v.strip() for v in item.values())):
+            raise ValueError('重点岗位必须明确填写航班号和岗位')
+        pair = item['flightNo'], item['roleName']
+        if pair in seen or role_names is not None and pair[1] not in role_names:
+            raise ValueError('航班重点岗位重复或引用未知岗位')
+        seen.add(pair)
+
+
 def validate_balance_settings(value, role_names, member_ids=None) -> dict:
     """One configuration contract for editable balance rules and monthly corrections."""
     from copy import deepcopy
     from datetime import date
     import re
 
-    if not isinstance(value, dict) or set(value) != set(default_balance_settings()):
+    if not isinstance(value, dict) or set(value) not in (set(default_balance_settings()), set(default_balance_settings()) | {'priorityFlightRoles'}):
         raise ValueError("重点轮换与航班数设置字段不完整或未知")
     gap = value["flightCountGap"]
     if gap is not None and (type(gap) is not int or gap < 0):
@@ -511,6 +533,8 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
         raise ValueError("重点岗位轮换开关必须是布尔值")
     roles = value["priorityRoleNames"]
     catalog = set(role_names)
+    if 'priorityFlightRoles' in value:
+        validate_priority_flight_roles(value['priorityFlightRoles'], catalog)
     if (not isinstance(roles, list)
             or any(not isinstance(role, str) or not role or role != role.strip() or role not in catalog for role in roles)
             or len(roles) != len(set(roles))):
@@ -521,7 +545,7 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
     known_members = set(member_ids) if member_ids is not None else None
     seen = set()
     for adjustment in adjustments:
-        if not isinstance(adjustment, dict) or set(adjustment) != {"month", "memberId", "roleName", "delta"}:
+        if not isinstance(adjustment, dict) or set(adjustment) not in ({"month", "memberId", "roleName", "delta"}, {"month", "memberId", "roleName", "delta", "flightNo"}):
             raise ValueError("重点岗位次数修正字段不完整或未知")
         month, member, role, delta = (adjustment[key] for key in ("month", "memberId", "roleName", "delta"))
         if not isinstance(month, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}", month) is None:
@@ -536,9 +560,12 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
             raise ValueError("重点岗位次数修正引用了不存在的岗位")
         if type(delta) is not int:
             raise ValueError("重点岗位次数修正必须是整数")
-        key = (month, member, role)
+        flight = adjustment.get('flightNo')
+        if 'flightNo' in adjustment and (not isinstance(flight, str) or not flight or flight != flight.strip()):
+            raise ValueError('重点次数修正航班号无效')
+        key = (month, member, flight, role)
         if key in seen:
-            raise ValueError("同月同人同岗的次数修正不能重复")
+            raise ValueError("同月同人同航班同岗的次数修正不能重复")
         seen.add(key)
     return deepcopy(value)
 
