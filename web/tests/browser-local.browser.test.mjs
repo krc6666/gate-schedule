@@ -49,13 +49,13 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   const ready=async()=>{
-    try { await until(()=>evaluate("document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"浏览器本机工作台",120000); }
+    try { await until(()=>evaluate("document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"浏览器本机工作台",120000); }
     catch(error) { throw Error(String(error)+"; "+await evaluate("document.body.innerText")); }
   };
   const reload=async()=>{
     await evaluate("window.__reloadPending=true");
     await call("Page.reload");
-    await until(()=>evaluate("!window.__reloadPending && document.documentElement.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000);
+    await until(()=>evaluate("!window.__reloadPending && document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000);
   };
   await ready();
   assert.equal(await evaluate("crossOriginIsolated"),true);
