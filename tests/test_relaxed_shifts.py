@@ -14,10 +14,98 @@ from gate_schedule.excel_io import import_complete_configuration
 from gate_schedule.server import create_server_app
 from gate_schedule.workbench import Workbench
 from gate_schedule.relaxed_shift_statistics import relaxed_shift_statistics
+from gate_schedule.relaxed_shift_statistics import relaxed_counts_before
+from gate_schedule.solver import solve
+from gate_schedule.validator import validate_schedule
 from tests.test_balance_workflow import small_configuration
 
 
 class RelaxedShiftTests(unittest.TestCase):
+    def test_automatic_rest_opportunities_rotate_across_formal_days(self):
+        _, wb = self.workspace()
+        config = small_configuration(None)
+        day = config['day']
+        day['flights'][0].update(windowStart='09:00', windowEnd='10:00')
+        day['flights'][1].update(windowStart='14:00', windowEnd='15:00')
+        day['cells'][0]['requiredCountOverride'] = 2
+        state = self.command(wb, 'import-complete-configuration', config)
+        pid = state['selectedPlanId']
+        # An already unfair month: 甲 got both earlier rest opportunities.
+        self.command(wb, 'edit-cell', {'cellId': 'c0', 'text': '甲 / 乙'}, pid)
+        self.command(wb, 'edit-cell', {'cellId': 'c1', 'text': '乙'}, pid)
+        self.command(wb, 'adopt', pid=pid)
+        for target in ('2026-08-04', '2026-08-06'):
+            next_day = deepcopy(wb.backup()['state']['plans'][pid]['day'])
+            next_day['serviceDate'] = target
+            state = self.command(wb, 'archive-next', {'day': next_day}, pid)
+            pid = state['selectedPlanId']
+            if target.endswith('04'):
+                # Deliberately repeat the original unfair manual arrangement.
+                self.command(wb, 'edit-cell', {'cellId': 'c0', 'text': '甲 / 乙'}, pid)
+                self.command(wb, 'edit-cell', {'cellId': 'c1', 'text': '乙'}, pid)
+        summary = wb.snapshot()['relaxedShiftSummary']
+        for key in ('earlyDepartures', 'afternoonRest'):
+            self.assertEqual(['乙'], [p['memberName'] for p in summary[key]], key)
+        self.assertTrue(state['plans'][pid]['valid'])
+        # Re-solving a day must not add its own draft/formal to the baseline.
+        baseline = relaxed_counts_before(wb.backup()['state'], '2026-08-06')
+        self.command(wb, 'adopt', pid=pid)
+        self.assertEqual(baseline, relaxed_counts_before(wb.backup()['state'], '2026-08-06'))
+        for target in ('2026-08-08', '2026-08-10', '2026-08-12', '2026-08-14'):
+            next_day = deepcopy(wb.backup()['state']['plans'][pid]['day'])
+            next_day['serviceDate'] = target
+            state = self.command(wb, 'archive-next', {'day': next_day}, pid)
+            pid = state['selectedPlanId']
+            self.assertTrue(state['plans'][pid]['valid'])
+            for key in ('earlyDepartureCount', 'afternoonRestCount'):
+                values = [r[key] for r in wb.relaxed_shift_statistics('2026-08')['rows']]
+                self.assertLessEqual(max(values) - min(values), 1)
+
+    def test_balance_switches_independent_and_hard_constraints_preserved(self):
+        morning = self.scenario()
+        afternoon = replace(morning.tasks[0], id='pm', start=840, end=900)
+        s = replace(morning, tasks=(replace(morning.tasks[0], required_count=2), afternoon))
+        settings = default_relaxed_shift_settings()
+        counts = {('a', 'earlyDeparture'): 2, ('b', 'earlyDeparture'): 0,
+                  ('a', 'afternoonRest'): 0, ('b', 'afternoonRest'): 2}
+        def rest(**overrides):
+            result = solve(s, relaxed_settings={**settings, **overrides}, relaxed_counts=counts)
+            self.assertEqual([], validate_schedule(s, result.assignments))
+            return relaxed_shift_facts(s, result.assignments, settings)
+        self.assertTrue(next(r for r in rest(afternoonRestBalanceEnabled=False) if r['memberId']=='b')['earlyDeparture'])
+        self.assertTrue(next(r for r in rest(earlyDepartureBalanceEnabled=False) if r['memberId']=='a')['afternoonRest'])
+        locked = replace(s, tasks=(s.tasks[0], replace(afternoon, locked_member_ids=('b',))))
+        result = solve(locked, relaxed_settings=settings, relaxed_counts={('a', 'afternoonRest'): 20})
+        self.assertEqual([], validate_schedule(locked, result.assignments))
+        self.assertIn(Assignment('pm', 'b'), result.assignments, '不能为均衡突破固定人员')
+        corrupted = tuple(Assignment(a.task_id, 'a' if a.task_id == 'pm' else a.member_id) for a in result.assignments)
+        self.assertTrue(validate_schedule(locked, corrupted), '人工破坏固定必须仍被最终校验发现')
+        for bad in (None, -1, 32, True, 1.5):
+            with self.assertRaises(ValueError):
+                validate_relaxed_shift_settings({**settings, 'afternoonRestMaxDifference': bad})
+        with self.assertRaises(ValueError):
+            validate_relaxed_shift_settings({**settings, 'earlyDepartureBalanceEnabled': 1})
+
+    def test_legacy_settings_keep_local_switches_and_new_defaults_on_empty_restart(self):
+        directory, wb = self.workspace()
+        config = small_configuration(None)
+        settings = {**default_relaxed_shift_settings(), 'earlyDepartureBalanceEnabled': False,
+                    'earlyDepartureMaxDifference': 3, 'afternoonRestMaxDifference': 0}
+        config['relaxedShiftSettings'] = settings
+        state = self.command(wb, 'import-complete-configuration', config)
+        book = load_workbook(BytesIO(wb.export_complete_configuration(state['selectedPlanId'])))
+        sheet = book['轻松班次设置']
+        sheet.delete_rows(6, 4)
+        stream = BytesIO(); book.save(stream); book.close()
+        legacy = import_complete_configuration(stream.getvalue())
+        # This old format contains the four original time rows, no switches.
+        self.assertNotIn('earlyDepartureBalanceEnabled', legacy['relaxedShiftSettings'])
+        self.command(wb, 'import-complete-configuration', legacy)
+        self.assertEqual(settings, Workbench(directory/'state.sqlite3').backup()['state']['relaxedShiftSettings'])
+        empty = Workbench(directory/'legacy-empty.sqlite3')
+        self.command(empty, 'import-complete-configuration', legacy)
+        self.assertEqual(default_relaxed_shift_settings(), empty.backup()['state']['relaxedShiftSettings'])
+
     def scenario(self, start=480, end=600, flight_end=None):
         return Scenario(service_date='2026-08-02', flights=(Flight('f', 'F0', '2026-08-02', start, flight_end or end),),
             members=(Member('a', '甲', frozenset({'岗'}), 0), Member('b', '乙', frozenset({'岗'}), 0)),
@@ -103,7 +191,8 @@ class RelaxedShiftTests(unittest.TestCase):
     def test_settings_excel_empty_import_restart_actual_use_and_legacy_preservation(self):
         directory, wb = self.workspace()
         config = small_configuration(None)
-        settings = {**default_relaxed_shift_settings(), 'earlyDepartureCutoffTime': '11:00', 'lateFlightNos': ['F0']}
+        settings = {**default_relaxed_shift_settings(), 'earlyDepartureCutoffTime': '11:00', 'lateFlightNos': ['F0'],
+                    'earlyDepartureBalanceEnabled': False, 'afternoonRestMaxDifference': 0}
         config['relaxedShiftSettings'] = settings
         state = self.command(wb, 'import-complete-configuration', config)
         pid = state['selectedPlanId']

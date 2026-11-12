@@ -90,14 +90,25 @@ def format_minutes(value: int) -> str:
 
 def default_relaxed_shift_settings():
     return {'earlyDepartureCutoffTime': '12:00', 'afternoonRestStartTime': '12:00',
-            'afternoonRestEndTime': '18:00', 'lateShiftEndTime': '23:00', 'lateFlightNos': []}
+            'afternoonRestEndTime': '18:00', 'lateShiftEndTime': '23:00', 'lateFlightNos': [],
+            'earlyDepartureBalanceEnabled': True, 'earlyDepartureMaxDifference': 1,
+            'afternoonRestBalanceEnabled': True, 'afternoonRestMaxDifference': 1}
 
 
-def validate_relaxed_shift_settings(value):
+def validate_relaxed_shift_settings(value, base=None):
     from copy import deepcopy
-    if not isinstance(value, dict) or set(value) != set(default_relaxed_shift_settings()):
+    defaults = default_relaxed_shift_settings()
+    balance_keys = {k for k in defaults if k.endswith(('Enabled', 'Difference'))}
+    if not isinstance(value, dict) or set(value) - set(defaults) or set(defaults) - balance_keys - set(value):
         raise ValueError('轻松班次设置字段不完整')
-    for key in set(value) - {'lateFlightNos'}:
+    value = {**defaults, **(base or {}), **value}
+    for key in balance_keys:
+        if key.endswith('Enabled'):
+            if type(value[key]) is not bool:
+                raise ValueError('轻松班次均衡开关须为是或否')
+        elif type(value[key]) is not int or not 0 <= value[key] <= 31:
+            raise ValueError('轻松班次目标差距须为0至31的整数')
+    for key in set(value) - {'lateFlightNos'} - balance_keys:
         if not isinstance(value[key], str) or not re.fullmatch(r'\d{2}:\d{2}', value[key]):
             raise ValueError('轻松班次时间须为当日HH:MM')
         parse_minutes(value[key])
@@ -109,20 +120,33 @@ def validate_relaxed_shift_settings(value):
     return deepcopy(value)
 
 
+def relaxed_shift_task_groups(scenario, settings):
+    """Shared classification for display facts and the optimization compiler."""
+    settings = validate_relaxed_shift_settings(settings)
+    flights = {f.id: f for f in scenario.flights}
+    work = tuple(t for t in scenario.tasks if t.required_count > 0 and task_flight_ids(t))
+    cutoff = parse_minutes(settings['earlyDepartureCutoffTime'])
+    start, end = (parse_minutes(settings[k]) for k in ('afternoonRestStartTime', 'afternoonRestEndTime'))
+    late_end = parse_minutes(settings['lateShiftEndTime'])
+    late = set(settings['lateFlightNos'])
+    return work, {
+        'earlyDeparture': frozenset(t.id for t in work if t.end >= cutoff or any(
+            flights[i].window_end > late_end or flights[i].flight_no in late for i in task_flight_ids(t))),
+        'afternoonRest': frozenset(t.id for t in work if t.start < end and t.end > start),
+    }
+
+
 def relaxed_shift_facts(scenario, assignments, settings, duty_member_id=None):
     """One fact per regular person/day from assigned flight tasks, never attendance alone."""
-    validate_relaxed_shift_settings(settings)
-    tasks = {t.id: t for t in scenario.tasks}
+    settings = validate_relaxed_shift_settings(settings)
+    work_tasks, blockers = relaxed_shift_task_groups(scenario, settings)
+    tasks = {t.id: t for t in work_tasks}
     flights = {f.id: f for f in scenario.flights}
     occupied = {}
     for assignment in assignments:
         task = tasks.get(assignment.task_id)
         if task and task.required_count > 0 and task_flight_ids(task):
             occupied.setdefault(assignment.member_id, {})[task.id] = task
-    cutoff = parse_minutes(settings['earlyDepartureCutoffTime'])
-    afternoon_start = parse_minutes(settings['afternoonRestStartTime'])
-    afternoon_end = parse_minutes(settings['afternoonRestEndTime'])
-    late_end = parse_minutes(settings['lateShiftEndTime'])
     selected_late = set(settings['lateFlightNos'])
     result = []
     for member in scenario.members:
@@ -135,9 +159,8 @@ def relaxed_shift_facts(scenario, assignments, settings, duty_member_id=None):
         last_numbers = sorted({flights[i].flight_no for i in task_flight_ids(last)})
         result.append({'memberId': member.id, 'memberName': member.name,
             'lastFlightNo': ' / '.join(last_numbers), 'lastEndTime': format_minutes(last.end),
-            'earlyDeparture': member.id != duty_member_id and last.end < cutoff and not late
-                and all(flights[i].window_end <= late_end for i in worked_flights),
-            'afternoonRest': all(t.end <= afternoon_start or t.start >= afternoon_end for t in work),
+            'earlyDeparture': member.id != duty_member_id and not any(t.id in blockers['earlyDeparture'] for t in work),
+            'afternoonRest': not any(t.id in blockers['afternoonRest'] for t in work),
             'lateFlightNos': late})
     return result
 

@@ -68,6 +68,7 @@ def _with_preferences(state):
     state.setdefault("teamLeaderSettings", default_team_leader_settings())
     state.setdefault("halfRestSettings", default_half_rest_settings())
     state.setdefault("relaxedShiftSettings", default_relaxed_shift_settings())
+    state['relaxedShiftSettings'] = validate_relaxed_shift_settings(state['relaxedShiftSettings'])
     state.setdefault("dutyRoster", default_roster(state))
 
 

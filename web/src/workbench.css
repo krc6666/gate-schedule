@@ -249,3 +249,6 @@
 #coverage-priority-rules th,#coverage-priority-rules td{min-width:0;white-space:normal;overflow-wrap:anywhere}
 #coverage-priority-rules th:first-child{width:50%}
 #coverage-priority-rules td,#coverage-priority-rules thead th:not(:first-child){text-align:center}
+.relaxed-balance-option { display: grid; gap: 10px; }
+.relaxed-balance-option > label { display: flex; align-items: center; gap: 8px; }
+.relaxed-balance-option input[type="number"] { width: 72px; }

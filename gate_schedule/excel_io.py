@@ -1274,7 +1274,9 @@ def validate_complete_configuration(data):
             set(result["peopleIds"].values()) if "peopleIds" in result else None,
         )
     if "relaxedShiftSettings" in data:
-        result["relaxedShiftSettings"] = validate_relaxed_shift_settings(data["relaxedShiftSettings"])
+        normalized = validate_relaxed_shift_settings(data["relaxedShiftSettings"])
+        # Preserve absence in old files, so importing cannot reset local switches.
+        result["relaxedShiftSettings"] = {k: normalized[k] for k in data["relaxedShiftSettings"]}
     if "halfRestSettings" in data:
         result["halfRestSettings"] = validate_half_rest_settings(data["halfRestSettings"])
     if "teamLeaderSettings" in data:
@@ -1369,7 +1371,7 @@ def export_complete_configuration(data, *, history_schedules=None):
         ["每航班岗位", "航班模板的本航班岗位用顿号分隔，可添加或移除名称，空白表示无岗位；模板岗位维护相应人数/工作方式例外。删除单个航班岗位不删除通用资质，新增通用岗位不会自动加入其他已配置航班。旧文件缺清单列时，已有库保留当前选择，空库沿用通用岗位。"],
         ["当天例外", "长期岗位人数/性质/资质及轮换设置保存在通用表；当天不同的设置在当天岗位例外、当天资质例外、当天设置例外三表中，仅覆盖导入的新日计划，不改长期默认。空表表示当天沿用长期配置，三表应一起保留。"],
         ["上午下午半休", "当日出勤的半休时段填写不半休、上午半休或下午半休。06:00至12:00前开始算早班；上午休不排早班，下午休只排早班，12点及凌晨归其他时段，跨午按开始判断。半休设置表默认不参与航班数比较，仍按实际岗位计次；无岗保留休息。旧四列出勤默认不半休，旧文件无设置表保留当前开关。新日默认清空当天半休，同日重排保留。"],
-        ["末班与轻松班次", "轻松班次设置表维护提前下班节点、下午统计开始/结束、晚航班结束界线（当日HH:MM）；末班航班范围表逐行填写航班号，空表清空。两表一起保留或一起缺失，旧文件均无时保留当前设置，空库默认12:00/12:00/18:00/23:00及空末班。只用于名单识别和次数统计，历史按最新设置重算；实际班表与历史次数依据随本文件的历史附表迁移。"],
+        ["末班与轻松班次", "轻松班次设置表维护提前下班节点、下午统计开始/结束、晚航班结束界线（当日HH:MM），两项均衡开关与目标差距（0至31整数，默认开启/1）；末班航班范围表逐行填写航班号，空表清空。两表一起保留或一起缺失；旧文件缺新字段保留当前选择，空库用默认。均衡保存后重排生效，尽量将机会给本月次数少的人，硬规则优先；关闭仍统计。历史按最新时段重算；实际班表与历史次数依据随历史附表迁移。"],
     ]:
         guide.append(row)
     guide.append(["携带历史", "是" if "history" in data else "否"])
@@ -1419,10 +1421,14 @@ def export_complete_configuration(data, *, history_schedules=None):
     if "relaxedShiftSettings" in data:
         relaxed = book.create_sheet("轻松班次设置")
         relaxed.append(["项目", "内容"])
-        for key in default_relaxed_shift_settings():
+        settings = validate_relaxed_shift_settings(data['relaxedShiftSettings'])
+        for key in settings:
             if key != 'lateFlightNos':
                 relaxed.append([{'earlyDepartureCutoffTime': '提前下班节点', 'afternoonRestStartTime': '下午统计开始',
-                    'afternoonRestEndTime': '下午统计结束', 'lateShiftEndTime': '晚航班结束界线'}[key], data['relaxedShiftSettings'][key]])
+                    'afternoonRestEndTime': '下午统计结束', 'lateShiftEndTime': '晚航班结束界线',
+                    'earlyDepartureBalanceEnabled': '启用提前下班均衡', 'earlyDepartureMaxDifference': '提前下班目标差距',
+                    'afternoonRestBalanceEnabled': '启用下午无航班均衡', 'afternoonRestMaxDifference': '下午无航班目标差距'}[key],
+                    ('是' if settings[key] else '否') if key.endswith('Enabled') else settings[key]])
         late = book.create_sheet('末班航班范围')
         late.append(['航班号'])
         for number in data['relaxedShiftSettings']['lateFlightNos']:
@@ -1810,9 +1816,14 @@ def import_complete_configuration(content):
             entries = pairs('轻松班次设置')
             keys = {'提前下班节点': 'earlyDepartureCutoffTime', '下午统计开始': 'afternoonRestStartTime',
                     '下午统计结束': 'afternoonRestEndTime', '晚航班结束界线': 'lateShiftEndTime'}
-            if set(entries) != set(keys):
+            balance_keys = {'启用提前下班均衡': 'earlyDepartureBalanceEnabled', '提前下班目标差距': 'earlyDepartureMaxDifference',
+                            '启用下午无航班均衡': 'afternoonRestBalanceEnabled', '下午无航班目标差距': 'afternoonRestMaxDifference'}
+            if set(entries) not in (set(keys), set(keys) | set(balance_keys)):
                 raise ValueError('轻松班次设置项目不完整或未知')
-            data['relaxedShiftSettings'] = {keys[k]: _work_time_text(v) for k, v in entries.items()}
+            data['relaxedShiftSettings'] = {keys[k]: _work_time_text(entries[k]) for k in keys}
+            for key, field in balance_keys.items():
+                if key in entries:
+                    data['relaxedShiftSettings'][field] = yes_no(entries[key]) if field.endswith('Enabled') else entries[key]
             data['relaxedShiftSettings']['lateFlightNos'] = [_text(r[0]) for r in rows('末班航班范围', ['航班号'])]
         if "半休设置" in book.sheetnames:
             rest = pairs("半休设置")

@@ -120,7 +120,7 @@ def _apply_configuration(state, payload):
             for name, value in data[key].items():
                 by_name[name][field] = value
     if "relaxedShiftSettings" in data:
-        state["relaxedShiftSettings"] = deepcopy(data["relaxedShiftSettings"])
+        state["relaxedShiftSettings"].update(deepcopy(data["relaxedShiftSettings"]))
     if "halfRestSettings" in data:
         state["halfRestSettings"] = deepcopy(data["halfRestSettings"])
     if "teamLeaderSettings" in data:

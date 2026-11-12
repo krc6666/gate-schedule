@@ -91,7 +91,8 @@ def _priority_costs(model, scenario, variables, previous_roles, priority_counts,
     return (sum(repeats), repeat_bound), (sum(monthly), monthly_bound), (sum(previous), previous_bound)
 
 
-def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=False, previous_roles=frozenset(), handoff_preferences=(), priority_counts=None, control=None) -> SolveResult:
+def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=False, previous_roles=frozenset(), handoff_preferences=(), priority_counts=None, control=None, relaxed_settings=None, relaxed_counts=None, duty_member_id=None) -> SolveResult:
+    started = monotonic()
     validate_handoff_preferences(list(handoff_preferences))
     priority_counts = {} if priority_counts is None else priority_counts
     if not isinstance(priority_counts, dict) or any(
@@ -105,6 +106,30 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     model_issues = validate_scenario(scenario)
     if model_issues:
         return SolveResult("MODEL_INVALID", diagnostics=tuple(issue.message for issue in model_issues))
+
+    baseline = None
+    if relaxed_settings is not None:
+        from .domain import validate_relaxed_shift_settings
+        relaxed_settings = validate_relaxed_shift_settings(relaxed_settings)
+        relaxed_counts = {} if relaxed_counts is None else relaxed_counts
+        if not isinstance(relaxed_counts, dict) or any(type(v) is not int or not 0 <= v <= 31 for v in relaxed_counts.values()):
+            raise ValueError('月度轻松班次历史次数须为0至31的整数')
+        people = [m for m in scenario.members if member_available(m) and not m.team_leader and m.status == '正常']
+        needs_balance = any(relaxed_settings[k + 'BalanceEnabled'] and len({relaxed_counts.get((m.id, k), 0)
+            for m in people if k != 'earlyDeparture' or m.id != duty_member_id}) > 1
+            for k in ('earlyDeparture', 'afternoonRest'))
+        if needs_balance:
+            baseline = solve(scenario, min(1.5, time_limit_seconds / 2), allow_partial=allow_partial,
+                previous_roles=previous_roles, handoff_preferences=handoff_preferences,
+                priority_counts=priority_counts, control=control)
+            if baseline.status not in ('OPTIMAL', 'FEASIBLE'):
+                # No opportunity budget exists yet; give the original model
+                # the remaining budget, without inventing empty-day rest.
+                return solve(scenario, max(.01, time_limit_seconds - (monotonic() - started)),
+                    allow_partial=allow_partial, previous_roles=previous_roles,
+                    handoff_preferences=handoff_preferences, priority_counts=priority_counts, control=control)
+            if control and control.stopped.is_set():
+                return baseline
 
     model = cp_model.CpModel()
     if control:
@@ -132,6 +157,16 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
             if variable is None:
                 return SolveResult("INFEASIBLE", diagnostics=(f"任务 {task.id} 的锁定人员 {member_id} 不满足资格或到岗时间",))
             model.add(variable == 1)
+
+    if baseline is not None:
+        assigned_counts = {}
+        for assignment in baseline.assignments:
+            assigned_counts[assignment.task_id] = assigned_counts.get(assignment.task_id, 0) + 1
+        for priority in COVERAGE_PRIORITIES:
+            if coverage_terms[priority]:
+                missing_before = sum(max(0, t.required_count - assigned_counts.get(t.id, 0))
+                    for t in scenario.tasks if task_coverage_priority(scenario, t) == priority)
+                model.add(sum(coverage_terms[priority]) <= missing_before)
 
     if control:
         control.stage("检查冲突、固定与轮换")
@@ -272,7 +307,10 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
                          (late_end, len(late_end)*end_bound), (late_count, len(late_count))):
         if terms:
             half_rest_costs.append((sum(terms), bound))
-    priority_costs = (*half_rest_costs, *scarce_costs, *priority_costs)
+    from .relaxed_shift_balance import relaxed_shift_costs
+    rest_costs = relaxed_shift_costs(model, scenario, variables, relaxed_settings,
+                                   relaxed_counts or {}, duty_member_id, baseline.assignments) if baseline else ()
+    priority_costs = (*half_rest_costs, *rest_costs, *scarce_costs, *priority_costs)
     if scenario.team_leader_last:
         leader_ids = {m.id for m in scenario.members if m.team_leader}
         leader_choices = [v for (member, _), v in variables.items() if member in leader_ids]
@@ -308,7 +346,7 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     assignments = None
     status = cp_model.UNKNOWN
     completed = True
-    deadline = monotonic() + time_limit_seconds
+    deadline = started + time_limit_seconds
     try:
         for objective in objectives:
             remaining = deadline - monotonic()
@@ -336,6 +374,9 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     elif status == cp_model.MODEL_INVALID:
         return SolveResult("MODEL_INVALID", diagnostics=("OR-Tools 拒绝了模型",))
     else:
+        if baseline is not None:
+            return SolveResult('FEASIBLE', assignments=baseline.assignments,
+                               external_support_by_task=baseline.external_support_by_task)
         return SolveResult("TIMED_OUT", diagnostics=("求解在时限内未找到可行解",))
 
     return SolveResult(

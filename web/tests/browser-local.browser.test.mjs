@@ -110,6 +110,10 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'新设置不得替用户预选岗位');
   await evaluate('document.querySelector("#coverage-priority-rules").open=true');
   await click('[data-coverage-role="登机主验"][data-coverage-priority="protect"]');
+  await evaluate('document.querySelector("#relaxed-shift-rules").open=true');
+  await click('[data-relaxed-enabled="earlyDeparture"]');
+  await value('[data-relaxed-gap="earlyDeparture"]','3');
+  await value('[data-relaxed-gap="afternoonRest"]','0');
   await click('#save-rules');
   await until(async()=> (await state('A')).balanceSettings.coveragePriorities?.some(i=>i.roleName==='登机主验'&&i.priority==='protect'),'保岗勾选真实保存');
   await until(()=>evaluate('!document.querySelector("#save-rules").disabled'),'保存完成');
@@ -148,6 +152,11 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   await until(()=>evaluate("!document.querySelector('#confirm-complete-configuration')"),"导入界面完成");
   await reload();
   const restoredA=await state("A"),restoredB=await state("B");
+  assert.deepEqual(restoredA.relaxedShiftSettings,savedA.relaxedShiftSettings);
+  assert.deepEqual(restoredB.relaxedShiftSettings,savedB.relaxedShiftSettings);
+  assert.equal(restoredA.relaxedShiftSettings.earlyDepartureBalanceEnabled,false);
+  assert.equal(restoredA.relaxedShiftSettings.earlyDepartureMaxDifference,3);
+  assert.equal(restoredA.relaxedShiftSettings.afternoonRestMaxDifference,0);
   const normalizedPeople=people=>people.map(p=>({teamLeader:false,status:"正常",remark:"",...p}));
   assert.deepEqual(normalizedPeople(restoredA.people),normalizedPeople(savedA.people));
   assert.deepEqual(restoredA.balanceSettings,savedA.balanceSettings);
@@ -240,6 +249,30 @@ print(json.dumps({g:c['history']['state'] for g,c in d['groupTransfer']['configu
       await writeFile(join(repo,`.tmp/browser-local-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
     }
   }
+  // Real WASM solve after two unfair manual days: neither draft nor the target
+  // date may be counted as earlier history, and the lower-count person rests.
+  const restFixture=JSON.parse(execFileSync(python,['-c',`import json
+from tests.test_balance_workflow import small_configuration
+from gate_schedule.domain import default_relaxed_shift_settings
+d=small_configuration(None)
+d['relaxedShiftSettings']=default_relaxed_shift_settings()
+d['day']['serviceDate']='2044-03-02'
+d['day']['flights'][0].update(windowStart='09:00',windowEnd='10:00')
+d['day']['flights'][1].update(windowStart='14:00',windowEnd='15:00')
+d['day']['cells'][0]['requiredCountOverride']=2
+print(json.dumps(d))`],{cwd:repo,encoding:'utf8'}));
+  let restState=await command('B','import-complete-configuration',restFixture);
+  await command('B','save-duty-settings',{...restState.dutyRoster,enabled:false,overrides:[]});
+  for(const role of restState.configuration.roleConfigs)if(role.roleName!=='接机1')await command('B','save-role',{...role,requiredCount:0});
+  let restId=restState.selectedPlanId;
+  for(const day of ['2044-03-04','2044-03-06']){
+    await command('B','edit-cell',{cellId:'c0',text:'甲 / 乙'},restId);
+    await command('B','edit-cell',{cellId:'c1',text:'乙'},restId);
+    const nextDay=structuredClone((await state('B')).plans[restId].day);nextDay.serviceDate=day;
+    restState=await command('B','archive-next',{day:nextDay},restId);restId=restState.selectedPlanId;
+  }
+  assert.equal(restState.plans[restId].valid,true,JSON.stringify(restState.plans[restId].issues));
+  for(const key of ['earlyDepartures','afternoonRest'])assert.deepEqual(restState.relaxedShiftSummary[key].map(p=>p.memberName),['乙']);
   assert.ok(!requests.some(url=>new URL(url,base).pathname.startsWith("/api/")),"不得请求任何Python后台");
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));

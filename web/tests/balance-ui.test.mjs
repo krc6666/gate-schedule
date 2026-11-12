@@ -24,6 +24,10 @@ test('规则页可选重点岗位和硬差距，次数修正不混在设置表�
   assert.match(markup,/id="save-rules"/);
   assert.match(markup,/本月.*次数|本自然月/);
   assert.match(markup,/重新排班/);
+  assert.match(markup,/data-relaxed-enabled="earlyDeparture"[^>]*checked/);
+  assert.match(markup,/data-relaxed-enabled="afternoonRest"[^>]*checked/);
+  assert.match(markup,/data-relaxed-gap="earlyDeparture"[^>]*value="1"/);
+  assert.match(markup,/data-relaxed-gap="afternoonRest"[^>]*value="1"/);
   assert.match(markup,/稀缺岗位资质轮换（自动）/);
   assert.match(markup,/正常参加排班且具备该岗资质/);
   assert.match(markup,/人数相同的岗位同等优先，无需手动勾选/);

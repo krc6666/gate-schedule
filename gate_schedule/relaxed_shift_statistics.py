@@ -5,14 +5,14 @@ from .priority_statistics import statistics_history, _statistics_month
 from .duty_roster import duty_statistics
 
 
-def relaxed_shift_statistics(state, month=None, *, current=None, service_date=None):
+def relaxed_shift_statistics(state, month=None, *, current=None, service_date=None, before=None):
     month = _statistics_month(state, month)
     rows = {p['id']: {'memberId': p['id'], 'memberName': p['name'],
                      'earlyDepartures': [], 'afternoonRestDates': [], 'lateFlights': []}
             for p in state['people'] if not p.get('deleted', False) and not p.get('teamLeader', False)}
     duty_by_month = {}
     daily = {}
-    for record in statistics_history(state, month, current=current):
+    for record in statistics_history(state, month, current=current, before=before):
         if not record.get('scenario'):
             continue
         scenario = scenario_from_dict(record['scenario'])
@@ -43,3 +43,10 @@ def relaxed_shift_statistics(state, month=None, *, current=None, service_date=No
                 summary[target].append({**fact, 'monthlyCount': rows[fact['memberId']][count]})
     return {'revision': state['revision'], 'month': month, 'rows': people,
             'current': summary, 'settings': state['relaxedShiftSettings']}
+
+
+def relaxed_counts_before(state, service_date):
+    """Monthly formal history only: excludes the target day, drafts and future."""
+    rows = relaxed_shift_statistics(state, service_date[:7], before=service_date)['rows']
+    return {(row['memberId'], kind): row[kind + 'Count'] for row in rows
+            for kind in ('earlyDeparture', 'afternoonRest')}

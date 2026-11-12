@@ -28,7 +28,7 @@ from .domain import validate_duty_roster
 from .domain import default_team_leader_settings, validate_team_leader_settings, default_half_rest_settings, validate_half_rest_settings, HALF_REST_LABELS
 from .domain import PERSONNEL_STATUSES, personnel_states, validate_personnel_details
 from .domain import validate_relaxed_shift_settings
-from .relaxed_shift_statistics import relaxed_shift_statistics
+from .relaxed_shift_statistics import relaxed_shift_statistics, relaxed_counts_before
 from .workspace_document import (
     WorkspaceError, normalize_document, with_configuration, validate_document,
     plan_scenario, apply_personnel_policy, pending_issues, archive_review,
@@ -231,7 +231,7 @@ class Workbench:
             self._save_base_settings(state, payload["configuration"])
             self._save_balance(state, payload)
             if "relaxedShiftSettings" in payload:
-                state["relaxedShiftSettings"] = validate_relaxed_shift_settings(payload["relaxedShiftSettings"])
+                state["relaxedShiftSettings"] = validate_relaxed_shift_settings(payload["relaxedShiftSettings"], state['relaxedShiftSettings'])
             if "halfRestSettings" in payload:
                 state["halfRestSettings"] = validate_half_rest_settings(payload["halfRestSettings"])
             if "teamLeaderSettings" in payload:
@@ -616,7 +616,12 @@ class Workbench:
                     member_flight_role_participation(old_scenario, read_assignments(previous['assignments'])))
         counts = {**priority_counts_before(state, scenario.service_date),
             **priority_counts_before(state, scenario.service_date, by_flight=True)} if state else {}
-        result = solve(scenario, allow_partial=True, previous_roles=previous_roles, priority_counts=counts, handoff_preferences=state.get("handoffPreferences", []) if state else [], control=control)
+        duty = next((r['dutyMemberId'] for r in duty_statistics(state, scenario.service_date[:7])['rows']
+                     if r['date'] == scenario.service_date), None) if state else None
+        result = solve(scenario, allow_partial=True, previous_roles=previous_roles, priority_counts=counts,
+            handoff_preferences=state.get("handoffPreferences", []) if state else [], control=control,
+            relaxed_settings=state['relaxedShiftSettings'] if state else None,
+            relaxed_counts=relaxed_counts_before(state, scenario.service_date) if state else {}, duty_member_id=duty)
         values = control.latest if control and control.stopped.is_set() and control.keep else result.assignments
         if control:
             control.stage("独立复查资格、冲突与缺口")

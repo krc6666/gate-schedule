@@ -1,3 +1,19 @@
+# 2026-11-12 轻松班次月度均衡（软目标）
+
+| 环节 | 唯一owner及消费点 |
+| --- | --- |
+| 设置与输入 | domain.default_relaxed_shift_settings/validate_relaxed_shift_settings：两项BalanceEnabled默认true、MaxDifference默认1（0至31整数）；原时段/末班口径保持 |
+| 分类与候选 | domain.relaxed_shift_task_groups为统计与求解提供相同计次任务/阻挡任务；solver资格、出勤、固定、半休、时间冲突保持 |
+| 历史 | relaxed_shift_statistics.relaxed_counts_before：目标同月且严格较早的最新正式；值班快照一致，不取草稿/自己/未来 |
+| 求解 | Workbench._solve所有自动入口传设置/次数/值班；solver先取得正常基准，relaxed_shift_balance保留两项机会数量，优化超目标差距与少次数优先；覆盖/分队长/半休在前，时间不足保留基准 |
+| 人工与后置 | 人工允许偏好例外；撤销、清空、重新采用后的统计按最终安排重算；均衡不作硬拒绝 |
+| 最终合法性 | validator独立硬规则保持；无新硬规则，反向破坏固定仍拒绝 |
+| 持久化/迁移 | workspace_document默认补齐；Workbench统一保存；configuration_transfer/excel_io保留旧缺字段与明确关闭；SQLite/JSON/完整Excel/A/B/完整备份携带 |
+| 展示/输出 | 原规则区两项独立开关/目标差距，统一保存后重排；原名单/月度统计/正式与导出不追改，解释软目标可能受约束/时限影响 |
+| 验证 | 先红后绿2/0及多班追平、两项独立启停、固定反向、旧格式保留/空库默认、完整Excel空库重启实际求解、双组相反选择、静态WASM与实际EXE、原入口 |
+
+---
+
 # 2026-11-05 缺人时按岗位保岗优先级
 
 本项是软目标顺序，不新增或放宽硬规则。Owner最新要求由其自行选择，覆盖此前同意的岗位默认分档；初始全不勾。domain唯一拥有三档、未选正常与岗位覆盖；所有航班、共享任务和轮换段统一生效，同档同等优先。

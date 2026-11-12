@@ -109,6 +109,9 @@ class BrowserRuntimeTests(unittest.TestCase):
                                                  'roleName': '登机主验'}])
             relaxed = deepcopy(state['relaxedShiftSettings'])
             relaxed['lateFlightNos'] = ['A100' if enabled else 'B200']
+            relaxed.update(earlyDepartureBalanceEnabled=enabled, afternoonRestBalanceEnabled=not enabled,
+                           earlyDepartureMaxDifference=0 if enabled else 3,
+                           afternoonRestMaxDifference=2 if enabled else 1)
             command('save-rules', {
                 'configuration': base, 'balanceSettings': balance,
                 'teamLeaderSettings': {'lastUsed': enabled, 'exemptFlightCount': not enabled},
