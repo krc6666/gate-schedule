@@ -45,6 +45,9 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   await call("Runtime.enable");
   await call("Page.enable");
   await call("Network.enable");
+  // Simulate the library missing its first reload notification. The application
+  // must wait for worker control and reload into isolation before it starts.
+  await call("Page.addScriptToEvaluateOnNewDocument", {source: "window.coi={doReload:()=>{}}"});
   await call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:directory});
   await call("Page.navigate", {url: base});
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);

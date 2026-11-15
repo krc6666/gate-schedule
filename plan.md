@@ -1,5 +1,7 @@
 # 单管理员云端工作区源码交付（2026-11-15）
 
+后续Linux冷启动捕获原COI刷新通知竞争；实际静态Chrome在屏蔽第三方doReload时2.6秒复现controlled=true而isolated/ready=false。新增browser-isolation统一等待接管再刷新，反向探针绿；完整Chrome加入同一永久回归。当前运行本机/云端完整静态验证，之后再执行干净Linux发布，失败成品不部署。
+
 第二轮43697143024已通过云端8项及本机构建，静态Chrome运行到Python合成夹具导入时明确缺httpx2。该依赖已在pyproject.toml的test extra声明，但CI只安装产品；修正安装命令为pip install -e '.[test]'，使用既有测试依赖合同，不增加运行逻辑或放宽测试。此错误日志即精确失败证据，不为已明确缺包另造猜测或重复完整本地回归，最终由干净Linux原命令复验。
 
 首次手动部署43696864840在Linux云端Chrome测试失败：测试看到首个登录表单后，COI服务工作线程刷新页面，后续输入拿到null。SQL及其他7项测试通过，未进入部署。改为等crossOriginIsolated且登录表单存在后才装弹窗钩子/输入，不延长超时、不改产品逻辑；修复后重新验证和发布，失败轮次保留。
