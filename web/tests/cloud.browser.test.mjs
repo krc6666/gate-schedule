@@ -48,8 +48,15 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   await mkdir(join(repo,'.tmp'),{recursive:true});const directory=await mkdtemp(join(repo,'.tmp/cloud-browser-'));
   let browser,ws;let next=0;const pending=new Map();
   t.after(async()=>{ws?.close();browser?.kill();server.closeAllConnections();await new Promise(r=>server.close(r));await writeFile(join(directory,'result.json'),JSON.stringify({errors,dialogs,saves,revision},null,2))});
-  browser=spawn(process.env.GATE_TEST_BROWSER??'C:/Program Files/Google/Chrome/Application/chrome.exe',['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--remote-debugging-port=0','--user-data-dir='+join(directory,'chrome'),'about:blank'],{windowsHide:true,stdio:'ignore'});
-  let port;await until(async()=>{try{port=(await readFile(join(directory,'chrome/DevToolsActivePort'),'utf8')).trim().split(/\r?\n/)[0];return port}catch{return false}},'Chrome端口',15000);
+  let browserError='';
+  browser=spawn(process.env.GATE_TEST_BROWSER??'C:/Program Files/Google/Chrome/Application/chrome.exe',['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--remote-debugging-port=0','--user-data-dir='+join(directory,'chrome'),'about:blank'],{windowsHide:true,stdio:['ignore','ignore','pipe']});
+  browser.stderr.on('data',chunk=>{browserError=(browserError+chunk.toString()).slice(-8000)});
+  browser.on('error',error=>{browserError=String(error)});
+  let port;
+  try{await until(async()=>{
+    if(browser.exitCode!==null||browser.signalCode!==null)throw Error(`Chrome exited: ${browser.exitCode??browser.signalCode}; ${browserError}`);
+    try{port=(await readFile(join(directory,'chrome/DevToolsActivePort'),'utf8')).trim().split(/\r?\n/)[0];return port}catch{return false}
+  },'Chrome端口',15000)}catch(error){throw Error(`${error}; Chrome startup: ${browserError}`)}
   const targets=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   ws=new WebSocket(targets.find(x=>x.type==='page').webSocketDebuggerUrl);await new Promise(r=>ws.addEventListener('open',r,{once:true}));
   ws.addEventListener('message',event=>{const m=JSON.parse(event.data);if(m.method==='Runtime.exceptionThrown')errors.push(m.params);if(m.method==='Page.javascriptDialogOpening')dialogs.push(m.params);const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}});
