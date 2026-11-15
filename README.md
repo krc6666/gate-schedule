@@ -1,5 +1,7 @@
 # 单管理员 Supabase 云端工作区（2026-11-15）
 
+已部署：https://krc6666.github.io/gate-schedule/ 。代码49f2c63经Actions43698684246完整构建、测试及部署成功。真实HTTPS云登录页、1440/390布局、隔离环境、匿名RPC401/42501拒绝及发布Python源码匹配通过；管理员公网账号内恢复仍待本人确认。本机预览接真实Supabase的管理员保存/重登已验证，两者分别报告。
+
 沿用现有 Python/Pyodide/WASM 排班逻辑与 GitHub Pages，Supabase 负责登录及完整 A/B 工作区持久化。顶部显式保存、数据库单管理员权限、原子版本检查及退出保护已实现。网页地址：https://krc6666.github.io/gate-schedule/ 。本次云端部署状态以 GitHub Actions 与 plan.md 为准。
 
 源工作区后端524项、前端88项、类型检查及本机/云端构建通过；真实Supabase管理员保存与重登恢复、匿名拒绝已验证。模拟PostgreSQL/Chrome覆盖版本冲突、失败重试、权限与离开保护。实际普通账号、双设备故障注入、手机计算及现场业务未验证，不以模拟替代。

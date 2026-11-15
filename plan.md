@@ -1,5 +1,7 @@
 # 单管理员云端工作区源码交付（2026-11-15）
 
+最终交付：已按授权commit/push/部署，公开代码49f2c63，运行https://github.com/krc6666/gate-schedule/actions/runs/43698684246 的build/deploy均成功。真实HTTPS云登录页1440/390、隔离环境、匿名401/42501拒绝、无页面异常及34份发布Python匹配通过。管理员公网账号内恢复待本人登录确认；此前本机预览接真实Supabase管理员保存/重登验证单独成立。现有云端资料和原桌面历史保持。下方为执行过程与失败证据，不替代本段最终状态。
+
 后续Linux冷启动捕获原COI刷新通知竞争；实际静态Chrome在屏蔽第三方doReload时2.6秒复现controlled=true而isolated/ready=false。新增browser-isolation统一等待接管再刷新，反向探针绿；完整Chrome加入同一永久回归。当前运行本机/云端完整静态验证，之后再执行干净Linux发布，失败成品不部署。
 
 第二轮43697143024已通过云端8项及本机构建，静态Chrome运行到Python合成夹具导入时明确缺httpx2。该依赖已在pyproject.toml的test extra声明，但CI只安装产品；修正安装命令为pip install -e '.[test]'，使用既有测试依赖合同，不增加运行逻辑或放宽测试。此错误日志即精确失败证据，不为已明确缺包另造猜测或重复完整本地回归，最终由干净Linux原命令复验。
