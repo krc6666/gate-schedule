@@ -20,10 +20,10 @@ test('规则页无需当前日计划即可维护已导入的航班接续偏好',
     handoffPreferences:[{flightNo:'*',arrivalRole:'接机2',boardingRoles:['登机核验'],enabled:true}]
   };
   const markup=rulesPage(state,null,null);
-  assert.match(markup,/data-handoff-flight="\*"/);
-  assert.equal((markup.match(/data-handoff-flight=/g) ?? []).length,1);
-  assert.match(markup,/data-handoff-target="登机核验" checked/);
-  assert.match(markup,/data-handoff-enabled checked/);
+  assert.match(markup,/data-flow-rule="0"/);
+  assert.equal((markup.match(/data-flow-rule=/g) ?? []).length,1);
+  assert.match(markup,/value="登机核验" selected/);
+  assert.match(markup,/data-flow-enabled checked/);
 });
 
 const fixtures = () => ({

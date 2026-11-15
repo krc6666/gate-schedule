@@ -1,7 +1,7 @@
 """Contextual manual edits and explanations; legality belongs to validator/domain."""
 from difflib import get_close_matches
 
-from .domain import Assignment, task_pair_conflict
+from .domain import Assignment, task_candidate_relationship
 from .validator import validate_schedule
 
 
@@ -79,23 +79,8 @@ def candidate_options(scenario, assignments, task_id, slot=0):
         elif reasons:
             status, label = "blocked", "不可安排"
         else:
-            allowed = [task for task in existing
-                       if task_pair_conflict(scenario, task, target) is None]
-            if target.service_stage == "boarding" and any(
-                    task.service_stage == "arrival" and (
-                        task.flight_id is not None and task.flight_id == target.flight_id
-                        or task.end <= target.start
-                        or task.timing_mode == target.timing_mode == "phase"
-                        and task.start < target.end and target.start < task.end
-                        and (task.flight_id, target.flight_id) in scenario.phase_handoffs)
-                    for task in allowed):
-                status, label = "continuation", "可接续"
-            elif any(target.flight_id is not None and task.flight_id == target.flight_id
-                     and task.start < target.end and target.start < task.end
-                     and (task.concurrent or target.concurrent) for task in allowed):
-                status, label = "concurrent", "可兼任"
-            else:
-                status, label = "available", "可安排"
+            status = task_candidate_relationship(scenario, existing, target)
+            label = {'continuation': '可接续', 'concurrent': '可兼任', 'available': '可安排'}[status]
         options.append({"id": member.id, "name": member.name, "available": not reasons, "manualAllowed": manual_allowed,
                         "reasons": reasons, "issues": explained, "status": status, "label": label})
     return options

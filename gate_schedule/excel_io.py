@@ -14,6 +14,8 @@ from openpyxl.comments import Comment
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
+from .day_document import imported_day_from_dict, imported_day_to_dict, _phase_handoffs
+from .domain import validate_imported_day
 from .qualification_config import validate_qualification_config
 from .domain import validate_duty_roster, HALF_REST_LABELS, validate_half_rest_settings
 from .domain import validate_relaxed_shift_settings, default_relaxed_shift_settings
@@ -22,7 +24,7 @@ from .duty_excel import write_roster_configuration, read_roster_configuration
 from .domain import (
     Assignment, ImportedCell, ImportedCellSemantics, ImportedDay, ImportedFlight, ImportedRemark, Scenario,
     ImportedRoleConfig, ImportedMemberConfig, ImportedMemberAvailability, ImportedOccupancy, ValidationIssue, BaggageRotationSettings, imported_member_names, imported_required_count, imported_work_mode, parse_minutes, format_minutes, WORK_MODES, task_timing_label, attendance_bounds,
-    validate_handoff_preferences, validate_display_preferences, general_handoff_preferences,
+    validate_handoff_preferences, validate_display_preferences,
     validate_balance_settings,
     validate_team_leader_settings,
     PERSONNEL_STATUSES,
@@ -30,7 +32,7 @@ from .domain import (
 
 
 EXTERNAL_SUPPORT_LABEL = "值机支援"
-_FLIGHT_HEADER = re.compile(r"^\s*(?P<flight>[^/]+?)\s*/\s*(?P<start>(?:(?:次日|第\d+日)\s*)?\d{1,2}:?\d{2})\s*-\s*(?P<end>(?:(?:次日|第\d+日)\s*)?\d{1,2}:?\d{2})\s*$")
+_FLIGHT_HEADER = re.compile(r"^\s*(?P<flight>[^/]+?)\s*/\s*(?P<start>(?:(?:前日|前第\d+日|次日|第\d+日)\s*)?\d{1,2}:?\d{2})\s*-\s*(?P<end>(?:(?:前日|前第\d+日|次日|第\d+日)\s*)?\d{1,2}:?\d{2})\s*$")
 _ARRIVAL_REMARK = re.compile(r"(?P<time>\d{1,2}:?\d{2})\s*到岗")
 _SPLIT_NAMES = re.compile(r"[、,，/\s]+")
 
@@ -177,7 +179,7 @@ def _work_time_text(value: object) -> str | None:
 
 def _format_compact_time(value: str) -> str:
     if ":" in value or "日" in value:
-        match = re.fullmatch(r"((?:次日|第\d+日)\s*)?(\d{1,2}):?(\d{2})", value.strip())
+        match = re.fullmatch(r"((?:前日|前第\d+日|次日|第\d+日)\s*)?(\d{1,2}):?(\d{2})", value.strip())
         if not match:
             raise ValueError(f"时间格式无效：{value}")
         return format_minutes(parse_minutes(f"{match[1] or ''}{int(match[2]):02d}:{match[3]}"))
@@ -502,7 +504,7 @@ def import_day(content: bytes, service_date: str, previous_day: ImportedDay | No
                 replace(config, eligible_role_names=tuple(role for role in config.eligible_role_names if role in day.role_names))
                 for config in previous_day.member_configs if config.member_name in current_names
             ))
-    return _read_work_modes(workbook, day)
+    return _read_relative_times(workbook, _read_work_modes(workbook, day))
 
 
 def update_imported_day(
@@ -548,7 +550,7 @@ def update_imported_day(
     if role_configs is None:
         configs = day.role_configs
     else:
-        configs = [ImportedRoleConfig(item["roleName"], item.get("requiredCount"), item.get("workMode", "timed"), item.get("concurrent", False), item.get("exclusiveSameFlight", False)) for item in role_configs]
+        configs = [ImportedRoleConfig(item["roleName"], item.get("requiredCount"), item.get("workMode", "timed"), item.get("concurrent", False), item.get("exclusiveSameFlight", False), item.get('relativeTiming')) for item in role_configs]
     members = day.member_configs if member_configs is None else tuple(
         ImportedMemberConfig(item["memberName"], tuple(item["eligibleRoleNames"])) for item in member_configs
     )
@@ -567,262 +569,6 @@ def update_imported_day(
         extra_occupancies=occupancies, remarks_reviewed=day.remarks_reviewed if remarks_reviewed is None else remarks_reviewed,
         transition_minutes=day.transition_minutes if transition_minutes is None else transition_minutes,
     )
-
-
-def validate_imported_day(day: ImportedDay) -> list[ValidationIssue]:
-    issues: list[ValidationIssue] = []
-    all_internal_names = {name for item in day.cells for name in item.internal_names}
-    known_names = set(imported_member_names(day))
-    if type(day.transition_minutes) is not int or day.transition_minutes < 0 or day.transition_minutes > 180:
-        issues.append(ValidationIssue("invalid_transition_minutes", "跨航班走动预留必须在 0 到 180 分钟之间"))
-    if type(day.remarks_reviewed) is not bool:
-        issues.append(ValidationIssue("invalid_remarks_reviewed", "支援备注核对状态无效"))
-    if len(day.role_names) != len(set(day.role_names)):
-        issues.append(ValidationIssue("duplicate_imported_role", "日表岗位名称重复"))
-    flights_by_id = {flight.id: flight for flight in day.flights}
-    seen_cells: set[tuple[str, str]] = set()
-    for flight in day.flights:
-        try:
-            start = parse_minutes(flight.window_start)
-            end = parse_minutes(flight.window_end)
-        except (ValueError, TypeError):
-            issues.append(ValidationIssue("invalid_flight_window", f"航班 {flight.flight_no} 的起止时间无效", flight.id))
-            continue
-        if end <= start:
-            issues.append(ValidationIssue("invalid_flight_window", f"航班 {flight.flight_no} 的结束时间必须晚于开始时间", flight.id))
-    for cell in day.cells:
-        flight = flights_by_id.get(cell.flight_id)
-        if flight is None or flight.flight_no != cell.flight_no:
-            issues.append(ValidationIssue("unknown_cell_flight", f"{cell.role_name} / {cell.flight_no} 引用了不存在的航班", cell.id))
-        if cell.role_name not in day.role_names:
-            issues.append(ValidationIssue("unknown_cell_role", f"日表单元格引用了不存在的岗位：{cell.role_name}", cell.id))
-        cell_key = (cell.flight_id, cell.role_name)
-        if cell_key in seen_cells:
-            issues.append(ValidationIssue("duplicate_imported_cell", f"{cell.role_name} / {cell.flight_no} 重复", cell.id))
-        seen_cells.add(cell_key)
-        if cell.required_count_override is not None and (type(cell.required_count_override) is not int or cell.required_count_override < 0):
-            issues.append(ValidationIssue("invalid_count_override", f"{cell.role_name} / {cell.flight_no} 的例外人数必须是 0 或正整数", cell.id))
-        if cell.work_mode_override is not None and cell.work_mode_override not in WORK_MODES:
-            issues.append(ValidationIssue("invalid_work_mode", f"{cell.role_name} 工作方式例外无效", cell.id))
-        if imported_work_mode(day, cell) != "timed":
-            pass
-        elif (cell.work_start is None) != (cell.work_end is None):
-            issues.append(ValidationIssue("incomplete_work_time", f"{cell.role_name} / {cell.flight_no} 的开始和结束时间需要一起填写", cell.id))
-        elif cell.work_start is not None and cell.work_end is not None:
-            try:
-                start_time = parse_minutes(cell.work_start)
-                end_time = parse_minutes(cell.work_end)
-            except (TypeError, ValueError):
-                issues.append(ValidationIssue("invalid_work_time", f"{cell.role_name} / {cell.flight_no} 的岗位时间格式无效", cell.id))
-            else:
-                if end_time <= start_time:
-                    issues.append(ValidationIssue("work_time_order", f"{cell.role_name} / {cell.flight_no} 的结束时间必须晚于开始时间", cell.id))
-        if cell.semantics == "ambiguous":
-            issues.append(ValidationIssue("ambiguous_slash", f"{cell.role_name} / {cell.flight_no} 的斜杠语义待确认", cell.id))
-        if cell.semantics in {"simultaneous", "rotation"} and len(cell.internal_names) < 2:
-            issues.append(ValidationIssue("insufficient_people", f"{cell.role_name} / {cell.flight_no} 需要至少两名内部人员", cell.id))
-        if cell.semantics == "external" and not cell.external_labels:
-            issues.append(ValidationIssue("external_missing", f"{cell.role_name} / {cell.flight_no} 缺少外援标签", cell.id))
-        if len(cell.internal_names) != len(set(cell.internal_names)):
-            issues.append(ValidationIssue("duplicate_imported_person", f"{cell.role_name} / {cell.flight_no} 有重复人员", cell.id))
-        if len(cell.fixed_member_names) != len(set(cell.fixed_member_names)):
-            issues.append(ValidationIssue("duplicate_fixed_member", f"{cell.role_name} / {cell.flight_no} 的固定人员重复", cell.id))
-        if cell.fixed_member_names and imported_required_count(day, cell) == 0:
-            issues.append(ValidationIssue("fixed_member_on_disabled_role", f"{cell.role_name} / {cell.flight_no} 已设为不需要人员，不能再固定人员", cell.id))
-        for name in cell.fixed_member_names:
-            if name not in all_internal_names and name not in day.roster:
-                issues.append(ValidationIssue("unknown_fixed_member", f"固定人员不在日表名单中：{name}", cell.id))
-            elif name not in cell.internal_names and name not in day.roster:
-                issues.append(ValidationIssue("fixed_member_not_in_cell", f"{cell.role_name} / {cell.flight_no} 的固定人员必须来自本单元格原名单", cell.id))
-    for flight in day.flights:
-        for role in day.role_names:
-            if (flight.id, role) not in seen_cells:
-                issues.append(ValidationIssue("missing_imported_cell", f"{role} / {flight.flight_no} 缺少岗位格，请补齐需求资料"))
-    seen_roles: set[str] = set()
-    for config in day.role_configs:
-        if config.role_name not in day.role_names:
-            issues.append(ValidationIssue("unknown_role_config", f"岗位配置中的岗位不存在：{config.role_name}"))
-        if config.role_name in seen_roles:
-            issues.append(ValidationIssue("duplicate_role_config", f"岗位配置重复：{config.role_name}"))
-        if config.required_count is not None and (type(config.required_count) is not int or config.required_count < 0):
-            issues.append(ValidationIssue("invalid_required_count", f"岗位 {config.role_name} 的同时需要人数必须是 0 或正整数"))
-        seen_roles.add(config.role_name)
-    seen_occupancies: set[str] = set()
-    for occupancy in day.extra_occupancies:
-        if not occupancy.id or occupancy.id in seen_occupancies:
-            issues.append(ValidationIssue("duplicate_occupancy", "额外占用编号为空或重复"))
-        if not occupancy.label.strip():
-            issues.append(ValidationIssue("empty_occupancy_label", "额外占用需要填写事项"))
-        if not occupancy.member_names or len(occupancy.member_names) != len(set(occupancy.member_names)):
-            issues.append(ValidationIssue("invalid_occupancy_members", "额外占用需要选择不重复的人员"))
-        for name in occupancy.member_names:
-            if name not in known_names:
-                issues.append(ValidationIssue("unknown_occupancy_member", f"额外占用中的人员不在日表名单中：{name}"))
-        try:
-            start = parse_minutes(occupancy.start)
-            end = parse_minutes(occupancy.end)
-        except (TypeError, ValueError):
-            issues.append(ValidationIssue("invalid_occupancy_time", f"额外占用 {occupancy.label} 的开始或结束时间无效"))
-        else:
-            if end <= start:
-                issues.append(ValidationIssue("occupancy_time_order", f"额外占用 {occupancy.label} 的结束时间必须晚于开始时间"))
-        seen_occupancies.add(occupancy.id)
-    seen_members: set[str] = set()
-    for config in day.member_configs:
-        if config.member_name not in known_names:
-            issues.append(ValidationIssue("unknown_member_config", f"人员配置中的人员不在日表名单中：{config.member_name}"))
-        if config.member_name in seen_members:
-            issues.append(ValidationIssue("duplicate_member_config", f"人员配置重复：{config.member_name}"))
-        if len(config.eligible_role_names) != len(set(config.eligible_role_names)):
-            issues.append(ValidationIssue("duplicate_member_role", f"人员 {config.member_name} 的可做岗位重复"))
-        for role_name in config.eligible_role_names:
-            if role_name not in day.role_names:
-                issues.append(ValidationIssue("unknown_member_role", f"人员 {config.member_name} 的可做岗位不存在：{role_name}"))
-        seen_members.add(config.member_name)
-    seen_attendance: set[str] = set()
-    for entry in day.member_availability:
-        if entry.member_name not in known_names:
-            issues.append(ValidationIssue("unknown_attendance_member", f"出勤人员不在日表名单中：{entry.member_name}"))
-        if entry.member_name in seen_attendance:
-            issues.append(ValidationIssue("duplicate_attendance_member", f"出勤人员重复：{entry.member_name}"))
-        if type(entry.participating) is not bool:
-            issues.append(ValidationIssue("invalid_participation", f"人员 {entry.member_name} 的参加排班选项无效"))
-        _, issue = attendance_bounds(day, entry)
-        if issue:
-            issues.append(issue)
-        seen_attendance.add(entry.member_name)
-    return issues
-
-
-def imported_day_to_dict(day: ImportedDay) -> dict:
-    return {
-        "serviceDate": day.service_date,
-        "title": day.title,
-        "flights": [
-            {"id": flight.id, "flightNo": flight.flight_no, "windowStart": flight.window_start, "windowEnd": flight.window_end, "rawHeader": flight.raw_header}
-            for flight in day.flights
-        ],
-        "roleNames": list(day.role_names),
-        "roster": list(day.roster),
-        "extraOccupancies": [
-            {"id": item.id, "label": item.label, "memberNames": list(item.member_names), "start": item.start, "end": item.end}
-            for item in day.extra_occupancies
-        ],
-        "remarksReviewed": day.remarks_reviewed,
-        "transitionMinutes": day.transition_minutes,
-        "releasePolicy": day.release_policy,
-        **({"attendanceMode": day.attendance_mode} if day.attendance_mode != "bounded" else {}),
-        "phaseHandoffs": [list(pair) for pair in day.phase_handoffs],
-        "memberNames": list(imported_member_names(day)),
-        "memberAvailability": [
-            {
-                "memberName": entry.member_name, "participating": entry.participating,
-                "availableFrom": entry.available_from, "availableUntil": entry.available_until,
-                **({"halfRest": entry.half_rest} if entry.half_rest is not None else {}),
-            }
-            for entry in day.member_availability
-        ],
-        "memberConfigs": [
-            {"memberName": config.member_name, "eligibleRoleNames": list(config.eligible_role_names)}
-            for config in day.member_configs
-        ],
-        "roleConfigs": [
-            {"roleName": config.role_name, "requiredCount": config.required_count, **({"exclusiveSameFlight": True} if config.exclusive_same_flight else {}), **({"workMode": config.work_mode, "concurrent": config.concurrent} if day.attendance_mode == "duty" or config.work_mode != "timed" or config.concurrent else {})}
-            for config in day.role_configs
-        ],
-        "cells": [
-            {
-                "id": cell.id,
-                "roleName": cell.role_name,
-                "flightId": cell.flight_id,
-                "flightNo": cell.flight_no,
-                "rawValue": cell.raw_value,
-                "internalNames": list(cell.internal_names),
-                "externalLabels": list(cell.external_labels),
-                "semantics": cell.semantics,
-                "workStart": cell.work_start,
-                "workEnd": cell.work_end,
-                **({"workModeOverride": cell.work_mode_override} if cell.work_mode_override is not None else {}),
-                "requiredCountOverride": cell.required_count_override,
-                "fixedMemberNames": list(cell.fixed_member_names),
-                "effectiveRequiredCount": imported_required_count(day, cell),
-            }
-            for cell in day.cells
-        ],
-        "remarks": [
-            {"kind": remark.kind, "rawText": remark.raw_text, "people": list(remark.people), "time": remark.time}
-            for remark in day.remarks
-        ],
-    }
-
-
-def imported_day_from_dict(data: dict) -> ImportedDay:
-    if data.get("releasePolicy", "flight") not in ("flight", "task"):
-        raise ValueError("支援释放规则无效")
-    return ImportedDay(
-        service_date=data["serviceDate"],
-        title=data["title"],
-        flights=tuple(
-            ImportedFlight(item["id"], item["flightNo"], item["windowStart"], item["windowEnd"], item.get("rawHeader", ""))
-            for item in data["flights"]
-        ),
-        role_names=tuple(data["roleNames"]),
-        roster=tuple(data.get("roster", ())),
-        extra_occupancies=tuple(
-            ImportedOccupancy(item["id"], item["label"], tuple(item["memberNames"]), item["start"], item["end"])
-            for item in data.get("extraOccupancies", [])
-        ),
-        remarks_reviewed=data.get("remarksReviewed", not any(item.get("kind") == "support" for item in data.get("remarks", []))),
-        transition_minutes=data.get("transitionMinutes", 0),
-        release_policy=data.get("releasePolicy", "flight"),
-        attendance_mode=data.get("attendanceMode", "bounded"),
-        phase_handoffs=_phase_handoffs(data.get("phaseHandoffs", []), {f["id"] for f in data["flights"]}),
-        member_availability=tuple(
-            ImportedMemberAvailability(item["memberName"], item["participating"], item.get("availableFrom"), item.get("availableUntil"), item.get("halfRest"))
-            for item in data.get("memberAvailability", [])
-        ),
-        member_configs=tuple(
-            ImportedMemberConfig(item["memberName"], tuple(item["eligibleRoleNames"]))
-            for item in data.get("memberConfigs", [])
-        ),
-        role_configs=tuple(
-            ImportedRoleConfig(item["roleName"], item.get("requiredCount"), item.get("workMode", "timed"), item.get("concurrent", False), item.get("exclusiveSameFlight", False))
-            for item in data.get("roleConfigs", [])
-        ),
-        cells=tuple(
-            ImportedCell(
-                id=item["id"],
-                role_name=item["roleName"],
-                flight_id=item["flightId"],
-                flight_no=item["flightNo"],
-                raw_value=item["rawValue"],
-                internal_names=tuple(item["internalNames"]),
-                external_labels=tuple(item["externalLabels"]),
-                semantics=item["semantics"],
-                work_start=item.get("workStart"),
-                work_end=item.get("workEnd"),
-                work_mode_override=item.get("workModeOverride"),
-                required_count_override=item.get("requiredCountOverride"),
-                fixed_member_names=tuple(item.get("fixedMemberNames", ())),
-            )
-            for item in data["cells"]
-        ),
-        remarks=tuple(
-            ImportedRemark(item["kind"], item["rawText"], tuple(item.get("people", ())), item.get("time"))
-            for item in data["remarks"]
-        ),
-    )
-
-
-def _phase_handoffs(values, known):
-    if not isinstance(values, (list, tuple)):
-        raise ValueError("航班衔接必须是列表")
-    result = []
-    for pair in values:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2 or any(not isinstance(p, str) or p not in known for p in pair) or pair[0] == pair[1] or tuple(pair) in result:
-            raise ValueError("航班衔接引用未知航班、自身或重复关系")
-        result.append(tuple(pair))
-    return tuple(result)
 
 
 def _write_work_modes(book, day):
@@ -877,10 +623,20 @@ def _read_work_modes(book, day):
     modes = {v: k for k, v in WORK_MODES.items()}
     current = {r.role_name: r for r in day.role_configs}
     seen = set()
-    header = ["岗位", "工作方式", "岗位性质"]
-    if _text(book["岗位性质"].cell(1, 4).value): header.append("同航班专岗专人")
+    single_switch = _text(book["岗位性质"].cell(1, 3).value) == "同航班专岗专人"
+    header = ["岗位", "工作方式", "同航班专岗专人"] if single_switch else ["岗位", "工作方式", "岗位性质"]
+    if not single_switch and _text(book["岗位性质"].cell(1, 4).value): header.append("同航班专岗专人")
     for row in rows("岗位性质", header):
         role, mode, nature = row[:3]
+        if single_switch:
+            if nature not in {"是", "否"}:
+                raise ValueError("同航班专岗专人请明确填写是或否")
+            if role not in day.role_names or role in seen or mode not in modes:
+                raise ValueError("岗位性质包含未知/重复岗位或无效工作方式")
+            old = current.get(role, ImportedRoleConfig(role))
+            current[role] = replace(old, work_mode=modes[mode], concurrent=nature == '否', exclusive_same_flight=nature == '是')
+            seen.add(role)
+            continue
         if len(row) == 4 and row[3] not in {"是", "否"}:
             raise ValueError("同航班专岗专人请明确填写是或否")
         if role not in day.role_names or role in seen or mode not in modes or nature not in {"常规", "可兼任"}:
@@ -907,6 +663,74 @@ def _read_work_modes(book, day):
                 raise ValueError("岗位方式例外引用未知/重复岗位或无效工作方式")
             overrides[flight, role] = modes[mode]
     return replace(day, cells=tuple(replace(c, work_mode_override=overrides.get((c.flight_no, c.role_name))) for c in day.cells), role_configs=tuple(current.values()), release_policy=policies[settings["支援释放"]], attendance_mode=attendance_modes.get(settings.get("当天出勤"), "bounded"), phase_handoffs=_phase_handoffs(confirmed_pairs, set(flights.values())))
+
+
+def _write_relative_times(book, day):
+    rules = book.create_sheet('相对岗位时间')
+    rules.append(['岗位', '起降基准', '偏移分钟', '持续分钟'])
+    for config in day.role_configs:
+        if config.relative_timing is not None:
+            rule = config.relative_timing
+            rules.append([config.role_name, rule['anchor'], rule['offsetMinutes'], rule['durationMinutes']])
+    bases = book.create_sheet('航班起降时间')
+    bases.append(['航班号', '落地时间', '起飞时间'])
+    for flight in day.flights:
+        bases.append([flight.flight_no, flight.arrival_time, flight.departure_time])
+    version = book.create_sheet('任务规则版本')
+    version.append(['项目', '启用'])
+    version.append(['专岗跨航班保护', '是' if day.dedicated_flight_protection else '否'])
+    if day.flow_preferences is not None:
+        import json
+        version.append(['流程顺延', json.dumps(list(day.flow_preferences), ensure_ascii=False)])
+
+
+def _read_relative_times(book, day):
+    names = {'相对岗位时间', '航班起降时间', '任务规则版本'}
+    if not names.intersection(book.sheetnames):
+        return day
+    if not names.issubset(book.sheetnames):
+        raise ValueError('相对岗位时间、航班起降时间和任务规则版本必须一起保留')
+    def rows(name, header):
+        sheet = book[name]
+        if [_text(sheet.cell(1, i).value) for i in range(1, len(header)+1)] != header:
+            raise ValueError(f'{name} 表头无效')
+        result = []
+        for row in sheet.iter_rows(min_row=2):
+            if any(c.data_type in {'f', 'e'} for c in row) or any(c.value is not None for c in row[len(header):]):
+                raise ValueError(f'{name} 不能包含公式、错误或额外列')
+            if any(c.value is not None for c in row):
+                result.append([sheet.cell(row[0].row, i).value for i in range(1, len(header)+1)])
+        return result
+    rules = {}
+    for role, anchor, offset, duration in rows('相对岗位时间', ['岗位', '起降基准', '偏移分钟', '持续分钟']):
+        role = _text(role)
+        if role not in day.role_names or role in rules:
+            raise ValueError('相对岗位时间引用未知或重复岗位')
+        rules[role] = {'anchor': _text(anchor), 'offsetMinutes': offset, 'durationMinutes': duration}
+    bases = {}
+    for number, arrival, departure in rows('航班起降时间', ['航班号', '落地时间', '起飞时间']):
+        number = _text(number)
+        if number not in {f.flight_no for f in day.flights} or number in bases:
+            raise ValueError('航班起降时间引用未知或重复航班')
+        bases[number] = (_work_time_text(arrival), _work_time_text(departure))
+        for value in bases[number]:
+            if value is not None:
+                parse_minutes(value)
+    version = rows('任务规则版本', ['项目', '启用'])
+    if len(version) not in {1, 2} or version[0][0] != '专岗跨航班保护' or version[0][1] not in {'是', '否'}:
+        raise ValueError('任务规则版本无效')
+    flow = None
+    if len(version) == 2:
+        import json
+        if version[1][0] != '流程顺延':
+            raise ValueError('任务规则版本无效')
+        flow = json.loads(version[1][1])
+        from .domain import validate_handoff_preferences
+        validate_handoff_preferences(flow)
+    return replace(day,
+        role_configs=tuple(replace(r, relative_timing=rules.get(r.role_name)) for r in day.role_configs),
+        flights=tuple(replace(f, arrival_time=bases.get(f.flight_no, (None, None))[0], departure_time=bases.get(f.flight_no, (None, None))[1]) for f in day.flights),
+        dedicated_flight_protection=version[0][1] == '是', flow_preferences=tuple(flow) if flow is not None else None)
 
 
 def export_imported_day(day: ImportedDay) -> bytes:
@@ -1038,6 +862,7 @@ def export_imported_day(day: ImportedDay) -> bytes:
         for item in row:
             item.alignment = Alignment(vertical="center", wrap_text=True)
     _write_work_modes(workbook, day)
+    _write_relative_times(workbook, day)
     result = BytesIO()
     workbook.save(result)
     return result.getvalue()
@@ -1166,7 +991,10 @@ def export_archived_schedule(raw_day, scenario, assignments, issues, pending):
                 if source and source.id in related or any(t.role_id==role and number in {flight_names[f] for f in task_flight_ids(t)} for identity,t in tasks.items() if identity in related):
                     relevant.append(issue)
             if relevant:
-                color = 'FFF3CD' if all(i['code']=='coverage_shortfall' for i in relevant) else 'FDE2E2'
+                dedicated_gap = any(i['code'] == 'coverage_shortfall' and any(
+                    t.exclusive_same_flight for key, t in tasks.items()
+                    if key == i.get('taskId') or key in i.get('relatedTaskIds', [])) for i in relevant)
+                color = 'FFF3CD' if all(i['code']=='coverage_shortfall' for i in relevant) and not dedicated_gap else 'FDE2E2'
                 sheet.cell(sheet.max_row,index).fill=PatternFill('solid',fgColor=color)
     problems = book.create_sheet('排班问题')
     problems.append(['状态', '带问题归档' if issues else '校验通过'])
@@ -1241,6 +1069,9 @@ def validate_complete_configuration(data):
     if issues:
         raise ValueError("；".join(i.message for i in issues))
     result = {"day": imported_day_to_dict(day), "rotationEnabled": settings.enabled, "rotationMinutes": settings.interval_minutes, "source": source}
+    if 'workRules' in data:
+        from .domain import validate_work_rules
+        result['workRules'] = deepcopy(validate_work_rules(data['workRules'],day.role_names))
     if "history" in data:
         history = data["history"]
         if not isinstance(history, dict) or history.get("formatVersion") != 2 or not isinstance(history.get("state"), dict):
@@ -1250,6 +1081,8 @@ def validate_complete_configuration(data):
     supplied_roles = {r["roleName"]: r for r in data["day"].get("roleConfigs", [])}
     for role in result["day"]["roleConfigs"]:
         supplied = supplied_roles.get(role["roleName"], {})
+        if 'relativeTiming' in supplied:
+            role['relativeTiming'] = deepcopy(supplied['relativeTiming'])
         if "exclusiveSameFlight" in supplied:
             role["exclusiveSameFlight"] = supplied["exclusiveSameFlight"]
     if "weeklyFlightPresets" in data:
@@ -1257,7 +1090,13 @@ def validate_complete_configuration(data):
     if "flightLibrary" in data:
         result["flightLibrary"] = validate_library(data["flightLibrary"])
     if "handoffPreferences" in data:
-        result["handoffPreferences"] = general_handoff_preferences(validate_handoff_preferences(data["handoffPreferences"], day.role_names, {f.flight_no for f in day.flights} | {f["flightNo"] for f in data.get("flightLibrary", [])}))
+        flights = {f.flight_no for f in day.flights} | {f["flightNo"] for f in result.get("flightLibrary", [])}
+        # The complete transfer also carries temporary flights in historical plans.
+        for plan in result.get("history", {}).get("state", {}).get("plans", {}).values():
+            flights.update(f["flightNo"] for f in plan["day"]["flights"])
+        # Existing saved scopes stay portable after their old plans are cleared.
+        flights.update(p["flightNo"] for p in result.get("history", {}).get("state", {}).get("handoffPreferences", []))
+        result["handoffPreferences"] = deepcopy(validate_handoff_preferences(data["handoffPreferences"], day.role_names, flights))
     if "displayPreferences" in data:
         result["displayPreferences"] = validate_display_preferences(data["displayPreferences"])
     if "peopleIds" in data:
@@ -1310,10 +1149,10 @@ def validate_complete_configuration(data):
         if not isinstance(overrides, dict) or set(overrides) - {"roleConfigs", "qualifications", "settings"}:
             raise ValueError("当天配置例外字段无效")
         roles = overrides.get("roleConfigs", [])
-        if not isinstance(roles, list) or any(not isinstance(r, dict) or (set(r) - {"exclusiveSameFlight"}) != {"roleName", "requiredCount", "workMode", "concurrent"} or r["roleName"] not in day.role_names for r in roles) or len(roles) != len({r["roleName"] for r in roles}):
+        if not isinstance(roles, list) or any(not isinstance(r, dict) or (set(r) - {"exclusiveSameFlight", "relativeTiming"}) != {"roleName", "requiredCount", "workMode", "concurrent"} or r["roleName"] not in day.role_names for r in roles) or len(roles) != len({r["roleName"] for r in roles}):
             raise ValueError("当天岗位配置引用无效或重复")
         for r in roles:
-            ImportedRoleConfig(r["roleName"], r["requiredCount"], r["workMode"], r["concurrent"], r.get("exclusiveSameFlight", False))
+            ImportedRoleConfig(r["roleName"], r["requiredCount"], r["workMode"], r["concurrent"], r.get("exclusiveSameFlight", False), r.get('relativeTiming'))
             if r["requiredCount"] is not None and (type(r["requiredCount"]) is not int or r["requiredCount"] < 0):
                 raise ValueError("当天岗位例外人数必须为空或非负整数")
         qualifications = overrides.get("qualifications", [])
@@ -1345,6 +1184,9 @@ def export_complete_configuration(data, *, history_schedules=None):
     data = validate_complete_configuration(data)
     day = imported_day_from_dict(data["day"])
     book = load_workbook(BytesIO(export_imported_day(day)))
+    # Current complete configuration exposes one choice; older 3/4-column
+    # nature sheets remain readable for backward-compatible import.
+    book['岗位性质'].delete_cols(3)
     # The explicit flight table and position-first matrix replace these old views.
     for name in ("保障明细", "当天名单", "人员配置", "自动排班设置"):
         if name in book.sheetnames:
@@ -1356,18 +1198,18 @@ def export_complete_configuration(data, *, history_schedules=None):
         ["资质更新", "岗位为行、人员为列。1=有资质，0或空白=取消该资质。以本表列出的人员×岗位范围为准更新基础配置；范围外资料保留。新增姓名新增人员，不自动启用已停用人员。"],
         ["既有排班", "每次确认新增当天维护方案；文件附带的全部日计划、航班、草稿和正式班表同时补入历史。已有同ID方案保留设备上的版本，不重复导入。"],
         ["新增人员", "在岗位资质末尾添加姓名列，并在当日出勤添加对应姓名；资质填1或0。"],
-        ["新增岗位或航班", "岗位在岗位资质增加一行，填写岗位配置人数和岗位性质（常规/可兼任、工作环节）；航班在航班表增加一行；人数例外可按航班覆盖。可兼任只对同航班生效，两个常规岗位的冲突不会因此消失。"],
-        ["同航班专岗专人", "在岗位性质的同航班专岗专人列填是或否。是表示做该岗的人不能兼做同一航班其他岗位，优先于可兼任/接续许可；其他航班仍按时间和冲突检查。同名岗位共用开关，当天不同可在当天岗位例外表覆盖。旧文件缺此列保留现有设置，空库默认关闭。"],
-        ["时段与出勤", "环节岗位无需逐格时间。特殊情况在岗位方式例外设置该航班该岗为特殊实际时段，再在岗位时间填写起止；次日明确写次日00:10。日常出勤勾选参加即可，到离岗仅作特殊限制且起止一起填；旧方案直接点重新排班。大件按有需求航班窗口共享覆盖。"],
-        ["跨航班衔接", "支援释放选择本人任务完成；航班衔接表填来源/目标航班和是，表示接机完成确实能接上目标登机。未确认不会自动复用；仍检查此人的其他任务。正数走动预留需实际时段来验证。"],
+        ["新增岗位或航班", "岗位在岗位资质增加一行，填写岗位配置人数、工作环节及同航班专岗专人；航班在航班表增加一行，人数例外可按航班覆盖。只保留专岗一个选择；勾选不能兼任，不勾选允许同航班普通岗位兼任，跨班仍检查时间和接续许可。"],
+        ["同航班专岗专人", "在岗位性质的同航班专岗专人列填是或否。是表示做该岗的人不能兼做同一航班其他岗位，并优先配齐；否允许同航班普通岗位兼任。其他航班仍按时间、资格和接续许可检查。同名岗位共用开关，当天不同可在当天岗位例外表覆盖。旧文件缺此列保留现有设置，空库默认关闭。"],
+        ["时段与出勤", "重新排班无需填写普通岗位起止、偏移或持续分钟；以航班落地到起飞为整体窗口，未填起降时沿用保障窗口。日常出勤勾选参加即可，到离岗仍可作特殊限制。大件按有需求航班窗口合并及实际轮换块安排。旧时间资料仅为历史兼容保留。"],
+        ["跨航班衔接", "同航班按岗位接续优先级安排；跨航班按整体窗口判断重叠和走动预留，不能因接续偏好绕过冲突。自动排班保留可行部分和缺岗，人工强填冲突标红，供现场核对微调。"],
         ["固定与原文", "固定人员只有明确填写才锁定。岗位原文只保留旧名单/外援和已确认斜杠含义，不等同于新排班或资质。备注需核对，0910不猜占用。"],
         ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。全部日期的航班、草稿与正式历史随本文件迁移，在历史页查看。"],
         ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）和重点轮换启用；新版重点在航班重点岗位表逐行填写航班号和岗位，空表清空。重点次数修正按月份、人员ID、航班号和岗位维护增减；可填负整数，有效次数最低为0。旧修正航班号空白时保留待归属，不猜测分配；核对后补填航班号。排班平衡、航班重点岗位、重点次数修正三表与范围版本一起保留。旧文件缺航班范围时保留本机新选择、空库不勾选；旧岗位名单仅兼容保留，不再作为新版重点。姓名只供核对，不授予资质。"],
         ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。历史附表保留全部草稿、正式班表和累计次数依据；请勿手改历史数据，历史班表应在工作台维护。"],
-        ["岗位空缺优先级", "规则页每岗自行勾选优先保岗或缺人时优先留空，两项互斥，不勾正常，初始全部不勾，所有航班共用。维护后本文件的保岗优先级表按岗位填写优先保岗、正常安排或缺人时优先留空，空表恢复正常；与排班平衡的保岗优先级版本及配套表一起保留。旧文件无本项保留本机选择，新设备全正常。依次优先补齐三个档位，再考虑轮岗等偏好；不突破资格、出勤、固定、专岗、冲突和差距。重新排班生效，原班表保留；与重点轮换统计设置分开。"],
+        ["岗位空缺优先级", "规则页每岗自行勾选优先保岗或缺人时优先留空，两项互斥，不勾正常，初始全部不勾，所有航班共用。维护后本文件的保岗优先级表按岗位填写优先保岗、正常安排或缺人时优先留空，空表恢复正常；与排班平衡的保岗优先级版本及配套表一起保留。旧文件无本项保留本机选择，新设备全正常。先补各航班专岗，再按航班结束从早到晚，同一结束时间内依次补三个档位，最后考虑轮岗等偏好；不突破资格、出勤、固定、专岗、冲突和差距。重新排班生效，原班表保留；与重点轮换统计设置分开。"],
         ["分队长维护", "人员状态表的分队长列填是/否。分队长设置表维护最后使用和不参与航班数比较，默认都是。先补齐岗位，再尽量少用分队长，之后考虑重点轮换/接续。豁免只影响航班数比较，其他人员硬差距不放松，分队长仍须有资质、出勤且无冲突。旧文件无新列/表时保留当前值，新设备默认不标记任何分队长；显式否取消。"],
         ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，可编辑名单只列现有人员；历史附表保留已删除人员的身份和旧班表。"],
-        ["接续偏好维护", "适用范围填写通用，所有航班共用。旧航班号表导入时按来源岗合并目标、初始同等优先。优先登机岗位用顿号分隔。按顺序优先填是时，从左到右为第一、第二等优先；否或空白表示同等优先。启用填是/否；可在规则页勾选、上下移调整。旧四列表保持同等优先；不满足偏好仍可合法排班。表存在则以表更新，空表清空；旧文件无此表保留当前偏好。"],
+        ["接续偏好维护", "来源岗位和目标岗位可自由组合，目标用顿号分隔，重新排班按从左到右的优先顺序匹配；第一目标已满、无资格或冲突时考虑下一项。适用范围填通用、具体航班或CX*系列；具体航班优先，其次最长系列，最后通用。启用填是/否；关闭特例不回退，删除恢复继承。专岗和必须分人仍检查。表存在则更新，空表清空；旧文件缺表保留本机设置，空库默认无接续规则。"],
         ["每航班岗位", "航班模板的本航班岗位用顿号分隔，可添加或移除名称，空白表示无岗位；模板岗位维护相应人数/工作方式例外。删除单个航班岗位不删除通用资质，新增通用岗位不会自动加入其他已配置航班。旧文件缺清单列时，已有库保留当前选择，空库沿用通用岗位。"],
         ["当天例外", "长期岗位人数/性质/资质及轮换设置保存在通用表；当天不同的设置在当天岗位例外、当天资质例外、当天设置例外三表中，仅覆盖导入的新日计划，不改长期默认。空表表示当天沿用长期配置，三表应一起保留。"],
         ["上午下午半休", "当日出勤的半休时段填写不半休、上午半休或下午半休。06:00至12:00前开始算早班；上午休不排早班，下午休只排早班，12点及凌晨归其他时段，跨午按开始判断。半休设置表默认不参与航班数比较，仍按实际岗位计次；无岗保留休息。旧四列出勤默认不半休，旧文件无设置表保留当前开关。新日默认清空当天半休，同日重排保留。"],
@@ -1375,13 +1217,17 @@ def export_complete_configuration(data, *, history_schedules=None):
     ]:
         guide.append(row)
     guide.append(["携带历史", "是" if "history" in data else "否"])
+    guide.append(['相对时间版本', 1])
+    guide.append(['历史时间资料', '相对岗位时间、岗位时间和旧航班衔接等已退出日常维护，仅隐藏保留供旧快照兼容；请完整保留文件附表。新流程不读取旧普通岗位分钟，航班起降和保障窗口仍可维护，跨日写前日/次日。'])
     guide.append(["历史附表", "历史目录、历史航班和历史排班可核对每天班表；历史附表和隐藏快照请完整保留。日常小改使用前面的人员、资质、航班、规则等维护表；导入预览会显示补入和保留的历史数量。"])
     qualifications = book.create_sheet("岗位资质", 1)
     if "handoffPreferences" in data:
         paths = book.create_sheet("岗位接续偏好")
-        paths.append(["适用范围", "接机岗位", "优先登机岗位", "启用", "按顺序优先"])
+        paths.append(["适用范围", "来源岗位", "目标岗位优先顺序", "启用", "按顺序优先"])
         for item in data["handoffPreferences"]:
-            paths.append(["通用", item["arrivalRole"], "、".join(item["boardingRoles"]), "是" if item["enabled"] else "否", ("是" if item["ordered"] else "否") if "ordered" in item else None])
+            paths.append(["通用" if item['flightNo']=='*' else item['flightNo'], item["arrivalRole"], "、".join(item["boardingRoles"]), "是" if item["enabled"] else "否", ("是" if item["ordered"] else "否") if "ordered" in item else None])
+        from .work_rules_excel import write_flow_scopes
+        write_flow_scopes(book,data['handoffPreferences'])
     if "displayPreferences" in data:
         display = book.create_sheet("界面偏好")
         display.append(["项目", "内容"])
@@ -1459,10 +1305,18 @@ def export_complete_configuration(data, *, history_schedules=None):
             statuses.append(row)
     if "dayOverrides" in data:
         overrides = data["dayOverrides"]
+        if any('relativeTiming' in r for r in overrides.get('roleConfigs', [])):
+            guide.append(['当天相对时间版本', 1])
+            relative_daily = book.create_sheet('当天相对时间例外')
+            relative_daily.append(['岗位', '起降基准', '偏移分钟', '持续分钟'])
+            for role in overrides.get('roleConfigs', []):
+                if 'relativeTiming' in role:
+                    rule = role['relativeTiming']
+                    relative_daily.append([role['roleName'], *( [rule['anchor'], rule['offsetMinutes'], rule['durationMinutes']] if rule is not None else [None, None, None])])
         daily = book.create_sheet("当天岗位例外")
-        daily.append(["岗位", "同时需要人数", "工作方式", "可兼任", "同航班专岗专人"])
+        daily.append(["岗位", "同时需要人数", "工作方式", "同航班专岗专人"])
         for r in overrides.get("roleConfigs", []):
-            daily.append([r["roleName"], r["requiredCount"], r["workMode"], "是" if r["concurrent"] else "否", "是" if r.get("exclusiveSameFlight", next((base.exclusive_same_flight for base in day.role_configs if base.role_name == r["roleName"]), False)) else "否"])
+            daily.append([r["roleName"], r["requiredCount"], r["workMode"], "是" if r.get("exclusiveSameFlight", next((base.exclusive_same_flight for base in day.role_configs if base.role_name == r["roleName"]), False)) else "否"])
         daily = book.create_sheet("当天资质例外")
         daily.append(["人员", "岗位", "有资质"])
         for q in overrides.get("qualifications", []):
@@ -1533,6 +1387,10 @@ def export_complete_configuration(data, *, history_schedules=None):
     for cell in day.cells:
         if cell.raw_value:
             raw.append([cell.flight_no, cell.role_name, cell.raw_value, cell.semantics])
+    if 'workRules' in data:
+        from .work_rules_excel import write_work_rules
+        daily = data.get('dayOverrides',{}).get('settings',{})
+        write_work_rules(book,data['workRules'],configuration_day(data),daily.get('rotationMinutes',data['rotationMinutes']),daily.get('rotationEnabled',data['rotationEnabled']))
     for sheet in book:
         sheet.freeze_panes = "B2" if sheet.title == "岗位资质" else "A2"
         for cell in sheet[1]:
@@ -1553,6 +1411,13 @@ def export_complete_configuration(data, *, history_schedules=None):
     if "history" in data:
         from .configuration_archive import append_configuration_history
         append_configuration_history(book, data["history"], history_schedules or {})
+    # Retain legacy values for old snapshots without exposing retired controls.
+    for name in ('相对岗位时间', '当天相对时间例外', '岗位时间', '航班衔接', '支援释放规则', '岗位方式例外'):
+        if name in book.sheetnames:
+            book[name].sheet_state = 'hidden'
+    if '模板岗位' in book.sheetnames:
+        for column in ('E', 'F'):
+            book['模板岗位'].column_dimensions[column].hidden = True
     result = BytesIO()
     book.save(result)
     book.close()
@@ -1618,6 +1483,10 @@ def import_complete_configuration(content):
                 del book[name]
         if guide.get("模板版本") not in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3", "登机口完整配置-2", "登机口完整配置-1"):
             raise ValueError("完整Excel配置版本不支持")
+        if '相对时间版本' in guide and (guide['相对时间版本'] != 1 or not {'相对岗位时间', '航班起降时间', '任务规则版本'} <= set(book.sheetnames)):
+            raise ValueError('相对时间版本无效或相对时间工作表缺失')
+        if '当天相对时间版本' in guide and (guide['当天相对时间版本'] != 1 or '当天相对时间例外' not in book.sheetnames):
+            raise ValueError('当天相对时间例外缺失或版本无效')
         if guide.get("模板版本") in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3", "登机口完整配置-2") and any(n not in book.sheetnames for n in ("岗位性质", "航班衔接", "支援释放规则", "岗位方式例外")):
             raise ValueError("新版完整配置缺少岗位性质、航班衔接或支援释放规则，不能丢失新规则后导入")
         if guide.get("模板版本") in (_COMPLETE_EXCEL_VERSION, "登机口完整配置-4", "登机口完整配置-3") and not any(_text(row[0].value) == "当天出勤" for row in book["支援释放规则"].iter_rows(min_row=2)):
@@ -1688,8 +1557,13 @@ def import_complete_configuration(content):
         day=import_day(stream.getvalue(),service_date,allow_empty=True)
         day=replace(day,remarks=tuple(remarks),remarks_reviewed=reviewed,cells=tuple(replace(c,semantics=raw_by_pair[(c.flight_no,c.role_name)][1]) if (c.flight_no,c.role_name) in raw_by_pair else c for c in day.cells))
         data = {"day":imported_day_to_dict(day),"rotationEnabled":enabled,"rotationMinutes":settings["大件轮换分钟"],"source":_text(guide.get("资质来源"))}
-        if "岗位性质" in book.sheetnames and _text(book["岗位性质"].cell(1, 4).value):
-            flags = {_text(row[0]): row[3] == "是" for row in rows("岗位性质", ["岗位", "工作方式", "岗位性质", "同航班专岗专人"])}
+        if '相对岗位时间' in book.sheetnames:
+            relative = {r.role_name: r.relative_timing for r in day.role_configs}
+            for role in data['day']['roleConfigs']:
+                role['relativeTiming'] = relative[role['roleName']]
+        if "岗位性质" in book.sheetnames and "同航班专岗专人" in [_text(c.value) for c in book["岗位性质"][1]]:
+            header = ["岗位", "工作方式", "同航班专岗专人"] if _text(book['岗位性质'].cell(1, 3).value) == '同航班专岗专人' else ["岗位", "工作方式", "岗位性质", "同航班专岗专人"]
+            flags = {_text(row[0]): row[-1] == "是" for row in rows("岗位性质", header)}
             for role in data["day"]["roleConfigs"]:
                 if role["roleName"] in flags: role["exclusiveSameFlight"] = flags[role["roleName"]]
         if "人员身份" in book.sheetnames:
@@ -1792,19 +1666,23 @@ def import_complete_configuration(content):
             raise ValueError("模板岗位需要配套航班模板表")
         if "岗位接续偏好" in book.sheetnames:
             scope_header = _text(book["岗位接续偏好"].cell(1, 1).value)
-            header = [scope_header if scope_header in {"航班号", "适用范围"} else "适用范围", "接机岗位", "优先登机岗位", "启用"]
+            source_header = _text(book['岗位接续偏好'].cell(1, 2).value)
+            target_header = _text(book['岗位接续偏好'].cell(1, 3).value)
+            header = [scope_header if scope_header in {"航班号", "适用范围"} else "适用范围",
+                      source_header if source_header in {'接机岗位','来源岗位'} else '来源岗位',
+                      target_header if target_header in {'优先登机岗位','目标岗位优先顺序'} else '目标岗位优先顺序', "启用"]
             if _text(book["岗位接续偏好"].cell(1, 5).value):
                 header.append("按顺序优先")
             data["handoffPreferences"] = []
             for row in rows("岗位接续偏好", header):
                 number, role, targets, enabled = row[:4]
                 scope = _text(number)
-                if scope_header == "适用范围" and scope not in {"通用", "*"}:
-                    raise ValueError("岗位接续偏好的适用范围请填写通用")
                 item = {"flightNo": "*" if scope in {"通用", "*"} else scope, "arrivalRole": _text(role), "boardingRoles": [r.strip() for r in re.split(r"[、,，;；\n]+", _text(targets)) if r.strip()], "enabled": yes_no(enabled)}
                 if len(row) == 5 and _text(row[4]):
                     item["ordered"] = yes_no(row[4])
                 data["handoffPreferences"].append(item)
+        from .work_rules_excel import read_flow_scopes
+        read_flow_scopes(book,data)
         if "界面偏好" in book.sheetnames:
             entries = pairs("界面偏好")
             if set(entries) != {"排班布局", "表格大小"} or entries["排班布局"] not in {"按航班", "原保障表"}:
@@ -1859,14 +1737,15 @@ def import_complete_configuration(content):
         if daily_names & set(book.sheetnames):
             if not daily_names <= set(book.sheetnames):
                 raise ValueError("当天例外三张表必须完整保留，不能静默丢失设置")
-            daily_header = ["岗位", "同时需要人数", "工作方式", "可兼任"]
-            if _text(book["当天岗位例外"].cell(1, 5).value): daily_header.append("同航班专岗专人")
+            single_switch = _text(book["当天岗位例外"].cell(1, 4).value) == '同航班专岗专人'
+            daily_header = ["岗位", "同时需要人数", "工作方式", "同航班专岗专人" if single_switch else "可兼任"]
+            if not single_switch and _text(book["当天岗位例外"].cell(1, 5).value): daily_header.append("同航班专岗专人")
             role_overrides = []
             for row in rows("当天岗位例外", daily_header):
                 role, count, mode, concurrent = row[:4]
-                item = {"roleName":_text(role), "requiredCount":count, "workMode":_text(mode), "concurrent":yes_no(concurrent)}
-                if len(row) == 5:
-                    flag = yes_no(row[4])
+                item = {"roleName":_text(role), "requiredCount":count, "workMode":_text(mode), "concurrent":not yes_no(concurrent) if single_switch else yes_no(concurrent)}
+                if single_switch or len(row) == 5:
+                    flag = yes_no(row[3] if single_switch else row[4])
                     base = next((r.exclusive_same_flight for r in day.role_configs if r.role_name == item["roleName"]), False)
                     if flag or flag != base: item["exclusiveSameFlight"] = flag
                 role_overrides.append(item)
@@ -1879,8 +1758,21 @@ def import_complete_configuration(content):
                 enabled, minutes, transition = settings_rows[0]
                 overrides["settings"] = {"rotationEnabled":yes_no(enabled),"rotationMinutes":minutes,"transitionMinutes":transition}
             data["dayOverrides"] = overrides
+        if '当天相对时间例外' in book.sheetnames:
+            if 'dayOverrides' not in data:
+                raise ValueError('当天相对时间例外须配套当天岗位例外')
+            by_role = {r['roleName']: r for r in data['dayOverrides']['roleConfigs']}
+            seen = set()
+            for role, anchor, offset, duration in rows('当天相对时间例外', ['岗位', '起降基准', '偏移分钟', '持续分钟']):
+                role = _text(role)
+                if role not in by_role or role in seen:
+                    raise ValueError('当天相对时间例外须引用唯一的当天岗位例外')
+                seen.add(role)
+                by_role[role]['relativeTiming'] = None if all(v in (None, '') for v in (anchor, offset, duration)) else {'anchor': _text(anchor), 'offsetMinutes': offset, 'durationMinutes': duration}
         if imported_history is not None:
             data["history"] = imported_history
+        from .work_rules_excel import read_work_rules
+        read_work_rules(book,data)
         result = validate_complete_configuration(data)
         if group_transfer is not None:
             result['groupTransfer'] = group_transfer

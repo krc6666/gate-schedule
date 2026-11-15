@@ -12,7 +12,7 @@ from gate_schedule.excel_io import (
     validate_complete_configuration,
 )
 from gate_schedule.imported_schedule import imported_day_to_scenario
-from gate_schedule.excel_io import imported_day_from_dict
+from gate_schedule.day_document import imported_day_from_dict
 from gate_schedule.io import normalize_saved_scenario, scenario_from_dict, scenario_to_dict
 from gate_schedule.validator import validate_schedule
 from gate_schedule.workbench import Workbench
@@ -76,7 +76,8 @@ class BalanceConfigurationTests(unittest.TestCase):
         content = export_complete_configuration(data)
         book = load_workbook(BytesIO(content))
         self.assertTrue({'排班平衡', '重点次数修正', '人员身份'} <= set(book.sheetnames))
-        self.assertTrue(all(sheet.sheet_state == 'visible' for sheet in book))
+        retired={'相对岗位时间','当天相对时间例外','岗位时间','航班衔接','支援释放规则','岗位方式例外'}
+        self.assertTrue(all(sheet.sheet_state == ('hidden' if sheet.title in retired else 'visible') for sheet in book))
         self.assertEqual(['月份', '人员ID', '姓名', '岗位', '修正次数'], [cell.value for cell in book['重点次数修正'][1]])
         self.assertEqual(['2026-08', 'stable-a', '甲', '登机主验', 3], [cell.value for cell in book['重点次数修正'][2]])
         values = {row[0].value: row[1] for row in book['排班平衡'].iter_rows(min_row=2)}
@@ -263,9 +264,9 @@ class BalanceWorkspaceMigrationTests(unittest.TestCase):
         for _ in range(4):
             self.command('adjust-priority-count', {'month': '2026-08', 'memberId': 'stable-b', 'flightNo': 'A100', 'roleName': '登机主验', 'delta': 1}, workspace=restarted)
         state = self.command('solve', {}, pid, restarted)
-        self.assertNotEqual(pid, state['selectedPlanId'], '设置变化新建排班快照，原草稿保留')
+        self.assertEqual(pid, state['selectedPlanId'], '设置变化更新当前结果，不创建备选方案')
         self.assertEqual({'stable-a'}, {a['memberId'] for a in state['plans'][state['selectedPlanId']]['draft']}, '统计表调整后下一次计算使用最新修正')
-        self.assertEqual(plan['draft'], state['plans'][pid]['draft'])
+        self.assertEqual(plan['adopted'], state['plans'][pid]['adopted'])
 
     def test_old_configuration_preserves_settings_and_explicit_empty_clears(self):
         initial = self.maintained()

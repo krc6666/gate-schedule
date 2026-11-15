@@ -42,11 +42,11 @@ class ParityTests(unittest.TestCase):
             self.command("edit-cell", {"cellId": cell_id, "text": name}, plan_id)
         formal = self.command("adopt", {}, plan_id)["plans"][plan_id]
         self.assertEqual(expected, [f["flightNo"] for f in formal["formalSchedule"]["flights"]])
-        # Missing role details still show the correct flight headers.
+        # Missing obsolete task minutes still use the whole-flight envelope.
         for cell in day["cells"]:
             cell.update(workStart=None, workEnd=None)
         plan = self.command("save-input", {"day": day}, plan_id)["plans"][plan_id]
-        self.assertFalse(plan["schedule"]["tasks"])
+        self.assertEqual(4,len(plan["schedule"]["tasks"]))
         self.assertEqual(expected, plan["flightColumns"])
         from unittest.mock import patch
         with patch('gate_schedule.workbench.plan_scenario', return_value=(None, [])):

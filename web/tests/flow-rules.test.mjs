@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {build} from 'esbuild';
+import {fileURLToPath} from 'node:url';
+const bundle=await build({stdin:{contents:'export {handoffPreferences,bindHandoffPreferences} from "./handoff-preferences";',resolveDir:fileURLToPath(new URL('../src/',import.meta.url))},bundle:true,write:false,format:'esm',target:'es2022'});
+const {handoffPreferences,bindHandoffPreferences}=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const state=()=>({configuration:{roleConfigs:['大件行李拦截','接机1','入境申报','自定义<&'].map(roleName=>({roleName}))},flightLibrary:[],handoffPreferences:[{flightNo:'CX*',arrivalRole:'大件行李拦截',boardingRoles:['接机1','入境申报'],enabled:true,ordered:true}]});
+test('任意来源与目标下拉，顺序增删和特例，名称转义且没有任务分钟输入',()=>{
+  const markup=handoffPreferences(state(),true);
+  for(const selector of ['data-flow-source','data-flow-target','data-flow-up','data-flow-down','data-flow-remove-target','data-flow-add-target','data-flow-remove-rule','add-flow-rule','add-flow-exception'])assert.ok(markup.includes(selector));
+  assert.match(markup,/自定义&lt;&amp;/);
+  assert.match(markup,/第1优先/);assert.match(markup,/第2优先/);
+  assert.match(markup,/来源航班/);assert.match(markup,/目标航班/);
+  assert.match(markup,/<option value="same-flight" selected>本航班/);
+  assert.match(markup,/<option value="later-overlap"/);
+  assert.doesNotMatch(markup,/data-relative|durationMinutes|offsetMinutes|type="number"/);
+});
+test('连续修改和排序使用当前草稿，删除最后目标后禁用，原状态保持',()=>{
+  const original=state(),saved=[];
+  original.handoffPreferences.push({flightNo:'*',arrivalRole:'自定义<&',boardingRoles:['接机1'],enabled:false});
+  const scope={value:'CX*',setCustomValidity(){},reportValidity(){}},source={value:'大件行李拦截',setCustomValidity(){},reportValidity(){}},enabled={};
+  const addTarget={},removeRule={};
+  const targets=[0,1].map(order=>{const controls={select:{},flightScope:{},up:{},down:{},remove:{}};return {dataset:{flowTargetRow:String(order)},controls,querySelector:s=>({'[data-flow-target]':controls.select,'[data-flow-flight-scope]':controls.flightScope,'[data-flow-up]':controls.up,'[data-flow-down]':controls.down,'[data-flow-remove-target]':controls.remove}[s])};});
+  const container={dataset:{flowRule:'0'},querySelector:s=>({'[data-flow-source]':source,'[data-flow-scope]':scope,'[data-flow-enabled]':enabled,'[data-flow-add-target]':addTarget,'[data-flow-remove-rule]':removeRule}[s]),querySelectorAll:()=>targets};
+  bindHandoffPreferences({querySelectorAll:()=>[container],querySelector:()=>null},original,async(_,p)=>{saved.push(p.preferences);return true;});
+  targets[0].controls.flightScope.onchange({target:{value:'later-overlap'}});
+  targets[0].controls.select.onchange({target:{value:'接机1'}});
+  targets[1].controls.up.onclick();
+  scope.value='cx937';scope.onchange();
+  assert.deepEqual(saved.at(-1)[0].boardingRoles,['入境申报','接机1']);
+  assert.equal(saved.at(-1)[0].flightNo,'CX937');
+  assert.deepEqual(saved.at(-1)[0].targetFlightScopes,{'接机1':'later-overlap','入境申报':'same-flight'});
+  assert.deepEqual(saved.at(-1)[1],original.handoffPreferences[1]);
+  targets[0].controls.remove.onclick();targets[0].controls.remove.onclick();
+  assert.deepEqual(saved.at(-1)[0].boardingRoles,[]);assert.equal(saved.at(-1)[0].enabled,false);
+  assert.deepEqual(saved.at(-1)[0].targetFlightScopes,{});
+  assert.deepEqual(original.handoffPreferences[0].boardingRoles,['接机1','入境申报']);
+});

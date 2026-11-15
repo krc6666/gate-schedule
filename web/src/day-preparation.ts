@@ -24,7 +24,7 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
     let member = day.memberConfigs.find(m => m.memberName === person.name);
     if (!member) { member = { memberName: person.name, eligibleRoleNames: [...person.eligibleRoleNames] }; day.memberConfigs.push(member); }
     else if (policy === "latest") member.eligibleRoleNames = [...person.eligibleRoleNames];
-    if (!day.memberAvailability.some(a => a.memberName === person.name)) day.memberAvailability.push({ memberName: person.name, participating: false, availableFrom: null, availableUntil: null });
+    if (!day.memberAvailability.some(a => a.memberName === person.name)) day.memberAvailability.push({ memberName: person.name, participating: (person.status ?? "正常") === "正常", availableFrom: null, availableUntil: null });
   }
   for (const entry of day.memberAvailability) if (!state.people.some(p => p.active && (p.status ?? "正常") === "正常" && p.name === entry.memberName)) entry.participating = false;
   const defaults = state.configuration.roleConfigs.map(r => structuredClone(state.newRoleDefaults[r.roleName] ?? r));
@@ -54,23 +54,24 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
   }
 }
 
-export function startPreparation(source: Day, state: State, mode: Preparation["mode"]): Preparation {
+export function startPreparation(source: Day, state: State, mode: Preparation["mode"], previousStates: Record<string, string> = {}): Preparation {
   const day = structuredClone(source);
+  for (const person of state.people) {
+    if (previousStates[person.id] && (person.status ?? "正常") === "正常") {
+      const entry = day.memberAvailability.find(a => a.memberName === person.name);
+      if (entry) entry.participating = true;
+    }
+  }
   if (mode === "archive") {
     const date = new Date(`${day.serviceDate}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + 2);
     day.serviceDate = date.toISOString().slice(0, 10);
     day.memberAvailability = day.memberAvailability.map(a => ({ ...a, availableFrom: null, availableUntil: null, halfRest: null }));
+    // Actual flight times belong to the new service date and must be entered
+    // before confirmation; do not infer them from yesterday or the envelope.
+    day.flights.forEach(f => { f.arrivalTime = null; f.departureTime = null; });
   }
   const selected = new Set(day.flights.map(f => f.id));
   addTemplates(day, state.flightTemplates);
-  if (mode === "archive") {
-    const preset = state.weeklyFlightPresets[weekdayOf(day.serviceDate)];
-    if (preset) {
-      addTemplates(day, preset);
-      selected.clear();
-      day.flights.filter(f => preset.some(t => t.flightNo === f.flightNo)).forEach(f => selected.add(f.id));
-    }
-  }
   applyConfiguration(day, state, mode === "archive" ? "latest" : "keep-day");
   return { mode, day, selected };
 }
@@ -118,6 +119,7 @@ export function confirmPreparation(preparation: Preparation, serviceDate: string
       if (!copyTimes) { c.workStart = null; c.workEnd = null; }
     }
     day.extraOccupancies = []; day.remarks = []; day.remarksReviewed = true;
+    day.taskHandoffs = []; day.workRulesOverride = false; delete day.workRules;
   }
   retainHandoffs(day);
   if (preparation.mode === "archive" && day.phaseHandoffs && !copyTimes) day.phaseHandoffs = [];

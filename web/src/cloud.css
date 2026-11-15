@@ -1,0 +1,18 @@
+@import "./workbench.css";
+#cloud-toolbar { background:#fff; border-bottom:1px solid #e5e9ed; color:#626e7a; }
+.cloud-toolbar-inner { max-width:1440px; margin:auto; padding:10px 24px; display:flex; align-items:center; gap:12px; }
+.cloud-status { font:inherit; font-size:13px; color:#677481; background:none; border:0; padding:4px 0; text-align:left; }
+.cloud-status:disabled { opacity:1; cursor:default; }
+.cloud-more { margin-left:auto; position:relative; }
+.cloud-more summary { cursor:pointer; list-style:none; padding:0 12px; font-size:24px; }
+.cloud-more > div { position:absolute; z-index:1000; right:0; top:36px; width:170px; background:white; border:1px solid #dde3e8; border-radius:8px; padding:6px; box-shadow:0 4px 20px #25364a14; }
+.cloud-more button { display:block; width:100%; padding:10px; text-align:left; border:0; background:white; color:#52606f; cursor:pointer; }
+.cloud-more button:hover { background:#f3f5f7; }
+.cloud-login { max-width:400px; margin:10vh auto; padding:24px; }
+.cloud-login h1 { font-size:24px; margin-bottom:28px; }
+.cloud-login label { display:block; margin:18px 0; }
+.cloud-login input { display:block; width:100%; margin-top:8px; padding:10px; border:1px solid #ccd5de; border-radius:6px; }
+.cloud-login p { color:#687582; line-height:1.7; }
+.cloud-login > button { margin:8px 0; }
+[data-gate-cloud=true] .app-header .save-state { display:none; }
+@media(max-width:600px) { .cloud-toolbar-inner { padding:10px 12px; gap:8px; } .cloud-toolbar-inner .btn { white-space:nowrap; padding:8px 10px; } .cloud-status { font-size:12px; } }

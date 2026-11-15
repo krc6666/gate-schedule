@@ -42,7 +42,9 @@ class ExclusiveRoleTests(unittest.TestCase):
         first = replace(value.tasks[1], timing_mode='exact', start=600, end=620)
         later = replace(value.tasks[0], timing_mode='exact', start=650, end=670)
         self.assertEqual('exclusive_same_flight', task_pair_conflict(value, first, later)[0])
-        self.assertIsNone(task_pair_conflict(value, first, replace(later, flight_id='B')))
+        self.assertEqual('dedicated_flight_protection', task_pair_conflict(value, first, replace(later, flight_id='B'))[0])
+        legacy = replace(value, dedicated_flight_protection=False)
+        self.assertIsNone(task_pair_conflict(legacy, first, replace(later, flight_id='B')))
 
     def test_shared_coverage_counts_and_same_role_segments_are_allowed(self):
         value = self.example()

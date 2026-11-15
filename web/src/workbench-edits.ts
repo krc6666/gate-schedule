@@ -1,6 +1,6 @@
 import type { Day, Plan, State } from "./workbench-model";
 
-type Setting = "configuration" | "balanceSettings" | "teamLeaderSettings" | "halfRestSettings" | "relaxedShiftSettings" | "handoffPreferences" | "dutyRoster";
+type Setting = "workRules" | "configuration" | "balanceSettings" | "teamLeaderSettings" | "halfRestSettings" | "relaxedShiftSettings" | "handoffPreferences" | "dutyRoster";
 type DraftSettings = Partial<Pick<State, Setting>>;
 type CommandEffect = { followPlan?: boolean; resetDay?: boolean; clearAll?: boolean; saved?: Setting; rulesSaved?: boolean; closeDialog?: boolean; schedule?: boolean };
 type EditAdapter = {
@@ -19,6 +19,7 @@ const schedule = { ...followPlan, closeDialog: true, schedule: true };
 const commandEffects: Record<string, CommandEffect> = {
   "new-plan": followPlan,
   "select-plan": followPlan,
+  "clear-history": followPlan,
   "import-complete-configuration": schedule,
   "archive-next": schedule,
   "prepare-solve": schedule,
@@ -131,6 +132,7 @@ export class WorkbenchEdits {
             halfRestSettings: settings.halfRestSettings,
             relaxedShiftSettings: settings.relaxedShiftSettings,
             preferences: settings.handoffPreferences,
+            ...(settings.workRules ? {workRules:settings.workRules} : {}),
             ...(saveDay ? { input } : {}),
           })) return false;
         } else if (!await this.adapter.execute("save-input", input)) return false;

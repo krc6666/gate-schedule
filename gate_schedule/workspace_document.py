@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date
 import re
 from .domain import Assignment, GATE_ROLE_NAMES, BaggageRotationSettings, ImportedRoleConfig, phase_role_config
-from .excel_io import imported_day_from_dict, validate_imported_day
+from .day_document import imported_day_from_dict, validate_imported_day
 from .imported_schedule import imported_day_to_scenario
 from .io import scenario_from_dict
 from .validator import validate_schedule
@@ -39,8 +39,9 @@ def _validate_day_structure(day):
 
 
 def role_configuration(role):
+    from .domain import single_switch_role_settings
     config = phase_role_config(ImportedRoleConfig(role["roleName"], role["requiredCount"]))
-    return {**role, "workMode": role.get("workMode", config.work_mode), "concurrent": role.get("concurrent", config.concurrent)}
+    return single_switch_role_settings({**role, "workMode": role.get("workMode", config.work_mode)})
 
 
 def with_configuration(state):
@@ -57,9 +58,9 @@ def with_configuration(state):
 
 def _with_preferences(state):
     if "handoffPreferences" not in state:
-        state["handoffPreferences"] = default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]])
-    validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {f["flightNo"] for f in state["flightLibrary"]} | {f["flightNo"] for p in state["plans"].values() for f in p["day"]["flights"]})
-    state["handoffPreferences"] = general_handoff_preferences(state["handoffPreferences"])
+        state["handoffPreferences"] = general_handoff_preferences(default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]]))
+    # Saved flight rules outlive daily plans (including after clearing history).
+    validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]])
     state.setdefault("displayPreferences", {"layout": "flights", "zoom": 100})
     state.setdefault("balanceSettings", default_balance_settings())
     # Owner chose to reselect the new flight/role scope; legacy fields stay
@@ -177,8 +178,11 @@ def validate_document(state, *, validate_undo=True):
     validate_library(state["flightLibrary"])
     with_role_membership(state)
     _with_preferences(state)
-    validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {f["flightNo"] for f in state["flightLibrary"]} | {f["flightNo"] for p in state["plans"].values() for f in p["day"]["flights"]})
+    validate_handoff_preferences(state["handoffPreferences"], [r["roleName"] for r in state["configuration"]["roleConfigs"]])
     validate_display_preferences(state["displayPreferences"])
+    from .domain import validate_work_rules
+    if 'workRules' in state:
+        validate_work_rules(state['workRules'], [r['roleName'] for r in state['configuration']['roleConfigs']])
     validate_weekly_flights(state.get("weeklyFlightPresets", {}))
     validate_balance_settings(state["balanceSettings"], [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
     validate_team_leader_settings(state["teamLeaderSettings"])
@@ -193,7 +197,7 @@ def validate_document(state, *, validate_undo=True):
     if not isinstance(roles, list) or len(roles) != len({r["roleName"] for r in roles}):
         raise WorkspaceError("基础岗位重复或无效")
     for role in roles:
-        ImportedRoleConfig(role["roleName"], role["requiredCount"], role.get("workMode", "timed"), role.get("concurrent", False), role.get("exclusiveSameFlight", False))
+        ImportedRoleConfig(role["roleName"], role["requiredCount"], role.get("workMode", "timed"), role.get("concurrent", False), role.get("exclusiveSameFlight", False), role.get('relativeTiming'))
         count = role["requiredCount"]
         if not isinstance(role["roleName"], str) or not role["roleName"].strip() or (count is not None and (type(count) is not int or count < 0)):
             raise WorkspaceError("基础岗位名称或人数无效")
@@ -212,101 +216,104 @@ def validate_document(state, *, validate_undo=True):
         if not isinstance(person["id"], str) or not person["id"] or not isinstance(person["name"], str) or not person["name"].strip() or type(person["active"]) is not bool or not isinstance(person["eligibleRoleNames"], list) or any(not isinstance(r, str) or not r.strip() for r in person["eligibleRoleNames"]):
             raise WorkspaceError("人员结构无效")
     for plan_id, plan in state["plans"].items():
-        statuses = plan.get("personnelStates", {})
-        if not isinstance(statuses, dict) or any(not isinstance(k, str) or not k or v not in MEMBER_STATUSES for k, v in statuses.items()):
-            raise WorkspaceError("当天人员状态快照无效")
-        validate_team_leader_settings(plan.get("teamLeaderSettings", default_team_leader_settings()))
-        validate_half_rest_settings(plan.get("halfRestSettings", default_half_rest_settings()))
-        leaders = plan.get("teamLeaderIds", [])
-        if not isinstance(leaders, list) or any(not isinstance(v, str) or not v for v in leaders) or len(set(leaders)) != len(leaders):
-            raise WorkspaceError("当天分队长身份列表无效")
-        undo = plan.get("undoEdit")
-        if "undoEdit" in plan and not isinstance(undo, dict):
+        _validate_plan(state, plan_id, plan, ids, validate_undo=validate_undo)
+
+
+def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
+    """Validate current and undo inputs once each, using the same full context."""
+    statuses = plan.get("personnelStates", {})
+    if not isinstance(statuses, dict) or any(not isinstance(k, str) or not k or v not in MEMBER_STATUSES for k, v in statuses.items()):
+        raise WorkspaceError("当天人员状态快照无效")
+    validate_team_leader_settings(plan.get("teamLeaderSettings", default_team_leader_settings()))
+    validate_half_rest_settings(plan.get("halfRestSettings", default_half_rest_settings()))
+    leaders = plan.get("teamLeaderIds", [])
+    if not isinstance(leaders, list) or any(not isinstance(v, str) or not v for v in leaders) or len(set(leaders)) != len(leaders):
+        raise WorkspaceError("当天分队长身份列表无效")
+    undo = plan.get("undoEdit")
+    if "undoEdit" in plan and not isinstance(undo, dict):
+        raise WorkspaceError("撤销记录无效，原数据保留")
+    changed = plan.get("lastEdit", {})
+    if not isinstance(changed, dict) or any(not isinstance(changed.get(k, []), list) or any(not isinstance(v, str) for v in changed.get(k, [])) for k in ("taskIds", "cellIds")):
+        raise WorkspaceError("编辑反馈记录无效，原数据保留")
+    if undo and validate_undo:
+        if not isinstance(undo, dict) or type(undo.get("atRevision")) is not int or not 0 <= undo["atRevision"] <= state["revision"] or not isinstance(undo.get("before"), dict) or set(undo["before"]) - {'lastEdit'} != {"day", "inputRevision", "draft", "preview", "cellDrafts"}:
             raise WorkspaceError("撤销记录无效，原数据保留")
-        changed = plan.get("lastEdit", {})
-        if not isinstance(changed, dict) or any(not isinstance(changed.get(k, []), list) or any(not isinstance(v, str) for v in changed.get(k, [])) for k in ("taskIds", "cellIds")):
-            raise WorkspaceError("编辑反馈记录无效，原数据保留")
-        if undo and validate_undo:
-            if not isinstance(undo, dict) or type(undo.get("atRevision")) is not int or not 0 <= undo["atRevision"] <= state["revision"] or not isinstance(undo.get("before"), dict) or set(undo["before"]) != {"day", "inputRevision", "draft", "preview", "cellDrafts"}:
-                raise WorkspaceError("撤销记录无效，原数据保留")
-            shadow = deepcopy(state)
-            for value in shadow["plans"].values():
-                value.pop("undoEdit", None)
-            shadow["plans"][plan_id].update(deepcopy(undo["before"]))
-            validate_document(shadow, validate_undo=False)
-        if plan["id"] != plan_id or type(plan["inputRevision"]) is not int:
-            raise WorkspaceError("计划身份或版本无效")
-        day = imported_day_from_dict(plan["day"])
-        if "balanceSettings" in plan:
-            validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"]
-                + [r['roleName'] for r in plan['balanceSettings'].get('priorityFlightRoles', [])]
-                + [r['roleName'] for r in plan['balanceSettings'].get('coveragePriorities', [])]
-                + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
-        BaggageRotationSettings(plan["rotationEnabled"], plan["rotationMinutes"])
-        _validate_day_structure(day)
-        pending = plan.get("cellDrafts", {})
-        if not isinstance(pending, dict) or set(pending) - {c.id for c in day.cells}:
-            raise WorkspaceError("待完善姓名格引用无效")
-        for text in pending.values():
-            if not typed_names(plan, text):
-                raise WorkspaceError("待完善姓名格不能为空")
-        scenario, _ = plan_scenario(plan)
-        draft = read_assignments(plan["draft"])
-        if draft and scenario is None:
-            raise WorkspaceError("草稿没有有效任务资料")
-        if scenario:
-            if any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in draft):
-                raise WorkspaceError("草稿引用未知任务或人员")
-        if plan.get("preview"):
-            preview = plan["preview"]
-            return_id = preview.get("returnPlanId")
-            if return_id is not None and (not isinstance(return_id, str) or return_id == plan_id or return_id not in state["plans"] or state["plans"][return_id]["day"]["serviceDate"] != day.service_date):
-                raise WorkspaceError("预览返回方案无效")
-            if preview["inputRevision"] != plan["inputRevision"]:
-                raise WorkspaceError("预览与当前输入版本不一致")
-            previous = read_assignments(preview["previousDraft"])
-            if not scenario or any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in previous):
-                raise WorkspaceError("预览中的原草稿引用未知任务或人员")
-        adopted = plan["adopted"]
-        if adopted:
-            if 'dutyMemberId' in adopted and adopted['dutyMemberId'] is not None and adopted['dutyMemberId'] not in ids:
-                raise WorkspaceError('正式结果值班身份无效')
-            if "savedRevision" in adopted and (type(adopted["savedRevision"]) is not int or adopted["savedRevision"] < 0):
-                raise WorkspaceError("正式结果归档版本无效")
-            warning_archive = 'archiveVersion' in adopted
-            if warning_archive and (type(adopted['archiveVersion']) is not int or adopted['archiveVersion'] != 1 or not isinstance(adopted.get('issues'), list)):
-                raise WorkspaceError('归档问题快照版本或问题清单无效')
-            formal = scenario_from_dict(adopted["scenario"]) if adopted.get('scenario') else None
-            assignments = read_assignments(adopted['assignments'])
-            if assignments and (not formal or any(a.task_id not in {t.id for t in formal.tasks} or a.member_id not in {m.id for m in formal.members} for a in assignments)):
-                raise WorkspaceError('归档引用未知任务或人员')
-            issues = validate_schedule(formal, assignments) if formal else []
-            if not warning_archive and (issues or formal is None):
-                raise WorkspaceError("正式结果无效：" + "；".join(i.message for i in issues))
-            if warning_archive or not adopted.get("legacyOriginal"):
-                reference = {"day": adopted["day"], "memberIds": adopted["memberIds"], "rotationMinutes": adopted["rotationMinutes"], "rotationEnabled": adopted["rotationEnabled"]}
-                _validate_day_structure(imported_day_from_dict(reference['day']))
-                BaggageRotationSettings(reference['rotationEnabled'], reference['rotationMinutes'])
-                if "balanceSettings" in adopted:
-                    reference["balanceSettings"] = adopted["balanceSettings"]
-                for key in ("teamLeaderSettings", "teamLeaderIds", "personnelStates", "halfRestSettings"):
-                    if key in adopted:
-                        reference[key] = adopted[key]
-                if warning_archive:
-                    reference['draft'] = adopted['assignments']
-                    reference['cellDrafts'] = adopted.get('cellDrafts', {})
-                    if not isinstance(reference['cellDrafts'], dict) or set(reference['cellDrafts']) - {c['id'] for c in reference['day']['cells']}:
-                        raise WorkspaceError('归档待完善姓名格引用无效')
-                    for text in reference['cellDrafts'].values():
-                        if not typed_names(reference, text):
-                            raise WorkspaceError('归档待完善姓名格不能为空')
-                    rebuilt, problems = archive_review(reference)
-                    if problems != adopted['issues']:
-                        raise WorkspaceError('归档问题清单与原安排不一致')
-                else:
-                    rebuilt, problems = plan_scenario(reference)
-                if (problems and not warning_archive) or rebuilt != formal:
-                    raise WorkspaceError("正式结果与采用输入快照不一致")
+        restored = {k: v for k, v in plan.items() if k != 'lastEdit'}
+        restored.update(deepcopy(undo["before"]))
+        _validate_plan(state, plan_id, restored, ids, validate_undo=False)
+    if plan["id"] != plan_id or type(plan["inputRevision"]) is not int:
+        raise WorkspaceError("计划身份或版本无效")
+    day = imported_day_from_dict(plan["day"])
+    if "balanceSettings" in plan:
+        validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"]
+            + [r['roleName'] for r in plan['balanceSettings'].get('priorityFlightRoles', [])]
+            + [r['roleName'] for r in plan['balanceSettings'].get('coveragePriorities', [])]
+            + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
+    BaggageRotationSettings(plan["rotationEnabled"], plan["rotationMinutes"])
+    _validate_day_structure(day)
+    pending = plan.get("cellDrafts", {})
+    if not isinstance(pending, dict) or set(pending) - {c.id for c in day.cells}:
+        raise WorkspaceError("待完善姓名格引用无效")
+    for text in pending.values():
+        if not typed_names(plan, text):
+            raise WorkspaceError("待完善姓名格不能为空")
+    scenario, _ = plan_scenario(plan)
+    draft = read_assignments(plan["draft"])
+    if draft and scenario is None:
+        raise WorkspaceError("草稿没有有效任务资料")
+    if scenario:
+        if any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in draft):
+            raise WorkspaceError("草稿引用未知任务或人员")
+    if plan.get("preview"):
+        preview = plan["preview"]
+        return_id = preview.get("returnPlanId")
+        if return_id is not None and (not isinstance(return_id, str) or return_id == plan_id or return_id not in state["plans"] or state["plans"][return_id]["day"]["serviceDate"] != day.service_date):
+            raise WorkspaceError("预览返回方案无效")
+        if preview["inputRevision"] != plan["inputRevision"]:
+            raise WorkspaceError("预览与当前输入版本不一致")
+        previous = read_assignments(preview["previousDraft"])
+        if not scenario or any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in previous):
+            raise WorkspaceError("预览中的原草稿引用未知任务或人员")
+    adopted = plan["adopted"]
+    if adopted:
+        if 'dutyMemberId' in adopted and adopted['dutyMemberId'] is not None and adopted['dutyMemberId'] not in ids:
+            raise WorkspaceError('正式结果值班身份无效')
+        if "savedRevision" in adopted and (type(adopted["savedRevision"]) is not int or adopted["savedRevision"] < 0):
+            raise WorkspaceError("正式结果归档版本无效")
+        warning_archive = 'archiveVersion' in adopted
+        if warning_archive and (type(adopted['archiveVersion']) is not int or adopted['archiveVersion'] != 1 or not isinstance(adopted.get('issues'), list)):
+            raise WorkspaceError('归档问题快照版本或问题清单无效')
+        formal = scenario_from_dict(adopted["scenario"]) if adopted.get('scenario') else None
+        assignments = read_assignments(adopted['assignments'])
+        if assignments and (not formal or any(a.task_id not in {t.id for t in formal.tasks} or a.member_id not in {m.id for m in formal.members} for a in assignments)):
+            raise WorkspaceError('归档引用未知任务或人员')
+        issues = validate_schedule(formal, assignments) if formal else []
+        if not warning_archive and (issues or formal is None):
+            raise WorkspaceError("正式结果无效：" + "；".join(i.message for i in issues))
+        if warning_archive or not adopted.get("legacyOriginal"):
+            reference = {"day": adopted["day"], "memberIds": adopted["memberIds"], "rotationMinutes": adopted["rotationMinutes"], "rotationEnabled": adopted["rotationEnabled"]}
+            _validate_day_structure(imported_day_from_dict(reference['day']))
+            BaggageRotationSettings(reference['rotationEnabled'], reference['rotationMinutes'])
+            if "balanceSettings" in adopted:
+                reference["balanceSettings"] = adopted["balanceSettings"]
+            for key in ("teamLeaderSettings", "teamLeaderIds", "personnelStates", "halfRestSettings"):
+                if key in adopted:
+                    reference[key] = adopted[key]
+            if warning_archive:
+                reference['draft'] = adopted['assignments']
+                reference['cellDrafts'] = adopted.get('cellDrafts', {})
+                if not isinstance(reference['cellDrafts'], dict) or set(reference['cellDrafts']) - {c['id'] for c in reference['day']['cells']}:
+                    raise WorkspaceError('归档待完善姓名格引用无效')
+                for text in reference['cellDrafts'].values():
+                    if not typed_names(reference, text):
+                        raise WorkspaceError('归档待完善姓名格不能为空')
+                rebuilt, problems = archive_review(reference)
+                if problems != adopted['issues']:
+                    raise WorkspaceError('归档问题清单与原安排不一致')
+            else:
+                rebuilt, problems = plan_scenario(reference)
+            if (problems and not warning_archive) or rebuilt != formal:
+                raise WorkspaceError("正式结果与采用输入快照不一致")
 
 
 def normalize_document(document):

@@ -6,7 +6,8 @@ from openpyxl import load_workbook
 
 import test_workspace as fixtures
 from gate_schedule.domain import Assignment
-from gate_schedule.excel_io import imported_day_from_dict, imported_day_to_dict, export_complete_configuration, import_complete_configuration
+from gate_schedule.excel_io import export_complete_configuration, import_complete_configuration
+from gate_schedule.day_document import imported_day_from_dict, imported_day_to_dict
 from gate_schedule.imported_schedule import imported_day_to_scenario
 from gate_schedule.solver import solve
 from gate_schedule.validator import validate_schedule
@@ -37,11 +38,11 @@ class RegularPreparationTests(unittest.TestCase):
         state = self.command('prepare-solve', {'day': day}, plan_id)
         new_id = state['selectedPlanId']
         p = state['plans'][new_id]
-        self.assertNotEqual(plan_id, new_id)
+        self.assertEqual(plan_id, new_id)
         self.assertTrue(p['valid'], p['issues'])
         self.assertEqual('duty', p['day']['attendanceMode'])
         self.assertEqual('arrival', p['day']['roleConfigs'][0]['workMode'])
-        self.assertEqual(original, self.workspace.backup()['state']['plans'][plan_id])
+        self.assertEqual(original['adopted'], p['adopted'])
         broken = self.workspace.backup()
         broken['state']['plans'][new_id]['preview']['returnPlanId'] = 'unknown'
         before = self.workspace.backup()
@@ -50,7 +51,8 @@ class RegularPreparationTests(unittest.TestCase):
         self.assertEqual(before, self.workspace.backup())
         state = self.command('cancel-preview', {}, new_id)
         self.assertEqual(plan_id, state['selectedPlanId'])
-        self.assertEqual(original, self.workspace.backup()['state']['plans'][plan_id])
+        self.assertEqual('duty', state['plans'][plan_id]['day']['attendanceMode'])
+        self.assertEqual(original['adopted'], state['plans'][plan_id]['adopted'])
 
     def test_no_participants_one_actionable_error_and_no_mutation(self):
         plan_id, day = self.legacy_day()
@@ -60,7 +62,7 @@ class RegularPreparationTests(unittest.TestCase):
             self.command('prepare-solve', {'day': day}, plan_id)
         self.assertEqual(before, self.workspace.backup())
 
-    def test_implicit_old_mode_keeps_explicit_supervisor_nature(self):
+    def test_implicit_old_mode_uses_current_single_dedicated_switch_on_replan(self):
         plan_id, day = self.legacy_day()
         day['roleNames'] = ['督导']
         day['roleConfigs'] = [{'roleName':'督导','requiredCount':1,'concurrent':False}]
@@ -69,13 +71,14 @@ class RegularPreparationTests(unittest.TestCase):
         state = self.command('prepare-solve',{'day':day},plan_id)
         p = state['plans'][state['selectedPlanId']]
         self.assertEqual('continuous',p['day']['roleConfigs'][0]['workMode'])
-        self.assertFalse(p['day']['roleConfigs'][0]['concurrent'])
+        self.assertTrue(p['day']['roleConfigs'][0]['concurrent'])
 
-    def test_explicit_special_mode_is_preserved_and_requires_its_time(self):
+    def test_obsolete_special_minutes_are_retained_for_history_but_not_required_on_replan(self):
         plan_id, day = self.legacy_day()
         day['roleConfigs'][0]['workMode'] = 'timed'
-        with self.assertRaisesRegex(WorkspaceError, '岗位起止时间'):
-            self.command('prepare-solve', {'day': day}, plan_id)
+        state = self.command('prepare-solve', {'day': day}, plan_id)
+        self.assertIn('flowPreferences', state['plans'][state['selectedPlanId']]['day'])
+        self.assertTrue(state['plans'][state['selectedPlanId']]['valid'])
         day['cells'][0].update(workStart='23:05', workEnd='次日00:05')
         state = self.command('prepare-solve', {'day':day}, plan_id)
         p = state['plans'][state['selectedPlanId']]

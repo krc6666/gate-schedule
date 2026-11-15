@@ -85,7 +85,9 @@ class ExclusiveConfigurationTests(unittest.TestCase):
     def test_legacy_missing_flag_preserves_current_and_explicit_no_disables(self):
         self.command('save-role', {'roleName':'登机主验', 'exclusiveSameFlight':True})
         legacy = load_workbook(BytesIO(export_complete_configuration(configuration())))
-        legacy['岗位性质'].delete_cols(4)
+        # Reconstruct the old three-column nature format, without the dedicated flag.
+        legacy['岗位性质'].cell(1, 3, '岗位性质')
+        for row in legacy['岗位性质'].iter_rows(min_row=2): row[2].value = '常规'
         incoming = import_complete_configuration(book_bytes(legacy))
         self.assertNotIn('exclusiveSameFlight', next(r for r in incoming['day']['roleConfigs'] if r['roleName']=='登机主验'))
         state = self.command('import-complete-configuration', incoming)
@@ -108,7 +110,9 @@ class ExclusiveConfigurationTests(unittest.TestCase):
         state = self.command('import-complete-configuration', restored)
         self.assertTrue(self.role(state)['exclusiveSameFlight'])
         self.assertFalse(next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
-        book = load_workbook(BytesIO(export_complete_configuration(data)));book['当天岗位例外'].delete_cols(5)
+        book = load_workbook(BytesIO(export_complete_configuration(data)))
+        book['当天岗位例外'].cell(1, 4, '可兼任')
+        for row in book['当天岗位例外'].iter_rows(min_row=2): row[3].value = '否'
         restored = import_complete_configuration(book_bytes(book))
         state = self.command('import-complete-configuration', restored)
         self.assertTrue(next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])

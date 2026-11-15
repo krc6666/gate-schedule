@@ -15,6 +15,7 @@ class CellCandidateTests(unittest.TestCase):
         state = self.command('new-plan', {'serviceDate': '2026-08-02'})
         pid = state['selectedPlanId']
         day = phase_day()
+        day['roleConfigs'][1]['exclusiveSameFlight'] = True
         for member in day['memberConfigs']:
             member['eligibleRoleNames'] = list(member['eligibleRoleNames'])
         if role != '登机核验':

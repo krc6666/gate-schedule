@@ -1,4 +1,4 @@
-import { html, type State, type Plan, type Schedule, type DisplayPreferences } from "./workbench-model";
+import { html, needsRedWarning, type State, type Plan, type Schedule, type DisplayPreferences } from "./workbench-model";
 import { flightHeader } from "./schedule-layout";
 
 function previousBoard(previous: Plan): string {
@@ -17,7 +17,7 @@ function previousBoard(previous: Plan): string {
     }).filter((names, index, all) => !index || names !== all[index - 1]);
     const text = pending ? `${pending}（待完善）` : groups.join(" / ") || (cell?.rawValue ? `${cell.rawValue}（待配置）` : cell && (cell.requiredCountOverride ?? day?.roleConfigs.find(r => r.roleName === role)?.requiredCount) !== 0 ? "待配置" : "");
     const issues = (previous.formalIssues ?? []).filter(issue => (!!cell && issue.taskId === cell.id) || segments.some(s => s.task_id === issue.taskId || issue.relatedTaskIds?.includes(s.task_id)));
-    const conflict = issues.some(issue => issue.code !== "coverage_shortfall");
+    const conflict = issues.some(issue => needsRedWarning(issue, schedule));
     const vacancy = issues.some(issue => issue.code === "coverage_shortfall");
     return `<th scope="row" class="previous-role">${html(role)}</th><td class="previous-person${conflict ? " previous-cell-conflict" : vacancy ? " previous-cell-vacancy" : ""}" title="${html(issues.map(i => i.message).join("；"))}">${html(text)}${issues.length ? '<span class="previous-warning" aria-label="归档问题"> !</span>' : ""}</td>`;
   }).join("")}</tr>`).join("");

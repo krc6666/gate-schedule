@@ -62,10 +62,12 @@ test('所有岗位格统一查询候选：零需求试排、未知阻断、任�
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const waitOptions=()=>until(()=>evaluate("document.querySelectorAll('[data-candidate-id]').length>0"),'候选列表');
   await click('#pick-empty');await waitOptions();
+  assert.equal(await evaluate("!!document.querySelector('.candidate-other:not([open]) [data-candidate-id=a]')"),true,'冲突人选默认收起，可用人员列表保持简洁');
+  assert.equal(await evaluate("document.querySelector('.candidate-list > [data-candidate-id=b] small')===null"),true,'可用人以姓名按钮显示，详细原因放在提示中');
   assert.equal(requests[0],'/api/workspace/cell-candidates/p/cell-empty?slot=0','无任务的通用单元格也必须由后端试排，不能把roster全部标为可用');
   assert.equal(await evaluate("document.querySelector('[data-candidate-id=a]').disabled"),false,'有冲突仍可手工填入，不能禁用');
   assert.match(await evaluate("document.querySelector('[data-candidate-id=a]').textContent"),/冲突/);
-  assert.match(await evaluate("document.querySelector('[data-candidate-id=b]').textContent"),/待确认临时需求/);
+  assert.match(await evaluate("document.querySelector('[data-candidate-id=b]').title"),/待确认临时需求/);
   assert.doesNotMatch(await evaluate("document.getElementById('schedule-candidate-menu').textContent"),/名单匹配，补齐岗位后校验/);
   await click('[data-candidate-id=b]');assert.deepEqual(await evaluate('window.changes'),[['cell-empty','乙']]);assert.deepEqual(await evaluate('window.saves'),['cell-empty']);assert.deepEqual(await evaluate('window.slots'),[],'临时需求仍走原格子保存流程');
   await click('#pick-task');await waitOptions();

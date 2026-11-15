@@ -6,7 +6,7 @@ from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available, scarce_role_groups, half_rest_period_violation, task_coverage_priority, COVERAGE_PRIORITIES
+from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
@@ -93,7 +93,11 @@ def _priority_costs(model, scenario, variables, previous_roles, priority_counts,
 
 def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=False, previous_roles=frozenset(), handoff_preferences=(), priority_counts=None, control=None, relaxed_settings=None, relaxed_counts=None, duty_member_id=None) -> SolveResult:
     started = monotonic()
-    validate_handoff_preferences(list(handoff_preferences))
+    # A new plan carries its complete flow contract in the Scenario snapshot.
+    # The separate argument remains an adapter for legacy snapshots only; it
+    # must not be a second source of truth for the new contract.
+    legacy_handoff_preferences = () if scenario.flow_preferences is not None else tuple(handoff_preferences)
+    validate_handoff_preferences(list(legacy_handoff_preferences))
     priority_counts = {} if priority_counts is None else priority_counts
     if not isinstance(priority_counts, dict) or any(
             not isinstance(key, tuple) or len(key) not in (2, 3)
@@ -120,14 +124,14 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
             for k in ('earlyDeparture', 'afternoonRest'))
         if needs_balance:
             baseline = solve(scenario, min(1.5, time_limit_seconds / 2), allow_partial=allow_partial,
-                previous_roles=previous_roles, handoff_preferences=handoff_preferences,
+                previous_roles=previous_roles, handoff_preferences=legacy_handoff_preferences,
                 priority_counts=priority_counts, control=control)
             if baseline.status not in ('OPTIMAL', 'FEASIBLE'):
                 # No opportunity budget exists yet; give the original model
                 # the remaining budget, without inventing empty-day rest.
                 return solve(scenario, max(.01, time_limit_seconds - (monotonic() - started)),
                     allow_partial=allow_partial, previous_roles=previous_roles,
-                    handoff_preferences=handoff_preferences, priority_counts=priority_counts, control=control)
+                    handoff_preferences=legacy_handoff_preferences, priority_counts=priority_counts, control=control)
             if control and control.stopped.is_set():
                 return baseline
 
@@ -140,15 +144,13 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
             if _eligible(scenario, member, task):
                 variables[member.id, task.id] = model.new_bool_var(f"assign_{member.id}_{task.id}")
 
-    coverage_terms = {priority: [] for priority in COVERAGE_PRIORITIES}
-    coverage_bounds = {priority: 0 for priority in COVERAGE_PRIORITIES}
+    missing_by_task = {}
+    coverage_groups = coverage_task_groups(scenario) if allow_partial else ()
     for task in scenario.tasks:
         candidates = [variable for (member_id, task_id), variable in variables.items() if task_id == task.id]
         if allow_partial:
             missing = model.new_int_var(0, task.required_count, f"missing_{task.id}")
-            priority = task_coverage_priority(scenario, task)
-            coverage_terms[priority].append(missing)
-            coverage_bounds[priority] += task.required_count
+            missing_by_task[task.id] = missing
             model.add(sum(candidates) + missing == task.required_count)
         else:
             model.add(sum(candidates) == task.required_count)
@@ -162,19 +164,21 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         assigned_counts = {}
         for assignment in baseline.assignments:
             assigned_counts[assignment.task_id] = assigned_counts.get(assignment.task_id, 0) + 1
-        for priority in COVERAGE_PRIORITIES:
-            if coverage_terms[priority]:
-                missing_before = sum(max(0, t.required_count - assigned_counts.get(t.id, 0))
-                    for t in scenario.tasks if task_coverage_priority(scenario, t) == priority)
-                model.add(sum(coverage_terms[priority]) <= missing_before)
+        for group in coverage_groups:
+            missing_before = sum(max(0, t.required_count - assigned_counts.get(t.id, 0)) for t in group)
+            model.add(sum(missing_by_task[t.id] for t in group) <= missing_before)
 
     if control:
         control.stage("检查冲突、固定与轮换")
+    pair_conflicts = {}
     for member in scenario.members:
         member_tasks = [task for task in scenario.tasks if (member.id, task.id) in variables]
         for index, first in enumerate(member_tasks):
             for second in member_tasks[index + 1 :]:
-                if task_pair_conflict(scenario, first, second):
+                key = (first.id, second.id)
+                if key not in pair_conflicts:
+                    pair_conflicts[key] = task_pair_conflict(scenario, first, second)
+                if pair_conflicts[key]:
                     model.add(variables[member.id, first.id] + variables[member.id, second.id] <= 1)
 
     balance_members = flight_balance_members(scenario)
@@ -192,44 +196,49 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         model.add(maximum - minimum <= scenario.flight_count_gap)
 
     flights = {flight.id: flight for flight in scenario.flights}
-    same_flight_handoffs = []
+    mobile_handoffs = []
     preferred_handoffs = []
     ranked_handoffs = []
-    cross_flight_handoffs = []
     rotation_repeats = []
     rotation_changes = []
     pair_index = 0
-    for member in scenario.members:
-        arrival_tasks = [task for task in scenario.tasks if task.service_stage == "arrival"]
-        boarding_tasks = [task for task in scenario.tasks if task.service_stage == "boarding"]
-        for arrival in arrival_tasks:
-            arrival_assignment = variables.get((member.id, arrival.id))
-            source_flight = flights.get(arrival.flight_id)
-            if arrival_assignment is None or source_flight is None:
+    outgoing, incoming = {}, {}
+    flow_ranks, route_order = {}, {}
+    from .domain import preferred_mobile_handoffs
+    for source, target in preferred_mobile_handoffs(scenario):
+        source_flight = flights[source.flight_id]
+        for member in scenario.members:
+            a = variables.get((member.id, source.id))
+            b = variables.get((member.id, target.id))
+            if a is None or b is None:
                 continue
-            for boarding in boarding_tasks:
-                boarding_assignment = variables.get((member.id, boarding.id))
-                if boarding_assignment is None:
-                    continue
-                if task_pair_conflict(scenario, arrival, boarding):
-                    continue
-                if arrival.flight_id == boarding.flight_id:
-                    if arrival.timing_mode == boarding.timing_mode == "exact" and arrival.end > boarding.start:
-                        continue
-                    pair = model.new_bool_var(f"same_flight_handoff_{pair_index}")
-                    same_flight_handoffs.append(pair)
-                    if preferred_handoff(handoff_preferences, source_flight.flight_no, arrival.role_id, boarding.role_id):
-                        preferred_handoffs.append(pair)
-                        rank = handoff_rank(handoff_preferences, source_flight.flight_no, arrival.role_id, boarding.role_id)
-                        if rank:
-                            ranked_handoffs.append((rank, pair))
-                else:
-                    pair = model.new_bool_var(f"cross_flight_handoff_{pair_index}")
-                    cross_flight_handoffs.append(pair)
-                pair_index += 1
-                model.add(pair <= arrival_assignment)
-                model.add(pair <= boarding_assignment)
-                model.add(pair >= arrival_assignment + boarding_assignment - 1)
+            pair = model.new_bool_var(f'mobile_handoff_{pair_index}')
+            pair_index += 1
+            mobile_handoffs.append(pair)
+            if scenario.flow_preferences is not None:
+                from .domain import flow_target_rank
+                rank = flow_target_rank(scenario, source, target)
+                if rank is not None:
+                    flow_ranks.setdefault(rank, []).append(pair)
+                for task in (source, target):
+                    if (member.id, task.id) not in route_order:
+                        route_order[member.id, task.id] = model.new_int_var(0, len(scenario.tasks), f'flow_order_{member.id}_{task.id}')
+                # Linear implication also runs on the browser CP-SAT adapter.
+                model.add(route_order[member.id, source.id] + 1 <= route_order[member.id, target.id]
+                          + (len(scenario.tasks) + 1) * (1 - pair))
+            if scenario.flow_preferences is None and source.flight_id == target.flight_id and preferred_handoff(legacy_handoff_preferences, source_flight.flight_no, source.role_id, target.role_id):
+                preferred_handoffs.append(pair)
+                rank = handoff_rank(legacy_handoff_preferences, source_flight.flight_no, source.role_id, target.role_id)
+                if rank:
+                    ranked_handoffs.append((rank, pair))
+            model.add(pair <= a)
+            model.add(pair <= b)
+            outgoing.setdefault((member.id, source.id), []).append(pair)
+            incoming.setdefault((member.id, target.id), []).append(pair)
+    # A continuation is a route edge, not every pair in a person's itinerary.
+    # At most one predecessor/successor prevents quadratic rewards for long days.
+    for paths in (*outgoing.values(), *incoming.values()):
+        model.add(sum(paths) <= 1)
 
     rotations_by_group: dict[str, list] = {}
     for rotation in scenario.rotations:
@@ -255,27 +264,25 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
 
     stability_weight = 1
     rotation_weight = len(rotation_changes) * stability_weight + 1
-    cross_flight_weight = len(rotation_repeats) * rotation_weight + len(rotation_changes) * stability_weight + 1
-    rank_weight = len(cross_flight_handoffs) * cross_flight_weight + len(rotation_repeats) * rotation_weight + len(rotation_changes) * stability_weight + 1
+    rank_weight = len(rotation_repeats) * rotation_weight + len(rotation_changes) * stability_weight + 1
     rank_bound = sum(rank for rank, _ in ranked_handoffs)
     path_weight = (rank_bound + 1) * rank_weight
-    same_flight_weight = len(preferred_handoffs) * path_weight + path_weight
+    mobile_weight = len(preferred_handoffs) * path_weight + path_weight
     roles_by_task = {task.id: task.role_id for task in scenario.tasks}
     history_repeats = [variable for (member_id, task_id), variable in variables.items()
                        if roles_by_task[task_id] not in scenario.priority_role_ids
                        and (member_id, roles_by_task[task_id]) in previous_roles]
     history_weight = 1
     preference_scale = len(history_repeats) + 1
-    preference_bound = (len(cross_flight_handoffs) * cross_flight_weight + len(rotation_repeats) * rotation_weight
-                        + len(rotation_changes) + len(same_flight_handoffs) * same_flight_weight + len(preferred_handoffs) * path_weight + rank_bound * rank_weight) * preference_scale + len(history_repeats)
+    preference_bound = (len(rotation_repeats) * rotation_weight
+                        + len(rotation_changes) + len(mobile_handoffs) * mobile_weight + len(preferred_handoffs) * path_weight + rank_bound * rank_weight) * preference_scale + len(history_repeats)
     base_objective = (
         history_weight * sum(history_repeats)
         + preference_scale * (
-        cross_flight_weight * sum(cross_flight_handoffs)
-        + rotation_weight * sum(rotation_repeats)
+        rotation_weight * sum(rotation_repeats)
         + stability_weight * sum(rotation_changes)
         + rank_weight * sum(rank * pair for rank, pair in ranked_handoffs)
-        - same_flight_weight * sum(same_flight_handoffs) - path_weight * sum(preferred_handoffs))
+        - mobile_weight * sum(mobile_handoffs) - path_weight * sum(preferred_handoffs))
     )
     objective = base_objective
     # Coverage, leader use, automatic scarcity tiers, selected priority roles,
@@ -286,7 +293,8 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
                                                      priority_counts, role_ids=roles))
     half_rest_costs = []
     participation, early_end, late_end, late_count = [], [], [], []
-    end_bound = max((t.end for t in scenario.tasks), default=0)
+    end_origin = min(0, min((t.end for t in scenario.tasks), default=0))
+    end_bound = max((t.end - end_origin for t in scenario.tasks), default=0)
     for member in scenario.members:
         if not member.half_rest or not member_available(member):
             continue
@@ -297,7 +305,7 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         model.add_max_equality(worked, [v for _, v in choices])
         participation.append(1 - worked)
         latest = model.new_int_var(0, end_bound, f'half_rest_end_{member.id}')
-        model.add_max_equality(latest, [t.end * v for t, v in choices])
+        model.add_max_equality(latest, [(t.end - end_origin) * v for t, v in choices])
         if member.half_rest == 'early-finish':
             early_end.append(latest)
         else:
@@ -311,25 +319,65 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     rest_costs = relaxed_shift_costs(model, scenario, variables, relaxed_settings,
                                    relaxed_counts or {}, duty_member_id, baseline.assignments) if baseline else ()
     priority_costs = (*half_rest_costs, *rest_costs, *scarce_costs, *priority_costs)
+    # The owner-configured first choice wins before the second, rather than
+    # adding ranks and trading one first choice for several lower choices.
+    if flow_ranks:
+        priority_costs = (*((len(paths) - sum(paths), len(paths)) for _, paths in sorted(flow_ranks.items())), *priority_costs)
+    from .domain import baggage_targets
+    baggage_paths = []
+    for source in scenario.tasks if scenario.flow_preferences is None else ():
+        if source.role_id != '大件行李拦截':
+            continue
+        for target in scenario.tasks:
+            if target.role_id not in baggage_targets(scenario,source,target) or task_pair_conflict(scenario,source,target):
+                continue
+            for member in scenario.members:
+                a,b = variables.get((member.id,source.id)),variables.get((member.id,target.id))
+                if a is None or b is None:
+                    continue
+                pair = model.new_bool_var(f'baggage_path_{source.id}_{target.id}_{member.id}')
+                model.add(pair <= a)
+                model.add(pair <= b)
+                model.add(pair >= a + b - 1)
+                baggage_paths.append(1-pair)
+    if baggage_paths:
+        priority_costs = (*priority_costs, (sum(baggage_paths),len(baggage_paths)))
     if scenario.team_leader_last:
         leader_ids = {m.id for m in scenario.members if m.team_leader}
         leader_choices = [v for (member, _), v in variables.items() if member in leader_ids]
         priority_costs = ((sum(leader_choices), len(leader_choices)), *priority_costs)
-    # Each coverage tier outranks all following tiers and existing preferences.
-    # Equal-tier tasks share a sum; no incidental flight/role ordering is added.
-    coverage_costs = tuple((sum(coverage_terms[p]), coverage_bounds[p]) for p in COVERAGE_PRIORITIES if coverage_bounds[p])
+    # Domain owns dedicated/flight-end/role ordering, including shared tasks.
+    coverage_costs = tuple((sum(missing_by_task[t.id] for t in group),
+                            sum(t.required_count for t in group)) for group in coverage_groups)
     priority_costs = (*coverage_costs, *priority_costs)
     for cost, bound in reversed(priority_costs):
         if bound:
             weight = preference_bound + 1
-            objective += weight * cost
+            # Native OR-Tools mutates SumArray with +=. Keep the base objective
+            # intact for the separate final stage when weights exceed int64.
+            objective = objective + weight * cost
             preference_bound += weight * bound
     weighted_bound = preference_bound
     if weighted_bound > 2 ** 60:
         # Large real models cannot encode every priority in one 64-bit weight.
-        # Optimize the same tiers in order, fixing each proven optimum, within
-        # the original total time budget; a timeout retains the last safe result.
-        objectives = [cost for cost, bound in priority_costs if bound] + [base_objective]
+        # Pack consecutive tiers into safe integer objectives. Solving every
+        # flight separately can exhaust the budget before later flights receive
+        # staff, even when full coverage is feasible. The packed ordering is
+        # exactly the same lexicographic policy, with fewer solver restarts.
+        objectives = []
+        packed, packed_bound = 0, 0
+        for cost, bound in priority_costs:
+            if not bound:
+                continue
+            next_bound = packed_bound * (bound + 1) + bound
+            if packed_bound and next_bound > 2 ** 50:
+                objectives.append(packed)
+                packed, packed_bound = 0, 0
+            packed = packed * (bound + 1) + cost
+            packed_bound = packed_bound * (bound + 1) + bound
+        if packed_bound:
+            objectives.append(packed)
+        objectives.append(base_objective)
     else:
         objectives = [objective]
     solver = cp_model.CpSolver()

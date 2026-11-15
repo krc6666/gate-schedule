@@ -23,7 +23,8 @@ from tests.test_phase_zero import feasible_scenario
 class RecoveryTests(unittest.TestCase):
     def test_unrelated_old_import_is_not_attached_to_same_date_formal_result(self):
         from gate_schedule.io import scenario_to_dict
-        from gate_schedule.excel_io import import_day, imported_day_to_dict
+        from gate_schedule.excel_io import import_day
+        from gate_schedule.day_document import imported_day_to_dict
         from tests.test_excel_io import day_20260814_bytes
         scenario = feasible_scenario()
         day = imported_day_to_dict(import_day(day_20260814_bytes(), scenario.service_date))

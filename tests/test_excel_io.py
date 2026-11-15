@@ -8,7 +8,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
-from gate_schedule.excel_io import export_imported_day, import_day, update_imported_day, validate_imported_day
+from gate_schedule.excel_io import export_imported_day, import_day, update_imported_day
+from gate_schedule.day_document import validate_imported_day
 from gate_schedule.projections import flight_handoff_suggestions
 from gate_schedule.web import create_app
 

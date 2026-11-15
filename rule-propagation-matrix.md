@@ -1,3 +1,193 @@
+# 2026-11-14 大件开检—截载窗口（进行中）
+
+| 环节 | 事实owner与传播 |
+| --- | --- |
+| 轮次规则身份 | domain统一大件N→实际Rotation轮次；优先、禁止、同班分人集合共用；别名不成为新资格，通用后备/显式关闭/按池重编号；求解、人工候选、独立校验与Excel/空库重启共同覆盖 |
+| 输入 | workRules.baggageWindow可选配置；domain统一验证整数提前分钟/轮换分钟，null关闭、旧缺字段保持 |
+| 任务与候选 | domain按模板结束推开检、按显式起飞或已明示模板结束兜底推截载；imported_schedule复用现有合并/切块；候选通过独立validator |
+| 求解 | 消费实际Rotation与task_pair_conflict，不在solver重复时间公式；同池不同轮次禁止同人，缺人留缺口 |
+| 人工/最终校验 | 同一领域事实复核，实际块/资格/出勤/专岗/禁止保持，人工破坏须反向拦截 |
+| 输出 | 规则页配置和后端计算的合并窗口/轮换人数，按完整轮值取人数（至少1人），尾段归最后一轮，空档分开；不伪造当前已保存结果 |
+| 迁移 | 统一workRules/日快照/JSON/SQLite/完整备份，Excel新增可见表；旧缺字段/表保留本机、明确null/关闭清除 |
+| 旧草稿与取消预览 | domain.unchanged_task_ids共享任务全量事实比较；成功重排后仅保留仍存在且内容未变的原安排，取消不恢复被删/改时段轮次；正式不追改，失败不提交；旧草稿3→2/1→3及取消反向回归 |
+| 回归 | 实际模板示例/跨日/有空档/合并/尾段/迁移重启/缺人/人工反向/Chrome/WASM/成品原入口 |
+
+---
+
+# 2026-11-14 分人集合修复与禁止衔接（已验证并本地交付）
+
+| 环节 | 唯一事实与传播 |
+| --- | --- |
+| 输入 | domain.validate_work_rules验证forbiddenHandoffs来源/目标/两范围/启停/重复/未知岗位；缺字段保留旧合同，[]清空 |
+| UI与候选 | 新组凑齐两岗自动启用、手动停用保留、旧停用组明确按钮启用、状态和当天覆盖提示；禁止编辑统一草稿；候选经validator不可用原因 |
+| 求解 | task_pair_conflict统一禁止源，优先于流程许可/偏好，跨班仅禁对应来源到晚结束的组合；部分结果缺口保留 |
+| 人工/后置/最终校验 | 独立validate_schedule复核，不读solver缓存；合法结果后故意同人违反组/禁止须标红；旧正式按旧快照 |
+| 输出 | 已启用/已停用与重排提示，禁止衔接来源、目标、航班范围、启停与特例；不自动改原资料 |
+| 迁移 | 统一save-rules/当天独立/JSON/SQLite/快照/备份；Excel可见禁止衔接表，旧缺字段保留本机，新空表清空，空库无禁止 |
+| 验证 | 新组默认完整用户流程、手动停用、当天覆盖、范围正反/特例/共享任务/反向/缺人，导出空库重启实际使用/备份恢复/真实Chrome/WASM/成品及原入口 |
+
+---
+
+# 2026-11-14 岗位分人组与逐目标航班范围（已验证并本地交付）
+
+补充：流动岗位管理的每个优先目标可选targetFlightScopes；domain统一验证/范围/方向/许可，solver、候选解释、人工与独立validator共用。缺字段维持原同班/不重叠合同；later-overlap仅对显式普通流程任务放行晚结束重叠航班，不放行专岗或两个实际块，走动>0而无交接时刻仍报警。JSON/SQLite/快照/备份携带；Excel新增可见逐目标范围表，旧文件缺表保留本机对应来源/航班/目标的范围，明确空表清范围。反向测试覆盖同班禁止、方向相反/同结束/未许可/实际块/专岗/走动、特例和旧正式。
+
+| 环节 | 唯一事实与消费点 |
+| --- | --- |
+| 输入 | workRules.separationGroups可选数组，domain验证稳定组ID/作用域/启停/组内岗位；缺字段旧合同，空数组清组 |
+| 候选池 | manual经validator试填，task_pair_conflict消费同航班有效组；被组阻挡不可安排，不自行展开岗位对 |
+| 求解 | task_pair_conflict为硬限制，优先于接续；组间不额外限制，跨班按既有规则；缺人部分结果标红 |
+| 人工/后置/最终校验 | 独立validate_schedule同入口复核；合法结果后故意将同组两岗改同一人必须role_separation；专岗/资格等仍优先 |
+| 输出 | 规则页组名/自由岗位增删/启停/航班特例；组内不排序；高级保留旧关系，可明确转组；不新增一次流动上限 |
+| 存储与迁移 | 统一配置/日快照/JSON/SQLite/完整备份携带；Excel岗位分人组表缺失保留本机/空库无组，空表清组；旧正式保持 |
+| 测试 | 组内/组间、共享任务、作用域关闭删除继承、候选与后置反向、旧逐对转换；修改导出空库导入重启实际求解；Chrome/WASM与原入口 |
+
+---
+
+# 2026-11-13 接续规则架构修复（已验证并本地交付，不改变业务规则）
+
+| 环节 | 事实owner与消费点 |
+| --- | --- |
+| 输入及迁移 | day_document独立负责日计划JSON转换；domain.validate_imported_day拥有输入合法性；Excel、工作台、恢复和配置导入共同消费。字段缺失/空列表语义保持 |
+| 候选及解释 | manual_editing先经独立validator试填；domain.task_candidate_relationship解释关系，复用流程方向与硬冲突；被专岗/分人阻挡仍标红，不因“可接续”放行 |
+| 求解 | 新Scenario只读flow_preferences快照；旧外传handoff_preferences只供旧合同。单次solve局部复用任务对冲突，不跨请求缓存，不改变约束与目标 |
+| 人工/后置与最终校验 | task_pair_conflict统一入口，先公共硬规则再显式分流新流程/旧合同；validate_schedule每次重新执行，不消费求解缓存；尾块、分人、专岗、窗口反向回归保持 |
+| 输出与存储 | 仅修正通用流程“可接续”说明，无新设置、无持久化格式变化；历史按原快照恢复，完整Excel及备份继续往返 |
+| 测试 | 候选正反方向/实际块/专岗反向、旧参数隔离、旧合同继续生效；任务对调用计数及模型/结果对照、JSON无Excel依赖、完整迁移重启与恢复 |
+
+---
+
+# 2026-11-13 无任务分钟的流程顺延（已验证并本地交付，Owner最新合同）
+
+| 环节 | 唯一事实与消费点 |
+| --- | --- |
+| 输入 | handoffPreferences复用来源/排序目标/航班作用域，domain统一验证；日/Scenario可选flowPreferences为新流程快照，缺失维持旧历史；新流程忽略普通任务旧实际/相对时间 |
+| 候选池 | manual_editing经task_pair_conflict消费同班流程关系、专岗/分人及跨班整体窗口，不复制判断 |
+| 求解 | domain生成合法接续对；同班流程可衔接大件块与普通岗位，实际轮换块间重叠仍禁止；顺位逐层软优化，覆盖、专岗、早班优先保持 |
+| 人工/后置 | 所有手调仍独立validator复查；跨班窗口冲突/硬分人/专岗标红，不用流程许可绕过；旧草稿人工配置无分钟岗位时用既有全程模式生成该格，其余任务与正式保持 |
+| 最终校验 | validate_scenario验证新快照，task_pair_conflict唯一硬规则owner；真实流程合法后故意后置破坏必须拒绝。新流程after-baggage必须分人不依赖块末是否早于窗口末；尾块齐末也拦截，候选、求解和手调消费同一判断 |
+| 输出 | 规则页自由来源/目标下拉增删排序、通用/系列/具体号特例；不显示相对偏移或普通任务具体时间；时间窗口不足不伪造分钟 |
+| 存储/迁移 | 长期复用现有配置/Excel偏好表；当天和正式保存flowPreferences规则快照，旧快照缺字段不变；完整Excel、备份和空库重启需验证 |
+| 测试 | 任意来源、满岗/无资格顺延、同班流程/大件块、跨班与专岗反向、系列覆盖、循环不重复计奖、配置空库重启实际求解及旧正式保持；真实Chrome/WASM |
+
+---
+
+# 2026-11-13 航班系列特例与时间配置界面（已验证并本地交付）
+
+| 环节 | 唯一事实与消费点 |
+| --- | --- |
+| 输入 | domain统一验证适用范围：通用*、具体航班、单个尾星前缀；前端仅收集输入。规则页维护relativeTiming，航班页/排班准备维护当天起降基准 |
+| 候选池 | manual_editing通过task_pair_conflict消费系列岗位搭配，不另写匹配；专岗及资格先检查 |
+| 求解 | domain统一选择具体号→最长系列→通用，work_pair_rule/baggage_targets/applicable_handoff_preference共用；软偏好不授硬许可 |
+| 人工/后置/最终校验 | validator沿同一领域接口复查，故意破坏系列分人须标红；删除特例恢复继承，关闭项不回退 |
+| 输出 | 前端负分钟显示前日；配置页不伪造时间，实际任务时间消费后端schedule投影 |
+| 存储与迁移 | 系列沿现有flightNo字段和完整Excel/备份迁移；相对规则/当天起降沿第一阶段合同。长期模板不存当天起降，新日显式录入，不追改正式 |
+| 测试 | 系列优先/关闭/继承、独立校验反向、迁移空库重启实际使用；规则草稿/航班输入/跨前日显示，Chrome与WASM |
+
+---
+
+# 2026-11-13 相对时间与流动接续第一阶段（已验证并本地交付）
+
+| 环节 | 唯一事实与消费点 |
+| --- | --- |
+| 输入 | domain相对岗位规则：arrival/departure基准、带符号偏移、正持续时长；起降时间独立于保障窗口；显式实际时段优先，不猜缺失基准 |
+| 候选池 | domain.task_pair_conflict新增专岗跨班保障保护，manual_editing/validator共用；保护先于接续许可 |
+| 求解 | 布尔任务分配不变，独立大件块结束即按任务释放；domain筛选合法流动接续，solver软奖励，覆盖和已有高层优先不变 |
+| 人工/后置/恢复 | 独立validator消费同一专岗保护；旧快照缺标记保持旧合同，明确重排采用新保护 |
+| 输出 | 负分钟明确显示前日/前N日；任务为exact，原航班保障窗口不改；无新增前端编辑器 |
+| 存储与迁移 | 日输入、Scenario保护标记、统一岗位配置、JSON与完整Excel携带相对规则/起降基准；旧缺字段保留旧合同和本机规则策略须回归 |
+| 测试 | tests.test_relative_scheduling：前日求解、IO/Excel、切块释放/重叠拒绝、软偏好不造缺岗、专岗后置破坏/候选及旧快照 |
+
+---
+
+# 2026-11-13 手调统计、岗位清空与撤销检查（已验证并本地交付）
+
+本轮无新增或改变硬规则；仅增加岗位清空入口、候选展示及消除撤销校验重复工作。
+
+| 环节 | 消费点或边界 |
+| --- | --- |
+| 输入与人工 | clear-position按cellIds一次事务清空岗位实际任务及待完善文字，普通格全部搭档/分段、共享格所列共享任务；版本检查、undoEdit、lastEdit统一进入原手调流程 |
+| 候选池 | 原manual_editing资格/冲突判断保持；ScheduleEditor仅将available人选优先展示，其他人收起可展开；manualAllowed、同岗重复和版本检查保留 |
+| 求解 | 不适用：本轮不改求解目标、缺人顺序、搭配规则和任何时段 |
+| 校验与恢复 | validate_document调用同一_validate_plan检查当前及撤销，一份上下文、各一次；仍检查所有计划、正式、预览返回引用和两组，损坏撤销拒绝恢复；before可选lastEdit恢复明确空草稿，旧五字段快照保持兼容 |
+| 统计与输出 | domain.member_flight_participation→Workbench.schedule_data.memberFlights→schedule-extras；当前草稿→原统计账本；角色按钮导出前转回文字以保留HTML/PNG岗位名 |
+| 存储与迁移 | 无新增长期设置；草稿/撤销沿原SQLite及完整配置/备份；configuration_transfer保留同日明确空草稿的lastEdit状态，导出源按实际计划；新空输入/旧文件无历史/改日期不推断清空；正式历史不追改、A/B隔离 |
+| 回归 | test_manual_operations换人/交换/清空/撤销/重启/共享轮换/非法请求/损坏撤销/线性检查；真实Chrome两布局/跨页统计/导出；完整前后响应和文档比较、WASM、成品及原入口 |
+
+---
+
+# 2026-11-12 岗位搭配与大件轮换后接岗（已验证并本地交付）
+
+| 环节 | 唯一事实与消费点 |
+| --- | --- |
+| 输入 | domain验证workRules岗位对/作用域/轮次去向；当天taskHandoffs绑定任务身份和时间签名；最新解释为完成大件后接岗 |
+| 候选 | manual_editing继续经task_pair_conflict及独立validator，不因单对许可忽略第三任务；专岗先阻挡 |
+| 求解 | 同一冲突owner约束全部任务对；轮次去向仅软偏好，覆盖与均衡层级保持；大件不能站岗时离开 |
+| 人工/后置 | 原编辑入口消费同一owner，故意破坏分人/同时站大件/未确认衔接必须标红 |
+| 校验 | validator验证设置与确认签名；task_pair_conflict复查分人、接续、专岗、走动和其他任务；确认不改实际时段 |
+| 存储 | state长期、day快照/当天覆盖、Scenario正式快照；旧缺字段保留旧合同，显式重排才应用；完整Excel/备份/A/B迁移 |
+| 输出 | 岗位搭配和轮换去向可见维护；当天确认列出实际轮次/后续岗；原因提示与历史问题保持 |
+| 验证 | 真实solver/反向validator/候选、配置导出空库导入重启实际使用、旧快照/缺字段、Chrome/WASM及原入口 |
+
+晚结束关系只作用于来源航班结束更早、且任务范围重叠的方向；不反向禁用早结束目标。大件完成后设置“必须分人”时，轮换人员与该后续岗位须分人，即使实际时段不重叠；“先后接续”仍须当天确认，且不豁免其他任务。
+
+
+最终后端447项266.096秒、前端70项587.970秒全部通过（顺序运行，含真实静态Chrome/WASM及桌面长流程）；最终EXE真实Chrome2项18.566秒通过。14项专项包含同轮拆片、分人/非传递/专岗、真实三人六岗、候选/后置校验、旧四表/空表/缺表、当天覆盖、非法保存原子性、双组备份恢复和新日清确认。
+
+最终成品build/work-relations-final2-20261112/GateSchedule-WorkRelationsFinal2-20261112已同步原portable/GateSchedule-ExcelConfig-20261029，继续双击“打开登机口排班”。备份backups/20261112-work-relations；安装前后两组资料逐字段一致、数据库/模板/快捷方式哈希保持。原入口Chrome只读复验无API写入，新规则组/载入按钮/旧偏好/历史及1440/390布局通过，截图已审视。地址http://127.0.0.1:8765/?v=ceb40bdb0dda，旧页Ctrl+F5刷新。没有自动载入预置或更改真实搭配，需在规则页核对并保存启用。
+
+当前授权范围全部完成，无待Owner决定。自动测试未替代Owner现场业务采用、界面外观确认和另一台干净Windows验收。Owner已明确要求本轮本地commit，本轮开发及验收文档随本次提交保存；未push/线上发布。前轮b2f535d已完成此前commit请求。证据.tmp/work-relations-{backend-final.log,frontend-final.log,exe-browser.log,acceptance.json,portable.json,installed-browser.json}及备份内installation-check.json。
+
+---
+
+# 2026-11-12 单一专岗开关与早结束航班保障（已验证并本地交付）
+
+Owner确认只保留“同航班专岗专人”：勾选禁止同航班兼任，不勾选在既有资格/时间/跨班接续边界内允许兼任。优先减少所有专岗缺口，然后按航班结束由早到晚补普通岗位，同一结束时间内沿用岗位保岗档位；不能为晚班普通岗位挤掉早班人员。确实不足仍生成带问题草稿，专岗缺口标红。Owner进一步明确晚班普通岗先留空，现场灵活安排，不自动延后上岗或生成部分时段接替。
+
+| 环节 | 唯一owner及消费点 |
+| --- | --- |
+| 输入事实 | domain拥有新维护岗位单开关映射、任务保岗分层；exclusive_same_flight为专岗唯一事实，concurrent仅内部兼容派生，不再独立编辑 |
+| 候选池 | 原资格、出勤、固定、半休、轮换和task_pair_conflict保持；单开关关闭只授同航班普通岗位兼任，不授跨班无限制重叠 |
+| 求解 | solver消费domain分层：全体专岗覆盖→结束时间→同时间原保岗档位→既有人员/均衡偏好；共享任务只计一次，月度基准不得降低相同分层覆盖 |
+| 人工/后置 | 人工可留缺并保留提示，专岗同航班兼任仍被独立校验标红；自动缺口不以配置为由绕过硬规则 |
+| 最终校验 | validator仍以原coverage_shortfall表示缺人，保留旧问题快照一致性；Workbench明确提示专岗未配齐，界面/Excel按已保存任务的专岗标志标红；新优先顺序为优化目标，不把缺人升级为整体无解 |
+| 存储与迁移 | 新维护/重排派生兼任；旧草稿/正式快照原样保存，旧concurrent仅兼容读，缺专岗字段保留本机/空库关闭；统一配置/Excel/完整备份/A/B继续携带专岗字段与历史 |
+| 界面/输出 | 配置和当天只保留专岗勾选；现行/归档/上一班/Excel消费专岗缺口醒目标记，普通缺口保留原提醒；规则说明更新顺序 |
+| 验证 | test_early_flight_coverage：反序输入、晚班专岗优先、早班优先可牺牲晚班覆盖、资格/固定/冲突反向、合法实际时间接续、Excel空库导入重启/归档；前端及真实Chrome/WASM/EXE覆盖单开关、两班专岗与早班普通、普通留缺、专岗标红和迁移；原重叠任务先留空且时段不变 |
+
+---
+
+# 2026-11-12 接机后通用偏好与航班特例（软目标）
+
+Owner补充：历史只记录当时班表，旧航班/旧岗位不约束新日；clear_history保留所有长期设置、规则、航班和岗位配置。旧新航班/岗位并存、实际求解、Excel迁移、清历史前后配置逐字段比较由test_old_flights_and_roles_are_snapshots_and_clear_keeps_current_configuration覆盖。
+
+| 环节 | 唯一owner及消费点 |
+| --- | --- |
+| 输入事实 | domain.validate_handoff_preferences验证flightNo/arrivalRole唯一，启用须有目标，关闭可空；applicable_handoff_preference先具体航班×来源再通用，关闭不回退；已保存作用域在清历史后仍保留，新增/Excel新建仍核对现有航班，完整历史携带的旧作用域可迁移 |
+| 候选池 | 资格/出勤/冲突/专岗/固定等原候选事实保持，偏好不增加候选或任务 |
+| 求解 | preferred_handoff/handoff_rank共同消费适用项；solver原接续目标及优先级保持，不混合通用与特例 |
+| 人工/最终校验 | 手工可合法偏离，validator硬规则独立检查；无新硬约束，反向破坏资质仍拒绝 |
+| 存储/配置 | Workbench统一保存、workspace_document不再合并具体航班；统一列表进入SQLite/浏览器文档/JSON/完整备份/A/B，不增独立配置文件 |
+| Excel/输出 | excel_io原样导出通用或航班号，导入允许实际航班（包括完整历史携带的临时航班）及关闭空项，缺表保留/空表清空；configuration_transfer不丢作用域，历史快照保持 |
+| 界面 | handoff-preferences通用＋少量特例编辑，增删目标/特例、启停、排序/恢复通用；WorkbenchEdits统一保存与离开保护 |
+| 验证 | test_handoff_exceptions先红后绿、次序无关/航班来源隔离/关闭不回退/删除恢复/真实solver及资质反向/Excel空库重启/备份/A/B；真实Chrome与静态运行时实际维护及迁移 |
+
+---
+
+# 2026-11-12 操作继承与单一结果（无新增硬规则）
+
+| 环节 | 唯一owner及消费点 |
+| --- | --- |
+| 当前日期/结果 | workspace_workflow.plan_for_date：new-plan打开已有日期，prepare_replacement供重排/日表更新，archive-next同目标日期复用；当前归档快照独立保留 |
+| 航班/出勤 | new-plan消费fill_day/carry_flights与carry_attendance（未存模板航班用临时目录副本，不改永久模板），day-preparation拥有弹窗副本；继承当前选择、正常新人员默认参加，休假由domain.personnel_status及personnelStates消费；主动周预设才覆盖 |
+| 历史投影 | history_plan_ids复用priority_statistics.formal_history，不重写最新正式判断；前端只展示historyPlanIds，无多方案 |
+| 清空/原子性 | workspace_workflow.clear_history保留selected日资料及当前安排，清归档和旧历史；Workbench统一CAS提交，GroupWorkspaces隔离，界面确认取消不提交 |
+| 求解/人工/校验 | 原domain/solver/validator保持；新结果仍走独立校验，已有带问题标红归档合同保持；失败/停止不采用不写入 |
+| 输出/持久化 | 当天航班/出勤进入既有day，SQLite/浏览器统一文档/完整Excel/备份原字段保存；导入原快照完整保留，空库导入重启后新日沿用；无新偏好字段 |
+| 验证 | test_simple_workflow覆盖同日复用、失败事务、跨月、休假恢复、Excel空库重启、当前已归档/空库清历史、双组及CAS；真实Chrome覆盖取消清空、迁移重启与成功自动关闭 |
+
+---
+
 # 2026-11-12 轻松班次月度均衡（软目标）
 
 | 环节 | 唯一owner及消费点 |
@@ -5,7 +195,7 @@
 | 设置与输入 | domain.default_relaxed_shift_settings/validate_relaxed_shift_settings：两项BalanceEnabled默认true、MaxDifference默认1（0至31整数）；原时段/末班口径保持 |
 | 分类与候选 | domain.relaxed_shift_task_groups为统计与求解提供相同计次任务/阻挡任务；solver资格、出勤、固定、半休、时间冲突保持 |
 | 历史 | relaxed_shift_statistics.relaxed_counts_before：目标同月且严格较早的最新正式；值班快照一致，不取草稿/自己/未来 |
-| 求解 | Workbench._solve所有自动入口传设置/次数/值班；solver先取得正常基准，relaxed_shift_balance保留两项机会数量，优化超目标差距与少次数优先；覆盖/分队长/半休在前，时间不足保留基准 |
+| 求解 | Workbench._solve所有自动入口传设置/次数/值班；solver先取得正常基准，relaxed_shift_balance保留两项机会数量，优化超目标差距与少次数优先；覆盖/分队长/半休在前，时间不足保留基准；原生大模型分阶段的base_objective与加权表达式独立，禁止原地累加污染最后阶段 |
 | 人工与后置 | 人工允许偏好例外；撤销、清空、重新采用后的统计按最终安排重算；均衡不作硬拒绝 |
 | 最终合法性 | validator独立硬规则保持；无新硬规则，反向破坏固定仍拒绝 |
 | 持久化/迁移 | workspace_document默认补齐；Workbench统一保存；configuration_transfer/excel_io保留旧缺字段与明确关闭；SQLite/JSON/完整Excel/A/B/完整备份携带 |
@@ -306,7 +496,7 @@ Owner确认：本航班已有“督导”仍可按分类增加，生成全局唯
 
 回归：test_add_template_roles先失败证明已有分类拒增、分类空名称拒绝及未知分类未校验，后覆盖全局唯一后缀/初始性质与资格/独立人数/停用/已有未加入角色不重授/非法整笔拒绝/Excel→空库→重启→实际兼任排班；Chrome覆盖已有分类连续增加、新行计数/表尾/焦点、原其他航班/历史不写与配置迁移。原程序真实副本鼠标点击和安装后只读复验单列记录于plan。
 
-## 2026-10-31 通用偏好与航班岗位独立成员
+## 2026-10-31 通用偏好与航班岗位独立成员（偏好合并已由2026-11-12合同替代）
 
 domain.general_handoff_preferences拥有旧偏好合并：按来源岗合并启用目标、关闭顺序；全停用保留停用，已显式通用设置保持顺序。validate先检查旧字段合法性，再规范化；preferred_handoff/handoff_rank消费通用*或独立Scenario旧航班偏好，不授资格/豁免冲突。Workbench载入/保存/恢复与Excel导入都规范化，求解只消费现有真实接机/登机任务，缺失目标无奖励；最终validator原硬规则保持。UI规则页/配置页只展示一份，Excel适用范围=通用，旧航班号表兼容合并、缺表保留/空表清空。JSON/SQLite同值，旧草稿/正式历史不写。
 
@@ -475,39 +665,15 @@ Owner确认缺人先出其余安全安排；仅草稿允许coverage_shortfall，
 | 界面与输出 | 侧栏/历史页下载xlsx；导入接受xlsx与旧json，明确整库恢复 |
 | 存储/迁移 | SQLite合同不变，所有配置/草稿/正式/撤销/修正随完整xlsx；保留旧JSON输入兼容 |
 | 验收 | 真xlsx/长文本/Unicode/公式样文本/数字精度与空值类型；损坏/缺行/公式/错误文件/CAS失败不写；空库重启使用、真实副本/最终EXE与浏览器下载恢复 |
+# 云端持久化传播（2026-11-15）
+
+本轮不新增排班硬规则。唯一管理员、完整性及CAS是存储/访问合同，传播如下：
+
+| 合同 | owner与输入 | 候选/求解 | 人工/后置修改 | 最终校验 | 输出/存储 | 回归 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 完整A/B工作区 | GroupWorkspaces根文档，字段见README | 消费原Workbench，无新增判断 | 原命令/预览确认/WorkbenchEdits | browser_runtime.validate_cloud_documents先检查完整性再消费GroupWorkspaces/workspace_document/domain，禁止默认补齐 | 原始根文档显式RPC保存，读取失败不初始化 | test_cloud_documents、cloud.browser及既有导入/恢复 |
+| 单管理员访问 | gate_admin.user_id=auth.uid，Auth登录 | 不适用，不改排班 | 前端隐藏无权限工作区，不能替代数据库 | RLS、撤销直接授权、SECURITY DEFINER内验证管理员 | 仅管理员RPC，anon/其他账号拒绝 | cloud-database.test、真实匿名探针 |
+| 版本原子性 | gate_workspace.revision，expected_revision | 不适用，业务revision独立 | 修改保留会话内；冲突拒绝采用 | PostgreSQL管理员行锁+版本核对，首次创建同锁 | 回执才推进版本，失败/退出迟到不确认 | cloud-workspace、cloud-database、Chrome冲突/重试 |
+| 长期设置迁移 | 原configuration/workRules等各owner | 原求解消费原快照 | 原保存/导入/恢复保持语义 | 既有配置/正式校验 | 整份文档携带、原Excel/完整备份保持 | 原后端523项、浏览器/SQL恢复专项 |
 
 ---
-
-# 2026-11-05 浏览器本地运行与文件迁移
-
-新增运行与保存方式，不新增硬规则或长期业务设置。
-
-| 环节 | 消费点与失败边界 |
-| --- | --- |
-| 事实与候选 | 继续由domain、Workbench、imported_schedule、validator拥有；浏览器仅加载相同Python源码，不在JS复制资格/冲突/统计规则 |
-| 求解/月度轮值 | cp_backend按运行环境选择；browser_cp/browser-cp串行化现有整数模型，十进制字符串保留int64；不支持操作失败，不放宽约束 |
-| 手改/导入/恢复 | browser_runtime复用workspace_api路由、GroupWorkspaces和原输入/历史校验，浏览器只承担传输和文件下载 |
-| 最终采用与保存 | BrowserControl复用RunControl独立校验和停止门禁；候选文档通过IndexedDB严格事务提交后才确认成功；写失败返回错误，下一请求重新读原文档 |
-| A/B与并发 | 原全组文档和版本保护保持；同源Web Lock跨标签串行，旧版本同组竞争拒绝，任务ID与班组绑定 |
-| 导出/换设备 | 统一配置Excel继续拥有两组设置与完整历史；导出→空白浏览器预览→确认→刷新→排班/重点统计/轮值；旧格式策略保持，不增加浏览器独有设置 |
-| 静态交付 | build/browser仅程序，普通子路径/无自定义响应头浏览器实测，不将人员和原SQLite放入网站；原桌面入口独立保留 |
-| 回归与拒绝 | test_browser_runtime复用路由和新旧文档版本拒绝；browser-local.browser.test覆盖无后台、真实求解、停止、损坏、写入失败、竞争、两组同名、航班筛选、真实下载/空存储导入/刷新/再次求解；实际24方案副本全草稿/正式快照保持 |
-
----
-
-# 2026-11-05 重点航班＋岗位范围与配置迁移
-
-本次为软目标范围及统计合同调整，无新增硬排班规则。
-
-| 环节 | 消费点与边界 |
-| --- | --- |
-| 输入事实/默认 | domain.validate_priority_flight_roles验证明确且唯一的航班/岗位组合；Workbench根设置迁移旧字段为新范围空选，旧计划不改写 |
-| 页面升级/旧端保存 | server原入口按页面内容版本打开、不缓存静态与实时数据；workspace_api要求save-rules/update-balance-settings显式声明flight-role-v1，旧页面即使回传新字段也拒绝并提示刷新；Workbench保存须有新范围字段；不改变Excel/备份旧字段兼容或业务硬规则；test_frontend_upgrade及真实旧JS/新EXE隔离Chrome回归 |
-| 唯一计次事实 | domain.member_flight_role_participation按人员/航班ID/岗位去重，member_role_flight_counts消费该事实聚合；分段一次、共享按实际覆盖航班 |
-| 候选池 | 资格、出勤、时段、半休及冲突候选保持；手选重点不扩大资格或强制某人 |
-| 求解 | _priority_costs按选中航班号过滤参与变量，priority_counts_before的航班账本与上一归档组合事实供月度/换人软目标；独立稀缺目标保持原岗位口径 |
-| 人工/后置 | 规则统一保存所有航班勾选，切换航班不丢选择；修正键为月/人/航班/岗，缺航班、非选中组合、0再减均拒绝且不写 |
-| 最终校验/存储 | validator验证新场景组合结构；Workbench完整文档验证新设置及历史快照，原硬规则独立复查/问题封存/身份/CAS不变 |
-| 输出/统计 | priority_statistics按组合列出日期与修正，并拥有所有筛选范围合计；界面只筛列及消费对应合计，不计算领域次数；legacyAdjustments单列待归属 |
-| 导出/恢复 | 配置Excel范围版本＋航班重点岗位表＋修正航班列；旧缺字段保留本机组合/空库空选，缺新附表拒绝；SQLite和完整备份保留新字段及全部原历史 |
-| 验证 | test_priority_flights涵盖双航班同岗隔离、共享分段去重、相反月次数/上班换人、旧库迁移、缺航班修正原子拒绝、缺附表、导出→空库→重启→实际排班；原迁移/统计/人员回归同步；Chrome验证航班切换、范围合计、次数修正、失败/迟到回复及窄屏 |

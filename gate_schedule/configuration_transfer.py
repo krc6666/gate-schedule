@@ -3,7 +3,8 @@ from copy import deepcopy
 from datetime import date
 from uuid import uuid4
 from .domain import format_minutes
-from .excel_io import imported_day_from_dict, validate_complete_configuration, export_complete_configuration
+from .excel_io import validate_complete_configuration, export_complete_configuration
+from .day_document import imported_day_from_dict
 from .io import scenario_from_dict
 from .flight_configuration import remember_day, with_role_membership
 from .excel_io import configuration_day
@@ -57,6 +58,9 @@ def _apply_configuration(state, payload):
     for role in day["roleConfigs"]:
         if "exclusiveSameFlight" not in role and existing_flags.get(role["roleName"], False):
             role["exclusiveSameFlight"] = True
+        existing_role = next((r for r in state['configuration']['roleConfigs'] if r['roleName'] == role['roleName']), {})
+        if 'relativeTiming' not in role and 'relativeTiming' in existing_role:
+            role['relativeTiming'] = deepcopy(existing_role['relativeTiming'])
     # The imported plan and maintained defaults must use the same retained flags.
     data["day"] = deepcopy(day)
     by_name = {p["name"]: p for p in state["people"] if not p.get("deleted", False)}
@@ -89,15 +93,29 @@ def _apply_configuration(state, payload):
         person["eligibleRoleNames"] = [r for r in person["eligibleRoleNames"] if r not in roles] + list(member["eligibleRoleNames"])
     config = state["configuration"]
     incoming_roles = {r["roleName"]: {**r, "workMode": r.get("workMode", "timed"), "concurrent": r.get("concurrent", False)} for r in day["roleConfigs"]}
+    for role in incoming_roles.values():
+        if role.get('relativeTiming') is None:
+            role.pop('relativeTiming', None)
     for role in day["roleNames"]:
         incoming_roles.setdefault(role, {"roleName": role, "requiredCount": None})
     existing = {r["roleName"]: r for r in config["roleConfigs"]}
     existing.update(incoming_roles)
     config["roleConfigs"] = list(existing.values())
     config.update(rotationEnabled=data["rotationEnabled"], rotationMinutes=data["rotationMinutes"], transitionMinutes=day["transitionMinutes"])
-    for key in ("handoffPreferences", "displayPreferences"):
+    for key in ("handoffPreferences", "displayPreferences", "workRules"):
         if key in data:
-            state[key] = deepcopy(data[key])
+            incoming = deepcopy(data[key])
+            if key == 'handoffPreferences':
+                previous={(r['flightNo'],r['arrivalRole']):r for r in state['handoffPreferences']}
+                for row in incoming:
+                    old=previous.get((row['flightNo'],row['arrivalRole']),{})
+                    if 'targetFlightScopes' not in row and 'targetFlightScopes' in old:
+                        row['targetFlightScopes']={r:s for r,s in old['targetFlightScopes'].items() if r in row['boardingRoles']}
+            if key == 'workRules':
+                for field in ('separationGroups','forbiddenHandoffs','baggageWindow'):
+                    if field not in incoming and field in state.get('workRules', {}):
+                        incoming[field] = deepcopy(state['workRules'][field])
+            state[key] = incoming
     if "balanceSettings" in data:
         settings = deepcopy(data["balanceSettings"])
         settings.setdefault('priorityFlightRoles', deepcopy(state['balanceSettings'].get('priorityFlightRoles', [])))
@@ -147,13 +165,26 @@ def _apply_configuration(state, payload):
     with_role_membership(state)
     day = configuration_day(data)
     daily_settings = data.get("dayOverrides", {}).get("settings", {})
+    # Imported history/undo snapshots remain lossless. This maintained input is
+    # the current result for its date; the UI never exposes retained copies as
+    # alternative schedules.
     plan_id = str(uuid4())
-    plan = {"id": plan_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": data["rotationMinutes"], "rotationEnabled": data["rotationEnabled"], "memberIds": {}, "preview": None, "configurationSource": data["source"], "message": "完整Excel配置已载入；已新增当天计划，旧计划和正式结果保留。可直接点自动排班。"}
+    plan = {"id": plan_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": data["rotationMinutes"], "rotationEnabled": data["rotationEnabled"], "memberIds": {}, "preview": None, "configurationSource": data["source"], "message": "完整Excel配置已载入，当天输入已更新，可直接自动排班。归档记录保留。"}
     plan["balanceSettings"] = deepcopy(state["balanceSettings"])
     apply_personnel_policy(plan, state)
     sync_roster(plan, state["people"], refresh=False)
     plan["rotationEnabled"] = daily_settings.get("rotationEnabled", plan["rotationEnabled"])
     plan["rotationMinutes"] = daily_settings.get("rotationMinutes", plan["rotationMinutes"])
+    if 'history' in data:
+        source_state = data['history']['state']
+        source = source_state['plans'].get(source_state.get('selectedPlanId'))
+        if (source and not source['draft'] and source.get('lastEdit')
+                and source['day']['serviceDate'] == day['serviceDate']):
+            # Preserve an explicitly empty current result, without treating a
+            # never-scheduled input as a replacement for its date's formal.
+            # History keeps the original feedback/undo; the maintained input
+            # may have different cells and must not inherit stale task IDs.
+            plan['lastEdit'] = {'taskIds': [], 'cellIds': []}
     state["plans"][plan_id] = plan
     state["selectedPlanId"] = plan_id
     return {"payload": data, **history_summary, "newPeopleCount": new_people, "newQualificationCount": added, "removedQualificationCount": removed, "peopleCount": len(day["roster"]), "flightCount": len(day["flights"]), "serviceDate": day["serviceDate"], "handoffPreferenceCount": len(state["handoffPreferences"])}
@@ -194,6 +225,7 @@ def prepare_export(state, plan_id=None, service_date=None):
     plan_id = plan_id or state['selectedPlanId']
     if plan_id is not None and plan_id not in state['plans']:
         raise WorkspaceError('当天计划不存在，请刷新页面')
+    history['state']['selectedPlanId'] = plan_id
     if plan_id is None:
         day = {'serviceDate': service_date or date.today().isoformat(), 'title': '登机口配置',
             'roleNames': [r['roleName'] for r in state['configuration']['roleConfigs']],
@@ -252,6 +284,9 @@ def prepare_export(state, plan_id=None, service_date=None):
         if next((r.get("exclusiveSameFlight", False) for r in day["roleConfigs"] if r["roleName"] == name), False) and "exclusiveSameFlight" not in role:
             role["exclusiveSameFlight"] = False
     latest_roles = {r["roleName"]: r for r in day["roleConfigs"]}
+    for name, role in saved_roles.items():
+        if 'relativeTiming' in latest_roles[name] and 'relativeTiming' not in role:
+            role['relativeTiming'] = None
     latest_members = {m["memberName"]: set(m["eligibleRoleNames"]) for m in day["memberConfigs"]}
     qualifications = [{"memberName": m["memberName"], "roleName": role, "qualified": role in m["eligibleRoleNames"]}
                       for m in saved_day["memberConfigs"] if m["memberName"] in latest_members for role in plan["day"]["roleNames"]
@@ -260,9 +295,12 @@ def prepare_export(state, plan_id=None, service_date=None):
     base_settings = {k: config[k] for k in daily_settings}
     overrides = {"roleConfigs": [r for name, r in saved_roles.items() if r != latest_roles[name]], "qualifications": qualifications, "settings": daily_settings if daily_settings != base_settings else {}}
     payload = {"history": history, "day": day, "dayOverrides": overrides, "peopleStatus": {p["name"]: p.get("status", "正常") for p in state["people"]}, "peopleRemarks": {p["name"]: p.get("remark", "") for p in state["people"]}, "peopleActive": {p["name"]: p["active"] for p in state["people"]}, "peopleTeamLeaders": {p["name"]: p.get("teamLeader", False) for p in state["people"]}, "teamLeaderSettings": state["teamLeaderSettings"], "halfRestSettings": state["halfRestSettings"], "relaxedShiftSettings": state["relaxedShiftSettings"], "dutyRoster": state["dutyRoster"], "peopleIds": {p["name"]: p["id"] for p in state["people"]}, "balanceSettings": state["balanceSettings"], "handoffPreferences": state["handoffPreferences"], "displayPreferences": state["displayPreferences"], "flightLibrary": state["flightLibrary"], "weeklyFlightPresets": state.get("weeklyFlightPresets", {}), "rotationEnabled": config["rotationEnabled"], "rotationMinutes": config["rotationMinutes"], "source": plan.get("configurationSource", "当前最新长期配置，含当天航班与例外")}
+    from .domain import empty_work_rules
+    payload['workRules'] = deepcopy(state.get('workRules',empty_work_rules()))
     # A complete export explicitly writes disabled switches. Old imported files
     # may omit them, so materialize the domain values only on this export path.
     flags = {r.role_name: r.exclusive_same_flight for r in imported_day_from_dict(payload['day']).role_configs}
     for role in payload['day']['roleConfigs']:
         role['exclusiveSameFlight'] = flags[role['roleName']]
+        role.setdefault('relativeTiming', None)
     return PreparedExport(validate_complete_configuration(payload))

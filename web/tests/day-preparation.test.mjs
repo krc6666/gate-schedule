@@ -47,16 +47,25 @@ test('明确载入配置只更新准备副本；未移除的固定人与当天�
   assert.deepEqual(day,saved);
 });
 
-test('新日默认加两天、用当日星期预设与最新模板；清半休及特殊出勤限制',()=>{
+test('新日默认加两天、跨月保留航班选择；星期预设不自动覆盖；清半休及特殊出勤限制',()=>{
   const {day,state}=fixture();state.weeklyFlightPresets['6']=[state.flightTemplates[1]];
   const p=startPreparation(day,state,'archive');
   assert.equal(p.day.serviceDate,'2026-11-07');
-  assert.deepEqual(p.day.flights.filter(f=>p.selected.has(f.id)).map(f=>f.flightNo),['A100']);
+  assert.deepEqual(p.day.flights.filter(f=>p.selected.has(f.id)).map(f=>f.flightNo),['CX937']);
   assert.deepEqual(p.day.memberAvailability,[{memberName:'甲',participating:true,availableFrom:null,availableUntil:null,halfRest:null}]);
   assert.equal(p.day.cells[0].requiredCountOverride,3);
   state.weeklyFlightPresets['6']=[];
-  assert.equal(startPreparation(day,state,'archive').selected.size,0,'明确空预设仍为空');
+  assert.equal(startPreparation(day,state,'archive').selected.size,1,'预设只有主动应用才改变航班');
   assert.equal(startPreparation({...day,serviceDate:'2026-12-31'},state,'archive').day.serviceDate,'2027-01-02');
+});
+
+test('休假状态保持；主动恢复正常后下次准备默认参加，手工不参加仍沿用',()=>{
+  const {day,state}=fixture();day.memberAvailability[0].participating=false;
+  state.people[0].status='休假';
+  assert.equal(startPreparation(day,state,'archive',{a:'休假'}).day.memberAvailability[0].participating,false);
+  state.people[0].status='正常';
+  assert.equal(startPreparation(day,state,'archive',{a:'休假'}).day.memberAvailability[0].participating,true);
+  assert.equal(startPreparation(day,state,'archive').day.memberAvailability[0].participating,false);
 });
 
 test('确认新日按选择裁剪，清姓名/固定/额外占用/备注，特殊时段与衔接须显式保留',()=>{
@@ -116,7 +125,7 @@ test('新人与停用/非正常人员保留原预选政策，新增岗位尊重�
   state.configuration.roleConfigs.push({roleName:'督导',requiredCount:1});
   const p=startPreparation(day,state,'reschedule');
   assert.equal(p.day.memberAvailability[0].participating,false);
-  assert.equal(p.day.memberAvailability.find(a=>a.memberName==='乙').participating,false);
+  assert.equal(p.day.memberAvailability.find(a=>a.memberName==='乙').participating,true);
   assert.deepEqual(p.day.memberConfigs.find(m=>m.memberName==='乙').eligibleRoleNames,['接机']);
   assert.equal(p.day.cells.find(c=>c.flightId==='f'&&c.roleName==='督导').requiredCountOverride,0);
   state.people[0].active=false;

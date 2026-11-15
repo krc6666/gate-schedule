@@ -29,8 +29,18 @@ export function flightGrid(rows: string, columns: string[], flights: Flight[]): 
   return `<colgroup>${columns.map(()=>`<col style="width:${40/columns.length}%"><col style="width:${60/columns.length}%">`).join("")}</colgroup><thead><tr>${columns.map(c=>`<th scope="col" colspan="2">${flightHeader(c, flights)}</th>`).join("")}</tr><tr>${columns.map(()=>"<th>岗位</th><th>人员</th>").join("")}</tr></thead><tbody>${original.map(row=>`<tr>${[...row.cells].slice(1).map(cell=>{
     const span = cell.colSpan;
     cell.colSpan = span * 2 - 1;
-    return `<th class="flight-role">${row.cells[0]?.innerHTML ?? ""}</th>${cell.outerHTML}`;
+    const actions = cell.querySelector(".schedule-position-actions");
+    actions?.remove();
+    const role = row.cells[0]?.innerHTML ?? "";
+    const label = cell.dataset.positionLabel ?? "";
+    const disabled = actions?.querySelector<HTMLButtonElement>("[data-pick-cell]")?.disabled;
+    return `<th class="flight-role">${actions?.outerHTML ?? ""}${actions ? `<button type="button" class="schedule-position-button" data-pick-cell title="查看当前可用人员" aria-label="查看${html(label)}可用人员" ${disabled ? "disabled" : ""}>${role}</button>` : role}</th>${cell.outerHTML}`;
   }).join("")}</tr>`).join("")}</tbody>`;
+}
+
+/** Actions live beside the role in flight layout and inside the cell in matrix layout. */
+export function scheduleActionCell(element: HTMLElement): HTMLElement | null {
+  return element.closest<HTMLElement>("[data-drop-ids]") ?? element.closest("th.flight-role")?.nextElementSibling as HTMLElement | null;
 }
 
 export function shareSheet(format: "html" | "png", date: string): void {
@@ -40,6 +50,7 @@ export function shareSheet(format: "html" | "png", date: string): void {
   const warningNote = issueTexts.length ? "排班问题（原安排保留）\n" + issueTexts.join("\n") : "";
   const restNote = document.querySelector(".half-rest-summary")?.textContent?.trim() ?? "";
   const table = source.cloneNode(true) as HTMLTableElement;
+  table.querySelectorAll(".schedule-position-button").forEach(b => b.replaceWith(document.createTextNode(b.textContent ?? "")));
   table.querySelectorAll("button").forEach(b=>b.remove());
   table.querySelectorAll("[data-drag-handle]").forEach(b=>b.remove());
   table.querySelectorAll("[contenteditable]").forEach(el=>el.removeAttribute("contenteditable"));

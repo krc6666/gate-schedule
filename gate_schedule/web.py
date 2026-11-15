@@ -14,15 +14,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr
 
 from .domain import Assignment, BaggageRotationSettings, ImportedDay, Scenario, ValidationIssue, imported_required_count, format_minutes
-from .excel_io import (
-    export_imported_day,
-    export_imported_schedule,
-    import_day,
-    imported_day_from_dict,
-    imported_day_to_dict,
-    update_imported_day,
-    validate_imported_day,
-)
+from .excel_io import export_imported_day, export_imported_schedule, import_day, update_imported_day
+from .day_document import imported_day_from_dict, imported_day_to_dict, validate_imported_day
 from .imported_schedule import imported_day_to_scenario
 from .io import scenario_from_dict, scenario_to_dict
 from .projections import baggage_rotation_segments, flight_handoff_suggestions, member_paths, task_matrix

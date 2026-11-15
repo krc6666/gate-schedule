@@ -80,6 +80,7 @@ class ArchiveGuidanceTests(unittest.TestCase):
         self.command('assign',{'assignments':[{'taskId':p['draft'][0]['taskId'],'memberId':person['id']} for person in people[1:]]},pid)
         before=self.workspace.backup();day=deepcopy(p['day']);day['serviceDate']='2026-08-04'
         day['roleConfigs'][0].update(workMode='timed')
+        day['roleConfigs'][0]['requiredCount'] = None
         for c in day['cells']:c.update(workStart=None,workEnd=None)
         state=self.command('archive-next',{'day':day},pid)
         self.assertTrue(state['plans'][pid]['adopted'])

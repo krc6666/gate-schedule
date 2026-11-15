@@ -8,6 +8,10 @@ from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_res
 
 def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    if type(scenario.dedicated_flight_protection) is not bool:
+        issues.append(ValidationIssue('invalid_dedicated_protection', '专岗跨航班保护标记无效'))
+    from .domain import work_rule_issues
+    issues.extend(work_rule_issues(scenario))
     if type(scenario.balance_exempt_half_rest) is not bool or any(m.half_rest not in HALF_REST_MODES for m in scenario.members):
         issues.append(ValidationIssue("invalid_half_rest", "半休模式或航班数豁免设置无效"))
     if any(type(v) is not bool for v in (scenario.team_leader_last, scenario.balance_exempt_team_leaders)) or any(type(m.team_leader) is not bool for m in scenario.members):

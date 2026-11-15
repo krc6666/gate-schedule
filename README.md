@@ -1,94 +1,73 @@
-# 轻松班次按月尽量均衡（2026-11-12）
+# 单管理员 Supabase 云端工作区（2026-11-15）
 
-规则页提前下班、下午无航班分别增加均衡开关和本月次数目标差距，默认开启、差距1（0至31整数）。保存后重排，参考本月此前正式归档，优先给少次数的人；请及时归档，草稿不作历史。关闭仍照常统计，旧正式不自动改写。两项设置随完整配置Excel、JSON及完整备份迁移，A/B独立；旧文件缺新字段保留目标，空库默认开启/1，明确false及0保留。
+沿用现有 Python/Pyodide/WASM 排班逻辑与 GitHub Pages，Supabase 负责登录及完整 A/B 工作区持久化。顶部显式保存、数据库单管理员权限、原子版本检查及退出保护已实现。网页地址：https://krc6666.github.io/gate-schedule/ 。本次云端部署状态以 GitHub Actions 与 plan.md 为准。
 
-先保留正常班表的两类休息机会数量及各档覆盖，再尽量缩小月度超目标差；资格、固定、冲突、保岗、分队长最后使用与半休保持优先，受限或时限不足可能超目标，保留合法基准。不为凑次数减少休息或制造额外岗位空缺。人工例外不被软目标拒绝。
+源工作区后端524项、前端88项、类型检查及本机/云端构建通过；真实Supabase管理员保存与重登恢复、匿名拒绝已验证。模拟PostgreSQL/Chrome覆盖版本冲突、失败重试、权限与离开保护。实际普通账号、双设备故障注入、手机计算及现场业务未验证，不以模拟替代。
 
-源工作区409项后端、64项前端、15项实际成品Chrome及静态浏览器迁移通过；最后UI/Excel说明调整后的成品专项、双组迁移重启实际均衡和原入口资料保留验证通过。公开副本另验针对性回归、构建及真实静态迁移；现场/另一台干净Windows仍未人工验收，不上传业务资料。
----
+源码使用既有独立发布历史，不上传原本地 Git 历史、业务数据库、人员配置、历史班表、备份、截图和成品。环境文件被Git忽略，示例仅含占位符；公开项目配置由Actions变量注入。
 
-# 岗位空缺优先级与上一班班表（2026-11-05）
+云端模式登录后由数据库验证管理员，读取A/B全部资料；只有点击顶部“保存到云端”并收到服务器成功回执才确认上传。普通“保存配置”、手工调整、归档和导出仅修改当前工作区或生成文件，不确认云端保存。回执显示本机收到时刻，5秒后简化为“已保存”，悬停看完整时间；重新登录只显示“已读取”。再次修改显示“有修改未上传”。网络/服务、权限、版本冲突和数据校验失败均弹窗、保留修改并可重试。
 
-规则页新增“岗位空缺优先级”：由你自行勾选优先保岗或缺人时优先留空，不勾为正常，初始全部不勾。只按岗位，所有航班共用，A/B各组独立；保存配置后重新排班生效，完整Excel携带选择。依次补齐优先、正常、先空岗位，再考虑原轮岗等偏好；资格、固定、专岗专人和时间冲突仍须满足。旧文件缺本项保留本机选择，空环境全正常；优先岗仍缺人时明确提示。
+更多操作默认折叠，内含重新读取云端与退出登录。有未上传修改或正在保存才提醒离开；退出可取消，关闭/刷新使用浏览器原生提醒，不在卸载时上传。保存后再修改仍提醒；Excel是否导出不影响云端离开保护。账号会话保存在本次页面内，刷新后重新登录，不伪造上次保存时间。推荐更新的Chrome/Edge；保留原有WASM/SharedArrayBuffer/JSPI要求，手机宽度布局通过不等于已验证每款手机浏览器的计算支持。
 
-排班页上一班对照改为完整班表：航班横向排列，每班“岗位、人员”双列，显示原正式快照及缺口，只读；窄屏在表内左右滑动。编辑草稿和保存后继续统一管理，配置迁移与当天准备各自集中处理，原操作方式与排班规则保持。
+## 数据范围与读写路径
 
-原工作区后端完整405项、随后12项保岗专项及38项迁移相关通过，完整前端64项通过；实际Windows成品14个Chrome业务子测试、双组Excel空库导入/重启/实际保岗和原入口只读复验通过。部分历史测试依赖未公开现场夹具，以上结果不表示空白克隆全量可复现；现场采用、外观确认和另一台Windows仍待人工验收。
----
+云端SQL保存唯一对象：`documents["group-workspaces-v1"]`，即 `GroupWorkspaces.backup()` 的 formatVersion=3 原始根文档，而非界面投影。根含 `revision / activeGroupId / shared / groups.A / groups.B`。云端表自己的 `revision` 与业务文档内部revision独立，前者只由服务器CAS增加。
 
-# 浏览器本机版（2026-11-05）
+| 实际保存字段 | 用途与现有入口 |
+| --- | --- |
+| `shared.flightTemplates / weeklyFlightPresets` | 航班号、保障窗口、每周航班，共享至两组；航班页及既有模板/星期命令 |
+| `groups.*.people` | id、name、eligibleRoleNames、active、teamLeader、status、remark、deleted等原字段；配置页人员/资质命令 |
+| `configuration.roleConfigs / rotationEnabled / rotationMinutes / transitionMinutes` | 岗位、需求、保障性质、专岗、旧相对设置、轮换及走动；配置/规则命令 |
+| `flightLibrary / weeklyFlightPresets / handoffPreferences / workRules` | 各组岗位需求、航班配置、接续与范围、搭配、分人、禁止、大件窗口和轮次；原配置命令 |
+| `balanceSettings` | 航班数差距、重点航班岗位、保岗顺序、priorityAdjustments人工次数修正；规则/统计命令 |
+| `teamLeaderSettings / halfRestSettings / relaxedShiftSettings` | 分队长、半休、末班及月度均衡开关和目标；规则命令 |
+| `dutyRoster` | enabled、anchorDate、资质人员池、overrides；统计页轮值命令 |
+| `displayPreferences` | 持久布局、缩放偏好，继续跟随完整配置和工作区迁移 |
+| `plans` | 每个id的day（航班、岗位、人员/资格/出勤、半休、占用、固定、当天规则/接岗等）、inputRevision、memberIds、人员状态与规则快照、draft、cellDrafts、preview、undoEdit、lastEdit、message及原字段 |
+| `plans.*.adopted` | 正式scenario、assignments、输入/人员/规则快照、归档版本和问题记录；正式历史及月统计事实源，不以当前配置重算替换 |
+| `selectedPlanId / migrationReport / stateVersion / timeVersion / revision` | 当前计划与原迁移证据、版本，保持既有业务合同 |
 
-网页版已上线：https://krc6666.github.io/gate-schedule/ 。源码仓库已按Owner授权公开，GitHub Actions构建与部署成功，真实HTTPS浏览器已通过导入、自动排班、刷新恢复、A/B隔离和导出验证。
+读取：Auth → `gate_read_workspace`（数据库管理员检查）→ 严格完整性检查 → 原 `GroupWorkspaces / Workbench.snapshot` → 六页及统计投影。写入：原表单/自动排班/人工命令 → 原独立校验 → 会话内原始文档 → 顶部保存统一提交待保存编辑 → 验证完整快照 → `gate_save_workspace(expected_revision,new_documents)` → 服务器锁及CAS → 回执确认状态。Python领域校验和正式快照检查不在SQL重写；数据库负责权限、结构、大小与版本，不冒充排班合法性证明。
 
-浏览器版使用原有六个页面、自动排班和独立校验，保留A/B隔离、重点航班岗位统计、月度轮值及Excel导入导出。网页自身即可计算；访问者不用安装Python或Node，也不用开通数据库或付费后台。使用更新后的Chrome或Edge，通过HTTPS网站或本机网址打开，不能双击index.html使用。
+未提交新增人员/当天准备弹窗、未确认导入预览、尚未保存规则/历史编辑、查询筛选和展开状态不直接进云端。顶部保存先调用原 WorkbenchEdits.save，任何校验失败停止上传；尚未确认的弹窗要求先完成或取消。已保存的业务草稿和带问题归档按原标红合同保存，不把草稿自动升级为正式。清空历史/导入/恢复仍走原确认及校验，之后还需显式云保存。
 
-第一次在新设备打开后，点击“导入数据”，选择旧设备导出的完整配置Excel，核对预览后确认。平时点击保存后资料留在当前浏览器；关闭再打开仍保留。换设备前点击“导出配置”，两组设置、草稿、正式历史和次数修正随文件迁移。两台设备不会自动同步；更换浏览器、网站地址或清理网站数据前，也请先导出最新文件。网页首次打开需要加载运行文件，未提供断网启动保证。
+## 首次迁移、恢复与冲突
 
-原快捷方式仍打开既有桌面版，其SQLite资料与浏览器版独立。把桌面版资料带入网页，请先从原程序“导出配置”，再到网页“导入数据”。网站构建包只含程序，不含本机人员、配置、班表、数据库或备份。
+- 云端确认为空（revision=0、documents=null）才提供“迁入此浏览器原有资料”或“新建空白工作区”，均明确确认；原IndexedDB不覆盖、不清理。旧浏览器数据仅在同一网址来源下可见，换预览地址不会自动读到原Pages缓存。
+- 桌面资料：从原程序导出完整配置Excel或完整备份，在云端空白工作区通过既有“导入数据”预览并确认，核对A/B、历史和统计后点击“保存到云端”。不要只导出资质表。原SQLite、Excel、缓存继续保留。
+- 云端已有工作区时只读取它，不合并本地缓存；需要恢复/替换资料时先用原导出保留当前资料，再走原导入/恢复预览确认，最后显式云保存。无自动重置或自动首次上传。
+- 读取错误或缺失/损坏数据会停止，显示错误及重试/退出入口，不以初始数据替代，不开放保存。旧可选业务字段保持已有版本合同；缺必需字段或需要补齐的数据拒绝自动修复，需显式迁移。
+- 两电脑/两页面使用同一服务器版本。保存RPC锁唯一管理员行，首次插入同样受锁保护，旧版本拒绝。冲突后保留当前编辑，可先导出，再通过更多→重新读取云端重新登录；自行核对，系统不合并也不提供强行覆盖。
+- 网络超时可能发生在服务器已提交之后：前端仍显示失败，不猜测成功；若重试报冲突，保留当前资料并重新读取核对。没有自动覆盖补偿。
 
-开发/构建电脑执行：
+## Supabase与本机配置
+
+1. 创建登机口专用Free项目，保持与值机资料隔离。运行完整 `supabase/workspace.sql`（实施时同样直接在聊天提供可复制版本）。SQL可重复执行，不删除既有工作区、不自动登记管理员。
+2. 在Authentication→Users手动创建唯一管理员，自行设置密码并确认邮箱。在SQL Editor执行：
+
+   ```sql
+   insert into public.gate_admin(singleton,user_id)
+   values(true,'替换为管理员Auth User UUID');
+   ```
+
+3. 在Authentication设置关闭“Allow new users to sign up”，保留管理员邮箱密码登录。系统不提供注册页、账号管理、匿名班表、分享或发布功能。其他账号即使登录也无法使用工作区。
+4. 复制 `web/.env.example` 为被Git忽略的 `web/.env.local`，只填写 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY`。支持publishable或旧anon，构建前拒绝Secret/service_role。不得添加私密密钥、数据库密码或用户密码。浏览器持有公开配置正常，数据权限由数据库承担。
 
 ```powershell
+$env:TEMP = Join-Path (Get-Location) '.tmp'
+$env:TMP = $env:TEMP
 npm.cmd ci --prefix web
-npm.cmd run build:browser --prefix web
-npm.cmd run preview:browser --prefix web
+npm.cmd run build:cloud --prefix web
+npm.cmd run preview:cloud --prefix web
 ```
 
-在这台电脑访问 http://127.0.0.1:8787/ 。构建输出为build/browser，整个目录可交给普通静态HTTPS托管。运行文件均随包提供，构建时按scripts/browser-wheels.json校验依赖。`.github/workflows/pages.yml`会构建、跑空白浏览器迁移回归、上传网页成品并部署Pages。既有仓库现已公开，Settings → Pages已选择GitHub Actions；此前私有仓库的套餐限制已通过Owner授权公开解决。发布不包含原本地Git历史或业务资料。
+云端成品在 `build/cloud/`。云端构建缺配置直接失败，浏览器也禁止静默降级；原 `build:browser` 固定为独立本机版本，不受 `.env.local` 的云配置影响。桌面入口不读取Supabase配置，继续独立保存SQLite。
 
-验证命令：`.venv-local/Scripts/python.exe -m unittest tests.test_browser_runtime -v`，以及构建后`npm.cmd run test:browser --prefix web`。测试浏览器默认使用本机Chrome；可用GATE_TEST_BROWSER和GATE_TEST_PYTHON指定程序。真实配置副本迁移可设置GATE_TEST_CONFIGURATION指向本仓.tmp内的Excel，测试不会把该文件放进网页成品。
+## 托管与授权
 
-设置GATE_TEST_URL=https://krc6666.github.io/gate-schedule/可用同一浏览器回归验证线上版本；测试使用独立浏览器资料目录，合成人员和操作保存在测试浏览器，不向GitHub上传业务文件。
+沿用现成免费GitHub Pages `https://krc6666.github.io/gate-schedule/`，无需新域名或付费后端计算。源文件仅程序，运行人员、配置、历史和备份不进静态包。Pages需通过既有coi-serviceworker建立隔离，Supabase跨域请求使用CORS；应用仍要求HTTPS。Free项目可能休眠、受额度或平台政策变化影响，不承诺永久免费或始终在线。
 
----
+授权发布前，在GitHub仓库Actions Variables设置两项同名公开配置；工作流先测本机浏览器，再构建云端成品。缺配置会阻止发布。push仅构建验证，deploy仅允许明确的workflow_dispatch；commit、push、公网部署分别需Owner明确授权，实际执行状态见plan.md。云端数据持久化不等于已有备份策略；继续保留原有完整导出/备份恢复工具，不新增公开链接或发布班表。
 
-# 登机口保障排班
-
-独立运行的本地登机口排班系统，支持岗位资质配置、航班维护、自动排班、手动输入与拖动调整、冲突报警、稀缺岗位轮换、半休、值班备勤及所有岗位次数统计。
-
-## 本地运行
-
-需要 Python 3.12+ 和 Node.js。Windows PowerShell：
-
-```powershell
-python -m venv .venv-local
-.venv-local/Scripts/python.exe -m pip install -r requirements-lock.txt
-.venv-local/Scripts/python.exe -m pip install -e . --no-deps
-npm.cmd ci --prefix web
-npm.cmd run build --prefix web
-.venv-local/Scripts/python.exe -B -m gate_schedule.server
-```
-
-程序数据保存在本机。侧栏“导出配置”生成可维护的 Excel，包含人员、资质、规则以及所有日期的航班、草稿和归档班表；换设备通过“导入数据”预览后确认导入。前部维护表可小范围修改，历史附表和隐藏快照请完整保留。旧 Excel/JSON 备份继续兼容。首次启动请配置人员与航班，templates 提供不含人员的资质空白模板。
-
-## 当前功能
-
-- 配置、航班、排班、规则、统计、历史六个入口。
-- 按岗位维护资质，支持航班独立岗位、接续偏好、重点轮换与航班数平衡。
-- 手工填入资格不符或有时间冲突的人员，姓名保留并报警；允许带问题保存、归档、继续排后天和导出 Excel/HTML/图片，原安排、空缺与问题随历史保存。
-- 下一班尚未选齐人员、航班或暂时排不开时保留待处理草稿，仍可继续下一班。
-- 按有资质人数自动判断稀缺岗位轮换优先级，支持上午/下午半休。
-- 重点岗位按“航班＋岗位”设置，规则页先下拉选择航班，再勾选岗位；统计页参照值机布局，支持月份、航班、岗位筛选与独立次数修正。旧版重点初始空选，由使用者重新选择；旧无航班修正保留待归属。
-- 统计页支持所有岗位次数及月份、岗位、姓名筛选；手动调整保存后同步计数。
-- 规则页可配置末班航班，班表展示下午无航班和提前下班人员并统计次数。
-- 航班数差值超限只保留整体提示，实际本格冲突仍标红。
-- 月度值班、次日两名备勤自动轮换、手动调整及 Excel 维护。
-- SQLite 本地保存、完整备份恢复和 Windows 便携构建。
-
-## 源码与数据范围
-
-本仓库是当前源码的独立快照，不携带原本地 Git 历史。数据库、实际人员配置、历史班表、备份、截图、历史试用配置和便携成品未上传。源码中的小型解析与单元测试示例保留，不代表正式人员资质或现场班表。
-
-部分历史集成测试需要本地保留的历史资料和维护 Excel，仓库未包含这些夹具，因此全量历史回归不能直接在空白克隆中复现。当前源码在原工作区已通过375项后端测试、42项最终程序前端/Chrome测试，以及隔离迁移和便携运行检查。原始现场夹具不在本仓库中，这些全量结果不等于空白克隆全部可复现，也不代替现场或另一台Windows验收。
-
-## 测试与构建
-
-```powershell
-.venv-local/Scripts/python.exe -B -m unittest discover -s tests -p test_warning_archive.py
-npm.cmd run build --prefix web
-powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1
-```
-
-工程规则见 AGENTS.md，产品规则见 spec.md。此源码快照对应本地提交 `31d2398`，已包含截至2026-11-05的功能。远端沿用独立源码历史，不带原本地 Git 历史。
-
-旧页面保存规则时会提示刷新，防止丢失航班重点范围；页面和接口不缓存。原Windows入口可通过scripts/open-workbench.ps1按页面版本打开原便携程序，该脚本要求本机已有对应portable目录；源码克隆仍按上述命令运行。
+验证：`python -B -m unittest discover -s tests -v`、`npm.cmd test --prefix web`、`npm.cmd run build:cloud --prefix web`。新增SQL测试使用PGlite真实PostgreSQL语义模拟Auth角色；新增Chrome测试使用模拟Supabase HTTP端点、真实SDK/Python/WASM工作台，测试成品隔离在build/cloud-mock。上述均须与真实Supabase登录/保存/恢复、真实公网验收分别报告，模拟通过不代表真实服务已验证。

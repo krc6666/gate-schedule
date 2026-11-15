@@ -48,11 +48,12 @@ class PersonnelManagementTests(unittest.TestCase):
         old=deepcopy(state['plans']);person=self.person()
         state=self.command('save-person',{**person,'status':'休假','remark':'年休假'})
         self.assertEqual('休假',self.person()['status']);self.assertEqual(old,state['plans'])
-        state=self.command('solve',{},pid);newid=state['selectedPlanId'];self.assertNotEqual(pid,newid)
+        state=self.command('solve',{},pid);newid=state['selectedPlanId'];self.assertEqual(pid,newid)
+        self.assertEqual(old[pid]['adopted'],state['plans'][pid]['adopted'])
         self.assertTrue(state['plans'][newid]['valid'],state['plans'][newid]['issues'])
         self.assertNotIn(person['id'],{a['memberId'] for a in state['plans'][newid]['draft']})
         state=self.command('adopt',{},newid)
-        self.assertEqual(old[pid],state['plans'][pid])
+        self.assertNotIn(person['id'],{a['memberId'] for a in state['plans'][pid]['adopted']['assignments']})
         self.command('save-person',{'id':person['id'],'name':'甲','status':'正常'})
         self.assertEqual('年休假',self.person()['remark'])
 
@@ -85,7 +86,7 @@ class PersonnelManagementTests(unittest.TestCase):
         self.assertTrue(state['plans'][newid]['valid']);self.assertNotIn(person['id'],{a['memberId'] for a in state['plans'][newid]['draft']})
         restore=Workbench(self.path.with_name('restore.sqlite3'));restore.restore(0,self.workspace.backup())
         self.assertNotIn(person['id'],{p['id'] for p in restore.snapshot()['people']})
-        self.assertEqual(before[pid],restore.snapshot()['plans'][pid])
+        self.assertEqual(before[pid]['adopted'],restore.snapshot()['plans'][pid]['adopted'])
 
     def test_excel_status_remark_empty_device_restart_effect_and_legacy_preserve(self):
         person=self.person();self.command('save-person',{**person,'status':'病假','remark':'复诊'})

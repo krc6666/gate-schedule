@@ -14,7 +14,8 @@ from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_schedule.domain import format_minutes, parse_minutes
-from gate_schedule.excel_io import import_day, imported_day_to_dict
+from gate_schedule.excel_io import import_day
+from gate_schedule.day_document import imported_day_to_dict
 from gate_schedule.historical_qualifications import analyze_history
 from gate_schedule.workbench import Workbench
 
@@ -48,7 +49,7 @@ def main():
         "这是看操作和排班效果的完整试用数据，不能作为2026-08-02现场真实班表。",
         "7个航班及窗口来自原文，TW616为次日；15人和115项资质来自30天历史建议，李扬统一李杨。",
         "试用出勤：15人均在当天10:00至次日02:00可用；不是现场已确认的实际出勤。",
-        "试用时段：接机、入境申报为各航班开始后20分钟；登机各岗为结束前25分钟；督导覆盖航班窗口。",
+        "试用采用航班整体窗口及岗位流程；不设普通岗位持续分钟，重叠航班不能自动借人，缺岗保留并标红。",
         "试用人数：接机1和人证核对/秩序各2人，其他常用岗1人；VIP仅CX937为1人，特服为0。原斜杠在本试用中按同时搭档示例，不作为现场规则确认。",
         "试用大件：所有7航班均有1人需求，窗口合并共享并每60分钟轮换；走动预留为0。",
         "原0910支援只有姓名、无明确占用时段，本试用不安排该额外任务；原备注保留在配置来源信息中。",
@@ -74,15 +75,7 @@ def main():
         cell["fixedMemberNames"] = []
         cell["requiredCountOverride"] = 1 if cell["roleName"] == "登机查验（VIP/F/优先通道）" and cell["flightNo"] == "CX937" else None
         flight = flights[cell["flightId"]]
-        start, end = parse_minutes(flight["windowStart"]), parse_minutes(flight["windowEnd"])
-        if cell["roleName"].startswith("接机") or cell["roleName"] == "入境申报":
-            cell["workStart"], cell["workEnd"] = format_minutes(start), format_minutes(start + 20)
-        elif cell["roleName"].startswith("登机"):
-            cell["workStart"], cell["workEnd"] = format_minutes(end - 25), format_minutes(end)
-        elif cell["roleName"] == "督导":
-            cell["workStart"], cell["workEnd"] = format_minutes(start), format_minutes(end)
-        else:
-            cell["workStart"], cell["workEnd"] = None, None
+        cell["workStart"], cell["workEnd"] = None, None
     temporary_root = Path(__file__).resolve().parents[1] / ".tmp"
     temporary_root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="full-trial-build-", dir=temporary_root) as directory:
@@ -94,7 +87,7 @@ def main():
         plan_id = state["selectedPlanId"]
         state = workspace.execute(state["revision"], "save-input", {"day": day}, plan_id)
         state = workspace.execute(state["revision"], "solve", {}, plan_id)
-        if not state["plans"][plan_id]["valid"]:
+        if any(i['code'] != 'coverage_shortfall' for i in state["plans"][plan_id]["issues"]):
             raise ValueError(state["plans"][plan_id]["issues"])
         backup = workspace.backup()
         # Save the solved example as the starting draft, not a pending preview
@@ -105,12 +98,12 @@ def main():
         backup["state"]["trialInfo"] = {"label": "完整试用配置 · 含演示假设", "source": "2026-08-02真实航班 + 30天历史人员资质建议", "sourceSha256": hashlib.sha256(source).hexdigest(), "assumptions": assumptions, "originalRemarks": original_remarks}
         check = Workbench(Path(directory) / "check.sqlite3")
         checked = check.restore(0, backup)
-        assert checked["plans"][plan_id]["valid"]
+        assert all(i['code'] == 'coverage_shortfall' for i in checked["plans"][plan_id]["issues"])
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as output:
             json.dump(check.backup(), output, ensure_ascii=False, indent=2)
             output.write("\n")
-        print(f"已生成完整配置：15人 / 115项资格 / 7航班 / 70岗位格 / {len(checked['plans'][plan_id]['draft'])}条自动分配，校验通过；仅为试用草稿。")
+        print(f"已生成完整配置：15人 / 115项资格 / 7航班 / 70岗位格 / {len(checked['plans'][plan_id]['draft'])}条自动分配，缺岗保留并标红；仅为试用草稿。")
         print(args.output)
 
 

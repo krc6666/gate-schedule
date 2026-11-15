@@ -21,6 +21,33 @@ from tests.test_balance_workflow import small_configuration
 
 
 class RelaxedShiftTests(unittest.TestCase):
+    def test_large_native_model_finishes_preference_stage_after_rest_balance(self):
+        # Distinct qualification pools and monthly ranks require staged goals.
+        # A mutated base expression used to reintroduce overflowing weights at
+        # the final stage, returning MODEL_INVALID or raising ValueError.
+        flights = tuple(Flight(str(i), f'F{i}', '2026-08-18', 480+i*120, 540+i*120)
+                        for i in range(4))
+        roles = tuple(f'role{i}' for i in range(6))
+        members = tuple(Member(str(i), f'P{i}', frozenset(
+            role for j, role in enumerate(roles) if i < 12-j), 0) for i in range(12))
+        tasks = tuple(Task(f'{f.id}-{role}', f.id, role, f.window_start, f.window_end,
+            1, 'fixed', service_stage='arrival' if role == 'role0' else 'boarding')
+            for f in flights for role in roles)
+        scenario = Scenario('2026-08-18', flights, members, tasks)
+        counts = {(m.id, kind): 2 if m.id == '0' else 0 for m in members
+                  for kind in ('earlyDeparture', 'afternoonRest')}
+        settings = default_relaxed_shift_settings()
+        result = solve(scenario, 20, allow_partial=True,
+            priority_counts={(m.id, role): int(m.id) for m in members for role in roles},
+            relaxed_settings=settings, relaxed_counts=counts)
+        self.assertEqual('OPTIMAL', result.status)
+        self.assertEqual(24, len(result.assignments))
+        self.assertEqual([], validate_schedule(scenario, result.assignments))
+        facts = relaxed_shift_facts(scenario, result.assignments, settings)
+        for kind in ('earlyDeparture', 'afternoonRest'):
+            self.assertTrue(any(f[kind] for f in facts))
+            self.assertFalse(next(f for f in facts if f['memberId'] == '0')[kind])
+
     def test_automatic_rest_opportunities_rotate_across_formal_days(self):
         _, wb = self.workspace()
         config = small_configuration(None)

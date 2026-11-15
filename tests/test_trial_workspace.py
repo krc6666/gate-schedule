@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TrialWorkspaceTests(unittest.TestCase):
     def test_single_file_can_restore_and_resolve_without_other_imports(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp',prefix='trial-flow-') as directory:
             output = Path(directory) / "trial.json"
             source = ROOT / "backups/20261029-full-trial/source.md"
             result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/build-trial-workspace.py"), str(source), "--output", str(output)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
@@ -29,7 +29,8 @@ class TrialWorkspaceTests(unittest.TestCase):
             plan = state["plans"][plan_id]
             self.assertEqual(7, len(plan["day"]["flights"]))
             self.assertEqual(70, len(plan["day"]["cells"]))
-            self.assertTrue(plan["valid"], plan["issues"])
+            self.assertTrue(all(i['code']=='coverage_shortfall' for i in plan['issues']), plan['issues'])
+            self.assertIn('flowPreferences',plan['day'])
             self.assertTrue(plan["draft"])
             self.assertIsNone(plan["adopted"])
             self.assertIn("assumptions", state["trialInfo"])
@@ -43,7 +44,7 @@ class TrialWorkspaceTests(unittest.TestCase):
             self.assertEqual("次日00:10", tw["windowStart"])
             original = plan["draft"]
             state = workspace.execute(state["revision"], "solve", {}, plan_id)
-            self.assertTrue(state["plans"][plan_id]["valid"])
+            self.assertTrue(all(i['code']=='coverage_shortfall' for i in state['plans'][plan_id]['issues']))
             state = workspace.execute(state["revision"], "cancel-preview", {}, plan_id)
             self.assertEqual(original, state["plans"][plan_id]["draft"])
             state = workspace.execute(state["revision"], "adopt", {}, plan_id)

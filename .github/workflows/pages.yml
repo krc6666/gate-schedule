@@ -7,6 +7,7 @@ on:
     paths:
       - 'gate_schedule/**'
       - 'web/**'
+      - 'supabase/**'
       - 'scripts/prepare-browser.py'
       - 'scripts/browser-wheels.json'
       - '.github/workflows/pages.yml'
@@ -34,7 +35,13 @@ jobs:
       - run: python -m pip install -e .
       - run: mkdir -p .tmp
       - run: npm ci --prefix web
-      - run: python -m unittest tests.test_browser_runtime -v
+      - run: python -m unittest tests.test_browser_runtime tests.test_cloud_documents -v
+      - run: node --test web/tests/cloud-*.test.mjs web/tests/cloud.browser.test.mjs
+        env:
+          GATE_TEST_PYTHON: python
+          GATE_TEST_BROWSER: /usr/bin/google-chrome
+          TEMP: ${{ github.workspace }}/.tmp
+          TMP: ${{ github.workspace }}/.tmp
       - run: npm run build:browser --prefix web
       - run: npm run test:browser --prefix web
         env:
@@ -42,11 +49,17 @@ jobs:
           GATE_TEST_BROWSER: /usr/bin/google-chrome
           TEMP: ${{ github.workspace }}/.tmp
           TMP: ${{ github.workspace }}/.tmp
+      - run: npm run build:cloud --prefix web
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: build/browser
+          path: build/cloud
 
   deploy:
+    # A push builds and verifies only. Publishing is a separate, explicit dispatch.
+    if: github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     permissions:

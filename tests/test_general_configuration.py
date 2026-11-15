@@ -27,7 +27,7 @@ class GeneralConfigurationTests(unittest.TestCase):
     def command(self,action,payload):
         return self.wb.execute(self.wb.snapshot()['revision'],action,payload)
 
-    def test_legacy_paths_merge_to_one_shared_unordered_setting_without_changing_plans(self):
+    def test_legacy_paths_keep_flight_scopes_without_changing_plans(self):
         old=self.wb.backup()
         old['state']['handoffPreferences']=[
             {'flightNo':'TW616','arrivalRole':'接机1','boardingRoles':['登机核验'],'enabled':True,'ordered':True},
@@ -35,7 +35,7 @@ class GeneralConfigurationTests(unittest.TestCase):
         ]
         self.wb.restore(old['state']['revision'],old)
         state=Workbench(self.path).snapshot()
-        self.assertEqual([{'flightNo':'*','arrivalRole':'接机1','boardingRoles':['登机核验','登机主验'],'enabled':True,'ordered':False}],state['handoffPreferences'])
+        self.assertEqual(old['state']['handoffPreferences'],state['handoffPreferences'])
         self.assertEqual(old['state']['plans'],self.wb.backup()['state']['plans'])
 
     def test_global_preference_applies_to_new_flight_and_skips_missing_target_legally(self):
@@ -96,7 +96,7 @@ class GeneralConfigurationTests(unittest.TestCase):
             with self.subTest(names=names),self.assertRaises(ValueError):self.command('save-flight-template',dict(f,roleNames=names))
             self.assertEqual(before,self.wb.backup())
 
-    def test_legacy_excel_merges_paths_and_missing_membership_preserves_old_behavior(self):
+    def test_legacy_excel_keeps_paths_and_missing_membership_preserves_old_behavior(self):
         book=load_workbook(BytesIO(self.wb.export_complete_configuration(self.pid)))
         sheet=book['岗位接续偏好'];sheet.delete_rows(1,sheet.max_row)
         sheet.append(['航班号','接机岗位','优先登机岗位','启用','按顺序优先'])
@@ -105,7 +105,7 @@ class GeneralConfigurationTests(unittest.TestCase):
         book['航班模板'].delete_cols(4)
         out=BytesIO();book.save(out);book.close()
         data=import_complete_configuration(out.getvalue())
-        self.assertEqual([{'flightNo':'*','arrivalRole':'接机2','boardingRoles':['登机核验','登机主验'],'enabled':True,'ordered':False}],data['handoffPreferences'])
+        self.assertEqual([{'flightNo':'TW616','arrivalRole':'接机2','boardingRoles':['登机核验'],'enabled':True,'ordered':True}, {'flightNo':'CX937','arrivalRole':'接机2','boardingRoles':['登机主验'],'enabled':True,'ordered':True}],data['handoffPreferences'])
         self.command('import-complete-configuration',data)
         names=[r['roleName'] for r in self.wb.snapshot()['configuration']['roleConfigs']]
         self.assertTrue(all(f['roleNames']==names for f in self.wb.snapshot()['flightLibrary']))

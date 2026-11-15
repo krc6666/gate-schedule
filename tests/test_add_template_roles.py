@@ -120,7 +120,7 @@ class AddTemplateRoleTests(unittest.TestCase):
                                                    "sourceRoleName": "大件行李拦截", "roleName": ""})
         name = "大件行李拦截2"
         self.assertEqual("continuous", self.role(name, state)["workMode"])
-        self.assertFalse(self.role(name, state)["concurrent"])
+        self.assertTrue(self.role(name, state)["concurrent"])
         new_override = next(r for r in self.template(state=state)["roles"] if r["roleName"] == name)
         self.assertEqual(override["requiredCount"], new_override["requiredCount"])
         self.assertIsNone(new_override["workModeOverride"])
@@ -149,7 +149,7 @@ class AddTemplateRoleTests(unittest.TestCase):
         state = self.command("add-template-role", {"flightNo": self.first_no, "roleName": "自定义新增岗位"})
         role = self.role("自定义新增岗位", state)
         self.assertIsNone(role["requiredCount"])
-        self.assertFalse(role["concurrent"])
+        self.assertTrue(role["concurrent"])
         self.assertTrue(all("自定义新增岗位" not in p["eligibleRoleNames"] for p in state["people"]))
         self.assertIn("自定义新增岗位", self.template(state=state)["roleNames"])
         self.assertNotIn("自定义新增岗位", self.template(self.second_no, state)["roleNames"])

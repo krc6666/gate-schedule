@@ -38,6 +38,8 @@ def maintained_configuration():
     day = data['day']
     day['roleNames'].append('秩序维护')
     day['roleConfigs'].append({'roleName': '秩序维护', 'requiredCount': 1, 'workMode': 'boarding', 'concurrent': False})
+    # Competition is now expressed by the single dedicated switch.
+    for role in day['roleConfigs']: role['exclusiveSameFlight'] = True
     day['roster'] = ['甲']
     day['memberConfigs'] = [{'memberName': '甲', 'eligibleRoleNames': list(day['roleNames'])}]
     day['memberAvailability'] = day['memberAvailability'][:1]

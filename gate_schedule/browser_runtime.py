@@ -22,6 +22,34 @@ from .schedule_runs import RunControl
 from .workspace_api import attach_workspace
 
 
+def validate_cloud_documents(documents):
+    """Validate a complete saved root before local optional-field migration.
+
+    Never seed missing cloud data. Existing domain validators still own rules,
+    formal snapshots and the explicit warning-draft contract.
+    """
+    key = GroupWorkspaces.KEY
+    if not isinstance(documents, dict) or set(documents) != {key}:
+        raise ValueError('云端工作区封装不完整；未载入初始数据')
+    root = documents[key]
+    if (not isinstance(root, dict) or not isinstance(root.get('groups'), dict)
+            or not isinstance(root.get('shared'), dict)):
+        raise ValueError('云端工作区缺少班组')
+    required = {'stateVersion', 'timeVersion', 'revision', 'people', 'plans',
+                'selectedPlanId', 'migrationReport', 'configuration', 'flightLibrary',
+                'handoffPreferences', 'displayPreferences', 'balanceSettings',
+                'teamLeaderSettings', 'halfRestSettings', 'relaxedShiftSettings', 'dutyRoster'}
+    for group in ('A', 'B'):
+        state = root['groups'].get(group)
+        if not isinstance(state, dict) or not required <= state.keys():
+            raise ValueError('云端班组资料不完整；未使用默认配置补盖')
+    candidate = deepcopy(root)
+    groups = GroupWorkspaces(Path('/browser-unused'), store=BrowserStore({key: candidate}))
+    groups._validate(candidate)
+    if candidate != root:
+        raise ValueError('云端资料需要显式迁移；未自动补齐或改写')
+
+
 class BrowserStore:
     def __init__(self, documents=None):
         self.documents = deepcopy(documents or {})
@@ -94,6 +122,13 @@ async def _execute(function, *args):
 
 async def request(raw):
     data = json.loads(raw)
+    if data['url'] == '/__cloud_validate__':
+        try:
+            validate_cloud_documents(data.get('documents'))
+            response = _json_response(200, {'valid': True})
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            response = _json_response(422, {'detail': str(error)})
+        return json.dumps({'response': response, 'documents': data.get('documents')}, ensure_ascii=False)
     store = BrowserStore(data.get('documents'))
     groups = GroupWorkspaces(Path('/browser-unused'), store=store)
     app = BrowserRoutes()

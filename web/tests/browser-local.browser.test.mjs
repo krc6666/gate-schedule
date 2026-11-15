@@ -33,10 +33,10 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   let browser,ws;let next=0;const pending=new Map();
   t.after(async()=>{await writeFile(join(repo,".tmp/browser-local-debug.json"),JSON.stringify({requests,errors},null,2));ws?.close();browser?.kill();await new Promise(r=>server.close(r));await rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:300})});
   browser=spawn(process.env.GATE_TEST_BROWSER??"C:/Program Files/Google/Chrome/Application/chrome.exe",
-    ["--headless=new","--no-first-run","--no-default-browser-check","--disable-background-networking","--remote-debugging-port=0","--user-data-dir="+join(directory,"chrome"),base],
+    ["--headless=new","--no-first-run","--no-default-browser-check","--disable-background-networking","--remote-debugging-port=0","--user-data-dir="+join(directory,"chrome"),"about:blank"],
     {windowsHide:true,stdio:"ignore"});
   const port=await until(async()=>{try{return(await readFile(join(directory,"chrome/DevToolsActivePort"),"utf8")).trim().split(/\r?\n/)[0]}catch{return false}},"浏览器端口",15000);
-  const target=await until(async()=>{const list=await(await fetch("http://127.0.0.1:"+port+"/json/list")).json();return list.find(x=>x.type==="page"&&x.url.includes("gate-schedule"))},"页面");
+  const target=await until(async()=>{const list=await(await fetch("http://127.0.0.1:"+port+"/json/list")).json();return list.find(x=>x.type==="page")},"页面");
   ws=new WebSocket(target.webSocketDebuggerUrl);
   await new Promise(r=>ws.addEventListener("open",r,{once:true}));
   ws.addEventListener("message",event=>{const m=JSON.parse(event.data);if(m.method==="Runtime.exceptionThrown")errors.push(m.params);if(process.env.GATE_TEST_URL&&m.method==="Network.requestWillBeSent")requests.push(m.params.request.url);const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}});
@@ -46,6 +46,7 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   await call("Page.enable");
   await call("Network.enable");
   await call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:directory});
+  await call("Page.navigate", {url: base});
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   const ready=async()=>{
@@ -273,6 +274,230 @@ print(json.dumps(d))`],{cwd:repo,encoding:'utf8'}));
   }
   assert.equal(restState.plans[restId].valid,true,JSON.stringify(restState.plans[restId].issues));
   for(const key of ['earlyDepartures','afternoonRest'])assert.deepEqual(restState.relaxedShiftSummary[key].map(p=>p.memberName),['乙']);
+  // The same date/clear workflow must also run entirely inside the browser.
+  const preservedA=await state('A');
+  const carried=await command('B','new-plan',{serviceDate:'2044-04-01'});
+  const carriedPlan=carried.plans[carried.selectedPlanId];
+  assert.deepEqual(carriedPlan.day.flights.map(f=>f.flightNo),['F0','F1']);
+  assert.deepEqual(carriedPlan.day.memberAvailability.map(a=>a.participating),[true,true]);
+  const repeated=await command('B','new-plan',{serviceDate:'2044-04-01'});
+  assert.equal(repeated.selectedPlanId,carried.selectedPlanId);
+  const cleared=await command('B','clear-history');
+  assert.deepEqual(cleared.historyPlanIds,[]);
+  assert.deepEqual(cleared.plans[cleared.selectedPlanId].day,carriedPlan.day);
+  assert.deepEqual(await state('A'),preservedA);
+  await reload();assert.deepEqual((await state('B')).historyPlanIds,[]);
+  // Flight exceptions must survive browser-only transfer and affect the WASM solve.
+  const handoffConfig=JSON.parse(execFileSync(python,['-c',`import json
+from tests.test_handoff_exceptions import configuration
+from tests.test_handoff_preferences import preference
+print(json.dumps(configuration([preference(targets=['登机核验']),preference(flight='TW616',targets=['登机主验']),dict(preference(flight='TW616',source='接机1'),enabled=False,boardingRoles=[])])))`],{cwd:repo,encoding:'utf8'}));
+  let handoffState=await command('B','import-complete-configuration',handoffConfig);
+  await command('B','save-duty-settings',{...handoffState.dutyRoster,enabled:false,overrides:[]});
+  for(const role of handoffState.configuration.roleConfigs)if(!handoffConfig.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  const solveHandoff=async role=>{
+    const s=await state('B'),pid=s.selectedPlanId;
+    const run=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action:'solve',planId:pid})})}).then(r=>r.json())`);
+    const result=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${run.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM航班偏好实际求解');
+    assert.equal(result.status,'completed',JSON.stringify(result));
+    const after=await state('B'),p=after.plans[pid];assert.equal(p.valid,true,JSON.stringify(p.issues));assert.equal(p.draft.length,5);
+    const task=p.schedule.tasks.find(t=>t.roleId===role),member=after.people.find(p=>p.name==='乙');
+    assert.ok(p.draft.some(a=>a.taskId===task.id&&a.memberId===member.id),role+'实际按偏好接续');
+  };
+  await solveHandoff('登机主验');
+  await reload();
+  const handoffA=await state('A');
+  handoffState=await state('B');
+  const handoffFile=await evaluate(`fetch('/api/groups/B/workspace/configuration/export/${handoffState.selectedPlanId}').then(r=>r.arrayBuffer()).then(b=>btoa(String.fromCharCode(...new Uint8Array(b))))`);
+  const emptyHandoff={formatVersion:2,state:{stateVersion:2,timeVersion:2,revision:0,people:[],plans:{},selectedPlanId:null,migrationReport:[]}};
+  assert.equal(await evaluate(`fetch('/api/groups/B/workspace/restore?expectedRevision=${handoffState.revision}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify(emptyHandoff)})}).then(r=>r.status)`),200);
+  const handoffPreview=await evaluate(`fetch('/api/groups/B/workspace/configuration/preview',{method:'POST',body:Uint8Array.from(atob(${JSON.stringify(handoffFile)}),c=>c.charCodeAt(0))}).then(r=>r.json())`);
+  await command('B','import-complete-configuration',handoffPreview.payload);
+  await reload();
+  assert.deepEqual((await state('B')).handoffPreferences,handoffConfig.handoffPreferences);
+  await solveHandoff('登机主验');
+  await command('B','save-handoff-preferences',{preferences:handoffConfig.handoffPreferences.filter(p=>p.flightNo==='*')});
+  await solveHandoff('登机核验');
+  const handoffPreservedA=await state('A');
+  for(const key of ['people','configuration','handoffPreferences','balanceSettings','dutyRoster','relaxedShiftSettings'])assert.deepEqual(handoffPreservedA[key],handoffA[key],'B偏好迁移保留A组'+key);
+  for(const [id,plan] of Object.entries(handoffA.plans))assert.deepEqual(handoffPreservedA.plans[id],plan,'A原计划和归档保持');
+  const coverageFixture=JSON.parse(execFileSync(python,['-c',"import json;from tests.test_early_flight_coverage import coverage_configuration;print(json.dumps(coverage_configuration()))"],{cwd:repo,encoding:'utf8'}));
+  let coverageState=await command('B','import-complete-configuration',coverageFixture);
+  for(const role of coverageState.configuration.roleConfigs)if(!coverageFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  const solveCoverage=async()=>{
+    const s=await state('B'),pid=s.selectedPlanId;
+    const started=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action:'solve',planId:pid})})}).then(r=>r.json())`);
+    const done=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${started.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM专岗与早结束航班优先');
+    assert.equal(done.status,'completed',JSON.stringify(done));
+    const after=await state('B');return after.plans[pid];
+  };
+  let coveragePlan=await solveCoverage();
+  const coverageTasks=coveragePlan.schedule.tasks.filter(t=>coveragePlan.draft.some(a=>a.taskId===t.id));
+  assert.equal(coverageTasks.filter(t=>t.exclusiveSameFlight).length,2);
+  assert.deepEqual(coverageTasks.filter(t=>t.roleId==='普通岗').map(t=>t.flightId),['A']);
+  const shortageDay=structuredClone(coveragePlan.day);shortageDay.roleConfigs.find(r=>r.roleName==='登机主验').requiredCount=2;
+  await command('B','save-input',{day:shortageDay},coveragePlan.id);
+  coveragePlan=await solveCoverage();assert.equal(coveragePlan.draft.length,3);assert.match(coveragePlan.message,/专岗未配齐/);assert.equal(coveragePlan.valid,false);
+  await command('B','adopt',{},coveragePlan.id);
+  await reload();await value('#active-group','B');await click('[data-view="schedule"]');
+  await until(()=>evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-conflict").length>0'),'浏览器专岗缺口标红');
+  await click('[data-view="config"]');assert.equal(await evaluate('document.querySelectorAll("[data-role-concurrent]").length'),0);
+  await click('[data-view="history"]');assert.ok(await evaluate('document.querySelectorAll(".history-matrix .schedule-cell-conflict").length>0'));
+  const relationsFixture=JSON.parse(execFileSync(python,['-c',"import json;from tests.test_work_relations import configuration;print(json.dumps(configuration()))"],{cwd:repo,encoding:'utf8'}));
+  let relationsState=await command('B','import-complete-configuration',relationsFixture);
+  for(const role of relationsState.configuration.roleConfigs)if(!relationsFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  relationsState=await state('B');let relationsPlan=relationsState.plans[relationsState.selectedPlanId];
+  await command('B','save-handoff-preferences',{preferences:[{flightNo:'*',arrivalRole:'大件行李拦截',boardingRoles:['入境申报','登机1','登机2'],enabled:true,ordered:true}]});
+  const checkFlowDraft=plan=>{
+    assert.equal(plan.valid,true,JSON.stringify(plan.issues));
+    assert.equal(plan.draft.length,6);
+    const sourceIds=new Set(plan.schedule.tasks.filter(t=>t.flightId==='A').map(t=>t.id));
+    const otherIds=new Set(plan.schedule.tasks.filter(t=>t.flightId==='B').map(t=>t.id));
+    const sourcePeople=new Set(plan.draft.filter(a=>sourceIds.has(a.taskId)).map(a=>a.memberId));
+    assert.ok(plan.draft.filter(a=>otherIds.has(a.taskId)).every(a=>!sourcePeople.has(a.memberId)),'同班接续补齐，不能借给重叠航班');
+    assert.deepEqual(plan.taskHandoffOptions,[],'流程不要求逐项接岗确认');
+  };
+  relationsPlan=await solveCoverage();checkFlowDraft(relationsPlan);
+  await command('B','adopt',{},relationsPlan.id);
+  const relationsFile=await evaluate(`fetch('/api/groups/B/workspace/configuration/export/${relationsPlan.id}').then(r=>r.arrayBuffer()).then(b=>btoa(String.fromCharCode(...new Uint8Array(b))))`);
+  const relationsPreview=await evaluate(`fetch('/api/groups/B/workspace/configuration/preview',{method:'POST',body:Uint8Array.from(atob(${JSON.stringify(relationsFile)}),c=>c.charCodeAt(0))}).then(r=>r.json())`);
+  assert.ok(relationsPreview.payload,JSON.stringify(relationsPreview));
+  await command('B','import-complete-configuration',relationsPreview.payload);await reload();
+  relationsPlan=await solveCoverage();checkFlowDraft(relationsPlan);
+  await value('#active-group','B');await click('[data-view="rules"]');
+  assert.ok(await evaluate('!!document.querySelector("#work-relation-rules")'));
+  const wasmDraft=structuredClone(relationsPlan.draft);
+  const bagTaskIds=new Set(relationsPlan.schedule.tasks.filter(t=>t.roleId==='大件行李拦截').map(t=>t.id));
+  const bagCells=relationsPlan.day.cells.filter(c=>c.roleName==='大件行李拦截').map(c=>c.id);
+  let clearedWasm=await command('B','clear-position',{cellIds:bagCells},relationsPlan.id);
+  assert.deepEqual(clearedWasm.plans[relationsPlan.id].draft,wasmDraft.filter(a=>!bagTaskIds.has(a.taskId)),'WASM岗位清空仅移除共享轮换实际任务');
+  const flightCounts=clearedWasm.plans[relationsPlan.id].schedule.memberFlights;
+  await reload();
+  clearedWasm=await state('B');assert.deepEqual(clearedWasm.plans[relationsPlan.id].schedule.memberFlights,flightCounts,'WASM清空后统计重载保持');
+  assert.equal(clearedWasm.plans[relationsPlan.id].undoAvailable,true);
+  const undoWasm=await command('B','undo-edit',{},relationsPlan.id);
+  assert.deepEqual(undoWasm.plans[relationsPlan.id].draft,wasmDraft,'WASM撤销恢复全部大件轮换和后续岗位');
+  // Phase-one core rules must run with the same Bool/Int model in WASM.
+  const relativeFixtures=JSON.parse(execFileSync(python,['-c',`import json
+from tests.test_relative_scheduling import relative_day, shared_pool_day
+print(json.dumps([relative_day(),shared_pool_day()]))`],{cwd:repo,encoding:'utf8'}));
+  for(const [index,day] of relativeFixtures.entries()){
+    day.serviceDate='2056-08-0'+(index+2);
+    if(index===1){
+      day.workRules.pairs[0].flightNo='B*';
+      // First-flight baggage can serve its own declaration; it cannot borrow
+      // the overlapping second flight's ordinary positions.
+      for(const cell of day.cells)if(cell.roleName==='入境申报')cell.requiredCountOverride=cell.flightId==='A'?1:0;
+    }
+    let current=await command('B','import-complete-configuration',{day,rotationEnabled:true,rotationMinutes:60});
+    const pid=current.selectedPlanId;
+    const preferences=index===0 ? [] : [{flightNo:'*',arrivalRole:'大件行李拦截',boardingRoles:['入境申报','登机1','登机2'],enabled:true,ordered:true}];
+    current=await command('B','save-handoff-preferences',{preferences});
+    if(index===0){
+      for(const role of current.configuration.roleConfigs)if(!day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+      await reload();await value('#active-group','B');await click('[data-view="rules"]');
+      assert.equal(await evaluate('document.querySelector("#relative-time-rules")'),null);
+      await click('#add-flow-rule');await value('[data-flow-rule="0"] [data-flow-source]','大件行李拦截');
+      await click('[data-flow-rule="0"] [data-flow-add-target]');await value('[data-flow-rule="0"] [data-flow-target]','登机核验');
+      const revision=(await state('B')).revision;await click('#save-rules');
+      await until(async()=>(await state('B')).revision>revision,'WASM保存自由流程');
+      await until(()=>evaluate('!document.querySelector("#save-rules").disabled'),'WASM保存完成');
+      current=await state('B');
+      assert.equal(current.handoffPreferences[0].boardingRoles[0],'登机核验');
+    }
+    const run=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:current.revision,action:'solve',planId:pid})})}).then(r=>r.json())`);
+    const done=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${run.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM相对时间与大件释放');
+    assert.equal(done.status,'completed',JSON.stringify(done));
+    const plan=(await state('B')).plans[pid];
+    assert.equal(plan.valid,true,JSON.stringify(plan.issues));
+    assert.equal(plan.day.dedicatedFlightProtection,true);
+    if(index===0){
+      assert.equal(plan.schedule.tasks[0].start,'前日23:30');
+      assert.equal(plan.schedule.tasks[0].end,'00:20');
+    }else{
+      const blocks=plan.schedule.tasks.filter(t=>t.roleId==='大件行李拦截').sort((a,b)=>a.start.localeCompare(b.start));
+      assert.equal(blocks.length,3);
+      const boarding=plan.schedule.tasks.filter(t=>['登机1','登机2'].includes(t.roleId)).map(t=>t.id);
+      const owners=plan.draft.filter(a=>boarding.includes(a.taskId));
+      assert.equal(new Set(owners.map(a=>a.memberId)).size,2,'B*系列规则在WASM仍要求两登机岗分人');
+      await command('B','edit-slot',{taskId:boarding[1],slot:0,memberId:owners.find(a=>a.taskId===boarding[0]).memberId},pid);
+      assert.ok((await state('B')).plans[pid].issues.some(i=>i.code==='role_separation'),'后置违反分人仍被独立校验识别');
+
+    }
+  }
+  // The new scope is solved by the browser's CP-SAT adapter as well.
+  const flowDay=structuredClone(relativeFixtures[0]);
+  flowDay.serviceDate='2056-08-07';flowDay.roster=['甲','乙'];flowDay.roleNames=['入境申报','登机1','登机2'];
+  flowDay.flights=[{id:'A',flightNo:'CX937',windowStart:'08:00',windowEnd:'11:00'},{id:'B',flightNo:'CX931',windowStart:'09:00',windowEnd:'12:00'}];
+  flowDay.roleConfigs=flowDay.roleNames.map(roleName=>({roleName,requiredCount:0,workMode:roleName==='入境申报'?'arrival':'boarding',concurrent:true}));
+  flowDay.memberConfigs=flowDay.roster.map(memberName=>({memberName,eligibleRoleNames:flowDay.roleNames}));
+  flowDay.memberAvailability=flowDay.roster.map(memberName=>({memberName,participating:true}));
+  const needed=new Set(['A入境申报','A登机1','B登机1']);
+  flowDay.cells=flowDay.flights.flatMap(f=>flowDay.roleNames.map(roleName=>({id:f.id+roleName,flightId:f.id,flightNo:f.flightNo,roleName,rawValue:'',internalNames:[],externalLabels:[],semantics:'empty',requiredCountOverride:needed.has(f.id+roleName)?1:0,fixedMemberNames:f.id==='A'&&roleName==='入境申报'?['甲']:f.id==='A'&&roleName==='登机1'?['乙']:[]})));
+  const flowRules={pairs:[],baggage:[],separationGroups:[{id:'declaration',name:'同班申报登机分人',flightNo:'*',roles:flowDay.roleNames,enabled:true}]};
+  const flowPrefs=[{flightNo:'*',arrivalRole:'入境申报',boardingRoles:['登机1','登机2'],enabled:true,ordered:true,targetFlightScopes:{'登机1':'later-overlap','登机2':'later-overlap'}}];
+  let flowState=await command('B','import-complete-configuration',{day:flowDay,rotationEnabled:true,rotationMinutes:60,workRules:flowRules,handoffPreferences:flowPrefs});
+  const flowPid=flowState.selectedPlanId;
+  for(const role of flowState.configuration.roleConfigs)if(!flowDay.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  flowState=await state('B');
+  const flowRun=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:flowState.revision,action:'solve',planId:flowPid})})}).then(r=>r.json())`);
+  const flowDone=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${flowRun.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM同班分人及晚结束跨班接续');
+  assert.equal(flowDone.status,'completed',JSON.stringify(flowDone));
+  const flowPlan=(await state('B')).plans[flowPid];assert.equal(flowPlan.valid,true,JSON.stringify(flowPlan.issues));
+  const flowOwner=flowPlan.draft.find(a=>a.taskId==='imported-A入境申报').memberId;
+  assert.ok(flowPlan.draft.some(a=>a.taskId==='imported-B登机1'&&a.memberId===flowOwner));
+  await command('B','edit-slot',{taskId:'imported-A登机1',slot:0,memberId:flowOwner},flowPid);
+  assert.ok((await state('B')).plans[flowPid].issues.some(i=>i.code==='role_separation'));
+  await command('B','undo-edit',{},flowPid);await reload();
+  assert.deepEqual((await state('B')).workRules,flowRules);assert.deepEqual((await state('B')).handoffPreferences,flowPrefs);
+  // An explicit cross-flight prohibition must beat the permitted preference
+  // in WASM, and survive export/import, reload and manual reverse validation.
+  const forbiddenRules={...flowRules,forbiddenHandoffs:[{flightNo:'*',sourceRole:'入境申报',targets:[{role:'登机1',flightScope:'later-overlap'}],enabled:true}]};
+  flowState=await state('B');
+  await command('B','save-rules',{configuration:flowState.configuration,balanceSettings:flowState.balanceSettings,preferences:flowPrefs,workRules:forbiddenRules});
+  const forbiddenPlan=await solveCoverage();
+  assert.ok(!forbiddenPlan.draft.some(a=>a.taskId==='imported-B登机1'&&a.memberId===flowOwner),'禁止优先于跨航班接续，宁留缺口');
+  assert.ok(forbiddenPlan.issues.some(i=>i.code==='coverage_shortfall'));
+  await command('B','edit-slot',{taskId:'imported-B登机1',slot:0,memberId:flowOwner},flowPid);
+  assert.ok((await state('B')).plans[flowPid].issues.some(i=>i.code==='forbidden_handoff'),'WASM人工违规标红');
+  await command('B','undo-edit',{},flowPid);
+  const forbiddenFile=await evaluate(`fetch('/api/groups/B/workspace/configuration/export/${flowPid}').then(r=>r.arrayBuffer()).then(b=>btoa(String.fromCharCode(...new Uint8Array(b))))`);
+  const forbiddenPreview=await evaluate(`fetch('/api/groups/B/workspace/configuration/preview',{method:'POST',body:Uint8Array.from(atob(${JSON.stringify(forbiddenFile)}),c=>c.charCodeAt(0))}).then(r=>r.json())`);
+  assert.deepEqual(forbiddenPreview.payload.workRules,forbiddenRules);
+  await command('B','import-complete-configuration',forbiddenPreview.payload);await reload();
+  assert.deepEqual((await state('B')).workRules,forbiddenRules);
+  assert.ok((await solveCoverage()).issues.some(i=>i.code==='coverage_shortfall'));
+  // Indexed baggage rules use physical baggage qualifications in WASM too.
+  const baggageDay=JSON.parse(execFileSync(python,['-c','import json;from tests.test_baggage_flow_roles import turn_day;print(json.dumps(turn_day()))'],{cwd:repo,encoding:'utf8'}));
+  baggageDay.serviceDate='2057-08-12';
+  const baggageRules={...baggageDay.workRules,forbiddenHandoffs:[{flightNo:'*',sourceRole:'大件1',targets:[{role:'登机1',flightScope:'same-flight'}],enabled:true}]};
+  baggageRules.separationGroups.push({id:'second',name:'第二轮与申报分人',flightNo:'*',roles:['大件2','入境申报'],enabled:true});
+  const baggageState=await command('B','import-complete-configuration',{day:baggageDay,workRules:baggageRules,handoffPreferences:baggageDay.flowPreferences,rotationEnabled:false,rotationMinutes:15});
+  for(const role of baggageState.configuration.roleConfigs)if(!baggageDay.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  let baggagePlan=await solveCoverage();assert.equal(baggagePlan.valid,true,JSON.stringify(baggagePlan.issues));
+  const baggageBlocks=baggagePlan.schedule.tasks.filter(t=>t.roleId==='大件行李拦截');assert.equal(baggageBlocks.length,3);
+  assert.equal(baggageBlocks[2].end,'11:45');assert.equal(baggagePlan.baggageCoverage.requiredPeople,3);
+  const baggageOwner=id=>baggagePlan.draft.find(a=>a.taskId===id).memberId;
+  assert.equal(new Set(baggageBlocks.map(t=>baggageOwner(t.id))).size,3);
+  for(const [index,role] of ['入境申报','登机1','登机2'].entries())assert.equal(baggageOwner(baggageBlocks[index].id),baggageOwner(baggagePlan.schedule.tasks.find(t=>t.roleId===role).id));
+  await command('B','edit-slot',{taskId:baggageBlocks[1].id,slot:0,memberId:baggageOwner(baggageBlocks[0].id)},baggagePlan.id);
+  assert.ok((await state('B')).plans[baggagePlan.id].issues.some(i=>i.code==='baggage_rotation_person'));
+  await command('B','undo-edit',{},baggagePlan.id);
+  for(const [minutes,count] of [[120,1],[60,3]]){
+    const current=await state('B');
+    await command('B','save-rules',{configuration:current.configuration,balanceSettings:current.balanceSettings,preferences:current.handoffPreferences,workRules:{...baggageRules,baggageWindow:{...baggageRules.baggageWindow,rotationMinutes:minutes}}});
+    baggagePlan=await solveCoverage();assert.equal(baggagePlan.valid,true,JSON.stringify(baggagePlan.issues));assert.equal(baggagePlan.baggageCoverage.requiredPeople,count);
+  }
+  const baggageFile=await evaluate(`fetch('/api/groups/B/workspace/configuration/export/${baggagePlan.id}').then(r=>r.arrayBuffer()).then(b=>btoa(Array.from(new Uint8Array(b),x=>String.fromCharCode(x)).join('')))`);
+  const baggagePreview=await evaluate(`fetch('/api/groups/B/workspace/configuration/preview',{method:'POST',body:Uint8Array.from(atob(${JSON.stringify(baggageFile)}),c=>c.charCodeAt(0))}).then(r=>r.json())`);
+  assert.deepEqual(baggagePreview.payload.workRules,baggageRules);
+  await command('B','import-complete-configuration',baggagePreview.payload);await reload();
+  assert.deepEqual((await state('B')).workRules,baggageRules);
+  baggagePlan=await solveCoverage();assert.equal(baggagePlan.valid,true,JSON.stringify(baggagePlan.issues));assert.equal(baggagePlan.baggageCoverage.requiredPeople,3);
+  const shortBaggageDay=structuredClone(baggagePlan.day);shortBaggageDay.flights[0].departureTime='10:15';
+  await command('B','save-input',{day:shortBaggageDay},baggagePlan.id);
+  baggagePlan=await solveCoverage();assert.equal(baggagePlan.baggageCoverage.requiredPeople,1);
+  assert.deepEqual(baggagePlan.baggageCoverage.groups[0].turns,[{start:'08:30',end:'09:15',role:'大件1'}]);
   assert.ok(!requests.some(url=>new URL(url,base).pathname.startsWith("/api/")),"不得请求任何Python后台");
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));

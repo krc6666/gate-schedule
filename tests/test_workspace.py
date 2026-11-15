@@ -166,7 +166,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(formal, plan["adopted"])
 
     def test_excel_import_preserves_explicit_qualifications_and_new_roster(self):
-        from gate_schedule.excel_io import export_imported_day, imported_day_from_dict, import_day
+        from gate_schedule.excel_io import export_imported_day, import_day
+        from gate_schedule.day_document import imported_day_from_dict
         plan_id, _ = self.complete_plan()
         day = self.workspace.snapshot()["plans"][plan_id]["day"]
         content = export_imported_day(imported_day_from_dict(day))
@@ -176,7 +177,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(day["memberConfigs"], restored["memberConfigs"])
 
     def test_shared_baggage_matrix_ignores_zero_demand_flight_without_duplicate_occupancy(self):
-        from gate_schedule.excel_io import imported_day_from_dict
+        from gate_schedule.day_document import imported_day_from_dict
         from gate_schedule.imported_schedule import imported_day_to_scenario
         from gate_schedule.projections import task_matrix, member_paths
         from gate_schedule.solver import solve

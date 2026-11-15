@@ -1,5 +1,6 @@
 import { groupFetch, groupUrl } from "./group-api";
 import { html, type State, type Plan, type Candidate, type EditPreview } from "./workbench-model";
+import { scheduleActionCell } from "./schedule-layout";
 
 type Context = { state: State; plan: Plan; disabled: boolean };
 type Hooks = {
@@ -65,7 +66,8 @@ export class ScheduleEditor {
     this.root.querySelectorAll<HTMLElement>("[data-pick-cell],.schedule-name").forEach(el => el.addEventListener("click", event => {
       if (this.hooks.context().disabled || this.root.querySelector(".palette-person.selected")) return;
       event.preventDefault(); event.stopPropagation();
-      const cell = el.closest<HTMLElement>("[data-drop-ids]")!;
+      const cell = scheduleActionCell(el);
+      if (!cell) return;
       const ids: string[] = JSON.parse(el.dataset.taskIds ?? cell.dataset.dropIds!);
       const t: Target = { anchor: el, cellId: cell.dataset.cellId, ids, slot: 0 };
       if (ids.length === 1) {
@@ -117,7 +119,7 @@ export class ScheduleEditor {
         return;
       }
     }
-    this.popup.innerHTML = `<div class="candidate-heading"><strong>${t.input ? "姓名匹配" : "选择人员"}</strong><button type="button" data-close-picker aria-label="关闭选人">×</button></div>${t.input ? "" : '<input class="candidate-search" aria-label="搜索人员" placeholder="输入姓名筛选" autocomplete="off" />'}<div class="candidate-notice" aria-live="polite">正在检查人选…</div><div class="candidate-list" role="listbox" aria-label="匹配人员"></div><div class="candidate-preview" aria-live="polite"></div>${!t.input && t.taskId ? '<button type="button" data-clear-slot>清除此人</button>' : ""}`;
+    this.popup.innerHTML = `<div class="candidate-heading"><strong>${t.input ? "姓名匹配" : "可用人员"}</strong><button type="button" data-close-picker aria-label="关闭选人">×</button></div>${t.input ? "" : '<input class="candidate-search" aria-label="搜索人员" placeholder="输入姓名筛选" autocomplete="off" />'}<div class="candidate-notice" aria-live="polite">正在检查人选…</div><div class="candidate-options"></div><div class="candidate-preview" aria-live="polite"></div>${!t.input && t.taskId ? '<button type="button" data-clear-slot>清除此人</button>' : ""}`;
     this.popup.querySelector<HTMLButtonElement>("[data-close-picker]")!.onclick = () => this.close();
     const search = this.popup.querySelector<HTMLInputElement>(".candidate-search");
     if (search) {
@@ -135,7 +137,7 @@ export class ScheduleEditor {
     const current = () => active() && this.hooks.context().state.revision === expectedRevision && this.hooks.context().plan.id === expectedPlanId;
     const failed = (message: string) => {
       this.options = []; this.optionsPlanId = ""; this.selected = -1;
-      this.popup!.querySelector(".candidate-list")!.innerHTML = "";
+      this.popup!.querySelector(".candidate-options")!.innerHTML = "";
       this.popup!.querySelector(".candidate-preview")!.innerHTML = "";
       this.popup!.querySelector(".candidate-notice")!.textContent = message;
     };
@@ -176,13 +178,19 @@ export class ScheduleEditor {
     const matches = this.options.filter(c => c.name.includes(query.trim()));
     this.selected = -1;
     this.popup.querySelector(".candidate-notice")!.textContent = matches.length ? `${matches.filter(c => c.available).length} 人符合条件 · 有问题也可手工填入并报警` : "没有匹配人员。请核对姓名、当天人员与岗位资料。";
-    this.popup.querySelector(".candidate-list")!.innerHTML = matches.map(c => `<button type="button" role="option" aria-selected="false" data-candidate-id="${html(c.id)}" ${c.available || c.manualAllowed ? "" : 'disabled aria-disabled="true"'}><strong>${html(c.name)}</strong><small class="${!c.available && c.manualAllowed ? 'text-danger' : ''}">${[!c.available && c.manualAllowed ? '填入后报警' : c.label, ...c.reasons].filter(Boolean).map(html).join("；")}</small></button>`).join("");
+    const button = (c: Candidate) => {
+      const reason = [!c.available && c.manualAllowed ? '填入后报警' : c.label, ...c.reasons].filter(Boolean).join("；");
+      return `<button type="button" role="option" aria-selected="false" data-candidate-id="${html(c.id)}" title="${html(reason)}" ${c.available || c.manualAllowed ? "" : 'disabled aria-disabled="true"'}><strong>${html(c.name)}</strong>${c.available ? "" : `<small class="${c.manualAllowed ? 'text-danger' : ''}">${html(reason)}</small>`}</button>`;
+    };
+    const available = matches.filter(c => c.available), other = matches.filter(c => !c.available);
+    const expanded = !!query.trim() || this.popup.querySelector<HTMLDetailsElement>(".candidate-other")?.open;
+    this.popup.querySelector(".candidate-options")!.innerHTML = `<div class="candidate-list" role="listbox" aria-label="可用人员">${available.map(button).join("") || '<span class="candidate-empty">暂无可用人员</span>'}</div>${other.length ? `<details class="candidate-other" ${expanded ? "open" : ""}><summary>其他人员（${other.length}） · 查看原因 / 手工填写</summary><div class="candidate-list" role="listbox" aria-label="其他人员">${other.map(button).join("")}</div></details>` : ""}`;
     this.popup.querySelectorAll<HTMLButtonElement>("[data-candidate-id]:not(:disabled)").forEach(b => b.onclick = () => void this.choose(b.dataset.candidateId!));
     this.position();
   }
   private keyboard(event: KeyboardEvent): boolean {
     if (!this.popup) return false;
-    const buttons = [...this.popup.querySelectorAll<HTMLButtonElement>("[data-candidate-id]:not(:disabled)")];
+    const buttons = [...this.popup.querySelectorAll<HTMLButtonElement>("[data-candidate-id]:not(:disabled)")].filter(b => b.checkVisibility());
     if (["ArrowDown", "ArrowUp"].includes(event.key) && buttons.length) {
       event.preventDefault(); this.selected = this.selected < 0 ? event.key === "ArrowDown" ? 0 : buttons.length - 1 : (this.selected + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
       buttons.forEach((b, i) => b.setAttribute("aria-selected", String(i === this.selected))); buttons[this.selected].scrollIntoView({ block: "nearest" }); return true;

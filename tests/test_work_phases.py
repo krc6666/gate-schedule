@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from gate_schedule.domain import Assignment
-from gate_schedule.excel_io import imported_day_from_dict, imported_day_to_dict, export_complete_configuration, import_complete_configuration
+from gate_schedule.excel_io import export_complete_configuration, import_complete_configuration
+from gate_schedule.day_document import imported_day_from_dict, imported_day_to_dict
 from gate_schedule.imported_schedule import imported_day_to_scenario
 from gate_schedule.io import scenario_from_dict, scenario_to_dict
 from gate_schedule.solver import solve
@@ -90,7 +91,8 @@ class WorkPhaseTests(unittest.TestCase):
         payload = {'day': day, 'rotationEnabled': True, 'rotationMinutes': 60, 'source': '测试'}
         restored = import_complete_configuration(export_complete_configuration(payload))
         restored_day = imported_day_from_dict(restored['day'])
-        self.assertEqual(imported_day_from_dict(day).role_configs, restored_day.role_configs)
+        self.assertEqual(tuple(replace(r, concurrent=not r.exclusive_same_flight)
+                               for r in imported_day_from_dict(day).role_configs), restored_day.role_configs)
         self.assertEqual('task', restored_day.release_policy)
         with self.assertRaises(ValueError):
             bad = deepcopy(day); bad['phaseHandoffs'] = [['A', 'missing']]
@@ -171,7 +173,7 @@ class PhaseWorkbenchTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.workbench.restore(backup['state']['revision'],bad)
         self.assertEqual(backup,self.workbench.backup())
         # Changing the supervisor switch must invalidate the current draft, keeping history.
-        day=state['plans'][pid]['day'];day['roleConfigs'][-1]['concurrent']=False
+        day=state['plans'][pid]['day'];day['roleConfigs'][-1]['exclusiveSameFlight']=True
         self.command('save-input',{'day':day},pid)
         for role, name in [('接机1','甲'),('登机主验','甲'),('登机核验','乙'),('督导','甲')]:
             state=self.command('edit-cell',{'cellId':role,'text':name},pid)
@@ -186,13 +188,13 @@ class PhaseWorkbenchTests(unittest.TestCase):
         self.assertEqual('arrival',next(r['workMode'] for r in state['plans'][pid]['day']['roleConfigs'] if r['roleName']=='接机1'))
         original=deepcopy(state['plans'][pid])
         state=self.command('phase-plan',{},pid)
-        self.assertNotEqual(pid,state['selectedPlanId'])
-        self.assertEqual(original,state['plans'][pid])
+        self.assertEqual(pid,state['selectedPlanId'])
+        self.assertEqual(original['adopted'],state['plans'][pid]['adopted'])
         # Bad switches fail atomically; explicit choices survive restart and new days.
         before=self.workbench.backup()
         with self.assertRaises(ValueError):self.command('save-role',{'roleName':'督导','concurrent':'是'})
         self.assertEqual(before,self.workbench.backup())
-        self.command('save-role',{'roleName':'督导','concurrent':False,'workMode':'continuous'})
+        self.command('save-role',{'roleName':'督导','exclusiveSameFlight':True,'workMode':'continuous'})
         state=self.command('new-plan',{'serviceDate':'2026-08-04'})
         config=next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='督导')
         self.assertFalse(config['concurrent'])

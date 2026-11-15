@@ -202,7 +202,7 @@ class HandoffConfigurationTests(unittest.TestCase):
         member = day['memberConfigs'][0]
         member['eligibleRoleNames'] = [r for r in member['eligibleRoleNames'] if r!='接机1']
         self.wb.execute(self.wb.snapshot()['revision'], 'save-input', {'day':day,'rotationEnabled':False,'rotationMinutes':85}, self.pid)
-        self.command('save-role', {'roleName':'接机1','requiredCount':2,'workMode':'arrival','concurrent':False})
+        self.command('save-role', {'roleName':'接机1','requiredCount':2,'workMode':'arrival','exclusiveSameFlight':True})
         self.command('save-config', {'rotationEnabled':True,'rotationMinutes':95,'transitionMinutes':6})
         data = import_complete_configuration(self.wb.export_complete_configuration(self.pid))
         other = Workbench(Path(self.directory.name) / 'daily-device.sqlite3')

@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gate_schedule.domain import phase_role_config
-from gate_schedule.excel_io import imported_day_from_dict, imported_day_to_dict, export_complete_configuration
+from gate_schedule.excel_io import export_complete_configuration
+from gate_schedule.day_document import imported_day_from_dict, imported_day_to_dict
 
 
 def main():

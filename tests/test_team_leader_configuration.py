@@ -83,7 +83,7 @@ class TeamLeaderConfigurationTests(unittest.TestCase):
                  'preferences':state['handoffPreferences'], 'teamLeaderSettings':{'lastUsed':False,'exemptFlightCount':False}}
         self.command('save-rules', payload)
         state=self.command('solve', {}, pid); new_id=state['selectedPlanId']
-        self.assertNotEqual(pid,new_id)
+        self.assertEqual(pid,new_id)
         self.assertTrue(state['plans'][new_id]['valid'])
         people={p['id']:p['name'] for p in state['people']}
         self.assertEqual({'甲','乙'}, {people[a['memberId']] for a in state['plans'][new_id]['draft']})

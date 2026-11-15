@@ -118,19 +118,19 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   assert.equal(await evaluate('document.querySelector("[data-coverage-role=主验][data-coverage-priority=protect]").checked'),false,'两项互斥');
   await change('[data-coverage-role="主验"][data-coverage-priority="leave-empty"]',false,true);
   assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'取消勾选恢复正常安排');
-  await change('[data-handoff-source=接机1] [data-handoff-target=主验]',true,true);
+  await click('#add-flow-rule');await click('[data-flow-rule="0"] [data-flow-add-target]');
   await click('#export-complete-configuration');
   assert.equal(await evaluate('document.querySelector("#app-dialog").open'),true);
   assert.match(await evaluate('document.querySelector(".save-state").textContent'),/未保存/,
     '只修改接续偏好后打开导出确认，重绘也必须保持未保存提示');
   await click('#leave-stay');
-  assert.equal(await evaluate('document.querySelector("[data-handoff-source=接机1] [data-handoff-target=主验]").checked'),true);
+  assert.equal(await evaluate('!!document.querySelector("[data-flow-target]")'),true);
   await click('[data-view=statistics]');await click('#leave-discard');
   await until(()=>evaluate('!!document.querySelector("#duty-report")'),'放弃后继续切页');
   await click('[data-view=rules]');
   assert.equal(commands.length,0,'放弃临时修改不能写入');
   assert.equal(await evaluate('document.querySelectorAll("#save-rules").length'),1);
-  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),9);
+  assert.equal(await evaluate('document.querySelectorAll(".rule-group").length'),10);
   await evaluate('(()=>{const el=document.querySelector("#rules-search");el.value="稀缺";el.dispatchEvent(new Event("input",{bubbles:true}));})()');
   assert.equal(await evaluate('document.querySelector("#base-rule-settings").hidden'),false);
   assert.equal(await evaluate('document.querySelector("#base-rule-settings").open'),true);
@@ -151,7 +151,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   await change('#priority-enabled' ,true,true);await change('[data-priority-role="核验"]',true,true);await change('#flight-count-gap-enabled',true,true);await change('#flight-count-gap','1');
   await change('#priority-rule-flight','F1');await change('[data-priority-flight="F1"][data-priority-role="主验"]',true,true);
   await change('#priority-rule-flight','F0');assert.equal(await evaluate('document.querySelector("[data-priority-flight=F0][data-priority-role=核验]").checked'),true,'切换航班保留各自勾选');
-  await change('[data-handoff-source=接机1] [data-handoff-target=主验]',true,true);assert.equal(commands.length,0,'接续勾选只改草稿');
+  await click('#add-flow-rule');await click('[data-flow-rule="0"] [data-flow-add-target]');assert.equal(commands.length,0,'接续勾选只改草稿');
   await change('#flight-count-gap','');await click('[data-view=statistics]');assert.equal(await evaluate('document.querySelector("#app-dialog").open'),true);await click('#leave-stay');
   assert.equal(await evaluate('document.querySelector("#flight-count-gap").value'),'','未完成的差距输入切页后仍为空，不能静默变为硬规则0');
   await click('#save-rules');await delay(40);assert.equal(commands.length,0,'空值保存被阻止，不向后端提交规则');assert.equal(state.revision,51);

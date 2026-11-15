@@ -147,16 +147,13 @@ class BalanceWorkflowTests(unittest.TestCase):
                 payload = {"day": deepcopy(state["plans"][plan_id]["day"])} if action == "prepare-solve" else {}
                 current = self.command(action, payload, plan_id)
                 new_id = current["selectedPlanId"]
-                self.assertNotEqual(plan_id, new_id)
+                self.assertEqual(plan_id, new_id)
                 new_plan = current["plans"][new_id]
                 self.assertEqual(0, new_plan["balanceSettings"]["flightCountGap"])
                 self.assertTrue(new_plan["valid"])
                 self.assertEqual([1, 1], sorted(row["count"] for row in new_plan["schedule"]["memberFlights"]))
-                self.assertEqual(plan_id, new_plan["preview"]["returnPlanId"])
-                self.assertEqual(source, self.workbench.backup()["state"]["plans"][plan_id])
-                current = self.command("cancel-preview", {}, new_id)
-                self.assertEqual(plan_id, current["selectedPlanId"])
-                self.assertEqual(source, self.workbench.backup()["state"]["plans"][plan_id])
+                self.assertEqual(source['adopted'], new_plan['adopted'])
+                self.assertIsNone(new_plan['adopted']['scenario']['flightCountGap'])
         self.assertEqual(original["adopted"], Workbench(self.path).snapshot()["plans"][plan_id]["adopted"])
 
     def test_new_formal_snapshot_keeps_own_rule_after_global_switch_and_draft_changes(self):

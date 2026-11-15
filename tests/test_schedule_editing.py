@@ -11,6 +11,20 @@ class ScheduleEditingTests(unittest.TestCase):
     tearDown = fixtures.WorkspaceTests.tearDown
     command = fixtures.WorkspaceTests.command
     complete_plan = fixtures.WorkspaceTests.complete_plan
+    def test_legacy_draft_can_add_ordinary_role_without_task_minutes(self):
+        plan_id, people=self.complete_plan()
+        day=deepcopy(self.workspace.snapshot()['plans'][plan_id]['day'])
+        day.pop('flowPreferences',None)
+        day['roleNames'].append('特服')
+        day['roleConfigs'].append({'roleName':'特服','requiredCount':0})
+        day['cells'].append({**deepcopy(day['cells'][0]),'id':'temp','roleName':'特服','workStart':None,'workEnd':None})
+        self.command('save-input',{'day':day},plan_id)
+        original=self.command('edit-cell',{'cellId':'c1','text':'甲/乙'},plan_id)['plans'][plan_id]['draft']
+        p=self.command('configure-cell',{'cellId':'temp','requiredCount':1,'text':'丙','workModeOverride':None,'workStart':None,'workEnd':None},plan_id)['plans'][plan_id]
+        self.assertEqual(3,len(p['draft']))
+        for a in original:self.assertIn(a,p['draft'])
+        self.assertIn({'taskId':'imported-temp','memberId':people[2]['id']},p['draft'])
+
     def test_typing_and_temporary_role_keep_other_assignments_and_formal(self):
         plan_id, people = self.complete_plan()
         self.command('solve', {}, plan_id)
@@ -76,10 +90,10 @@ class ScheduleEditingTests(unittest.TestCase):
         self.assertEqual('2026-08-04', state['plans'][first_next]['day']['serviceDate'])
         self.assertTrue(state['plans'][first_next]['valid'])
         self.assertIsNone(state['plans'][first_next]['adopted'])
-        first_plan = state['plans'][first_next]
         state = self.command('archive-next', {'day': day}, plan_id)
-        self.assertEqual(first_plan, state['plans'][first_next])
-        self.assertEqual(3, len(state['plans']))
+        self.assertEqual(first_next, state['selectedPlanId'])
+        self.assertTrue(state['plans'][first_next]['valid'])
+        self.assertEqual(2, len(state['plans']))
         restored = Workbench(self.path.parent / 'roundtrip.sqlite3')
         restored.restore(0, self.workspace.backup())
         self.assertEqual(state['plans'], restored.snapshot()['plans'])
@@ -92,6 +106,8 @@ class ScheduleEditingTests(unittest.TestCase):
         plan_id, _ = self.complete_plan()
         day = self.workspace.snapshot()['plans'][plan_id]['day']
         day['cells'][0]['workStart'] = None; day['cells'][0]['workEnd'] = None
+        day['roleConfigs'][0]['requiredCount'] = None
+        day['cells'][0]['requiredCountOverride'] = None
         self.command('save-input', {'day': day}, plan_id)
         self.command('edit-cell', {'cellId': 'c1', 'text': '甲/乙'}, plan_id)
         self.command('save-input', {'day': day}, plan_id)
@@ -119,8 +135,9 @@ class ScheduleEditingTests(unittest.TestCase):
             self.command('prepare-solve', {'day': bad}, plan_id)
         self.assertEqual(before, self.workspace.backup())
         state = self.command('prepare-solve', {'day': day}, plan_id)
-        self.assertNotEqual(plan_id, state['selectedPlanId'])
-        self.assertEqual(source, state['plans'][plan_id])
+        self.assertEqual(plan_id, state['selectedPlanId'])
+        self.assertEqual(source['adopted'], state['plans'][plan_id]['adopted'])
+        self.assertFalse(state['plans'][plan_id]['day']['memberAvailability'][2]['participating'])
         self.assertTrue(state['plans'][state['selectedPlanId']]['valid'])
         with self.assertRaises(WorkspaceError):
             self.workspace.execute(before['state']['revision'], 'clear-draft', {}, plan_id)

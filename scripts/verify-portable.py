@@ -17,7 +17,8 @@ from urllib.request import Request, urlopen
 from openpyxl import load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gate_schedule.excel_io import export_imported_day, imported_day_from_dict, export_qualifications, import_qualifications
+from gate_schedule.excel_io import export_imported_day, export_qualifications, import_qualifications
+from gate_schedule.day_document import imported_day_from_dict
 
 
 def main():
@@ -116,7 +117,8 @@ def main():
             revision = request("/api/workspace")["revision"]
             imported = request(f"/api/workspace/import?serviceDate=2026-08-02&expectedRevision={revision}", content=content)
             imported_id = imported["selectedPlanId"]
-            assert imported_id != plan_id and len(imported["plans"]) == 2
+            assert imported_id == plan_id and len(imported["plans"]) == 1
+            assert imported['plans'][plan_id]['adopted']['assignments'] == assigned
             command("solve", {}, imported_id)
             command("adopt", {}, imported_id)
             assert request(f"/api/workspace/export/{imported_id}").startswith(b"PK")

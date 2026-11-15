@@ -16,6 +16,8 @@ def scenario_from_dict(data: dict) -> Scenario:
             window_end=parse_minutes(item["windowEnd"]),
             location_id=item.get("locationId"),
             category=item.get("category"),
+            arrival_time=parse_minutes(item["arrivalTime"]) if item.get("arrivalTime") is not None else None,
+            departure_time=parse_minutes(item["departureTime"]) if item.get("departureTime") is not None else None,
         )
         for item in data["flights"]
     )
@@ -54,6 +56,9 @@ def scenario_from_dict(data: dict) -> Scenario:
         model_version=data.get("modelVersion", "phase-0"),
         minimum_transition_minutes=data.get("minimumTransitionMinutes", 0),
         release_policy=policy, phase_handoffs=tuple(tuple(pair) for pair in data.get("phaseHandoffs", ())),
+        work_rules=data.get('workRules'), task_handoffs=tuple(data.get('taskHandoffs', ())),
+        dedicated_flight_protection=data.get('dedicatedFlightProtection', False),
+        flow_preferences=tuple(data['flowPreferences']) if 'flowPreferences' in data else None,
         flight_count_gap=balance["flightCountGap"], priority_role_ids=tuple(balance["priorityRoleNames"]),
         team_leader_last=leaders["lastUsed"], balance_exempt_team_leaders=leaders["exemptFlightCount"],
         balance_exempt_half_rest=validate_half_rest_settings(data.get("halfRestSettings", default_half_rest_settings()))["exemptFlightCount"],
@@ -101,6 +106,10 @@ def scenario_from_dict(data: dict) -> Scenario:
 
 def scenario_to_dict(scenario: Scenario) -> dict:
     return {
+        **({'workRules': scenario.work_rules} if scenario.work_rules is not None else {}),
+        **({'taskHandoffs': list(scenario.task_handoffs)} if scenario.task_handoffs else {}),
+        **({'dedicatedFlightProtection': True} if scenario.dedicated_flight_protection else {}),
+        **({'flowPreferences': list(scenario.flow_preferences)} if scenario.flow_preferences is not None else {}),
         **({'priorityFlightRoles': [{'flightNo': f, 'roleName': r} for f, r in scenario.priority_flight_roles]} if scenario.priority_flight_roles else {}),
         **({'coveragePriorities': [{'roleName': r, 'priority': p} for r, p in scenario.coverage_priorities]} if scenario.coverage_priorities else {}),
         "serviceDate": scenario.service_date,
@@ -113,7 +122,9 @@ def scenario_to_dict(scenario: Scenario) -> dict:
         "flights": [
             {"id": item.id, "flightNo": item.flight_no, "serviceDate": item.service_date,
              "windowStart": item.window_start, "windowEnd": item.window_end,
-             "locationId": item.location_id, "category": item.category}
+             "locationId": item.location_id, "category": item.category,
+             **({'arrivalTime': item.arrival_time} if item.arrival_time is not None else {}),
+             **({'departureTime': item.departure_time} if item.departure_time is not None else {})}
             for item in scenario.flights
         ],
         "members": [

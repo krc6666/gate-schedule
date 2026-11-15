@@ -1,4 +1,5 @@
-type Documents = Record<string, unknown>;
+export type Documents = Record<string, unknown>;
+export type BrowserRuntime = {snapshot: () => Promise<Documents>; dispose: () => void};
 type WireResponse = {status: number; headers: Record<string, string>; body: string};
 type Output = {response: WireResponse; documents: Documents};
 type Run = Record<string, unknown> & {id: string; status: string; canKeep: boolean; stop: Int32Array; group: string};
@@ -45,11 +46,18 @@ function response(wire: WireResponse): Response {
 }
 function json(status: number, value: unknown): Response { return Response.json(value, {status}); }
 
-export async function installLocalRuntime(): Promise<void> {
+export async function readLegacyDocuments(): Promise<Documents> {
+  const database = await openStorage();
+  try { return await read(database); } finally { database.close(); }
+}
+
+export async function installLocalRuntime(cloud?: {documents: Documents | null; changed: () => void}): Promise<BrowserRuntime> {
   if (!crossOriginIsolated || typeof SharedArrayBuffer === "undefined") throw new Error("网页正在准备本机运行环境，请稍后刷新；需要通过 HTTPS 或本机网址打开");
   if (typeof (WebAssembly as unknown as {Suspending?: unknown}).Suspending !== "function") throw new Error("请用更新后的 Chrome 或 Edge 打开此网页，再导入配置");
   if (!navigator.locks) throw new Error("当前浏览器不支持安全保存，请使用更新后的 Chrome 或 Edge");
-  const database = await openStorage();
+  const database = cloud ? null : await openStorage();
+  let memory = structuredClone(cloud?.documents ?? {});
+  let alive = true;
   const worker = new Worker(new URL("./browser-worker.ts", import.meta.url), {type: "module"});
   try {
   await new Promise<void>((resolve, reject) => {
@@ -67,21 +75,38 @@ export async function installLocalRuntime(): Promise<void> {
       else request.reject(new Error(message.error));
     };
   });
-  } catch (error) { worker.terminate(); database.close(); throw error; }
+  } catch (error) { worker.terminate(); database?.close(); throw error; }
   worker.onerror = event => {
     for (const request of pending.values()) request.reject(new Error(event.message || "计算中断，当前操作未保存，请刷新重试"));
     pending.clear();
   };
+  const dispatch = async (documents: Documents, url: string, method: string, headers: Record<string, string>, body: string, run?: Run): Promise<Output> => {
+    if (!alive) throw new Error("会话已结束");
+    const id = ++sequence;
+    return await new Promise<Output>((resolve, reject) => {
+      pending.set(id, {resolve, reject, progress: run ? value => Object.assign(run, value) : undefined});
+      worker.postMessage({id, input: JSON.stringify({url, method, headers, body, documents, run: !!run}), stopBuffer: run?.stop.buffer});
+    });
+  };
+  const validate = async (documents: Documents): Promise<void> => {
+    const result = response((await dispatch(documents, "/__cloud_validate__", "POST", {}, "")).response);
+    if (!result.ok) throw new Error("数据校验：" + (await result.json()).detail);
+  };
+  if (cloud?.documents) {
+    try { await validate(memory); } catch (error) { worker.terminate(); throw error; }
+  }
   const transaction = async (url: string, method: string, headers: Record<string, string>, body: string, run?: Run): Promise<Response> =>
     await navigator.locks.request("gate-schedule-browser-workspace-v1", async () => {
-      const documents = await read(database);
-      const id = ++sequence;
-      const output = await new Promise<Output>((resolve, reject) => {
-        pending.set(id, {resolve, reject, progress: run ? value => Object.assign(run, value) : undefined});
-        worker.postMessage({id, input: JSON.stringify({url, method, headers, body, documents, run: !!run}), stopBuffer: run?.stop.buffer});
-      });
+      const documents = database ? await read(database) : structuredClone(memory);
+      const output = await dispatch(documents, url, method, headers, body, run);
       const result = response(output.response);
-      if (result.ok) await save(database, output.documents);
+      if (!alive) throw new Error("会话已结束");
+      if (result.ok) {
+        if (database) await save(database, output.documents);
+        else if (JSON.stringify(memory) !== JSON.stringify(output.documents)) {
+          memory = output.documents; cloud!.changed();
+        }
+      }
       return result;
     });
 
@@ -126,6 +151,20 @@ export async function installLocalRuntime(): Promise<void> {
       }
       return await transaction(url.pathname + url.search, method, headers, body);
     } catch (error) { return json(503, {detail: String(error)}); }
+  };
+  return {
+    snapshot: async () => await navigator.locks.request("gate-schedule-browser-workspace-v1", async () => {
+      const documents = database ? await read(database) : structuredClone(memory);
+      const root = documents["group-workspaces-v1"];
+      const complete = {"group-workspaces-v1": root};
+      await validate(complete);
+      return complete;
+    }),
+    dispose: () => {
+      alive = false; worker.terminate(); database?.close(); window.fetch = networkFetch;
+      for (const request of pending.values()) request.reject(new Error("会话已结束"));
+      pending.clear(); runs.clear(); memory = {};
+    },
   };
 }
 

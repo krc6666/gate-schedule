@@ -119,7 +119,7 @@ def task_matrix(scenario: Scenario, assignments: tuple[Assignment, ...]) -> dict
             columns = [flights[identity] for identity in task.covered_flight_ids]
         for column in columns:
             matrix[task.role_id][column].append(
-                {"task_id": task.id, "start": task.start, "end": task.end, "timing_mode": task.timing_mode, "timing_label": task_timing_label(task), "members": names_by_task[task.id]}
+                {"task_id": task.id, "start": task.start, "end": task.end, "timing_mode": task.timing_mode, "timing_label": task_timing_label(task, scenario), "members": names_by_task[task.id]}
             )
     return {role_id: dict(columns) for role_id, columns in matrix.items()}
 
@@ -133,7 +133,7 @@ def member_paths(scenario: Scenario, assignments: tuple[Assignment, ...]) -> dic
         name = members.get(assignment.member_id)
         if task is not None and name is not None:
             paths[assignment.member_id].append(
-                {"member_name": name, "task_id": task.id, "role_id": task.role_id, "start": task.start, "end": task.end, "timing_mode": task.timing_mode, "timing_label": task_timing_label(task)}
+                {"member_name": name, "task_id": task.id, "role_id": task.role_id, "start": task.start, "end": task.end, "timing_mode": task.timing_mode, "timing_label": task_timing_label(task, scenario)}
             )
     for path in paths.values():
         path.sort(key=lambda item: (item["start"], item["end"]))

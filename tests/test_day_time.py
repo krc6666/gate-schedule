@@ -9,7 +9,8 @@ from io import BytesIO
 from openpyxl import Workbook, load_workbook
 
 from gate_schedule.domain import parse_minutes, format_minutes
-from gate_schedule.excel_io import import_day, export_imported_day, validate_imported_day
+from gate_schedule.excel_io import import_day, export_imported_day
+from gate_schedule.day_document import validate_imported_day
 from gate_schedule.io import scenario_to_dict
 from tests.test_phase_zero import feasible_scenario
 from dataclasses import replace
@@ -33,7 +34,8 @@ class ServiceDayTimeTests(unittest.TestCase):
         for minute, label in ((0, "00:00"), (1385, "23:05"), (1445, "次日00:05"), (2890, "第2日00:10")):
             self.assertEqual(minute, parse_minutes(label))
             self.assertEqual(label, format_minutes(minute))
-        for invalid in ("24:05", "00:65", "-1:00", "第-1日00:00", True, -1):
+        self.assertEqual(-1, parse_minutes(-1))
+        for invalid in ("24:05", "00:65", "-1:00", "第-1日00:00", True):
             with self.subTest(invalid=invalid), self.assertRaises((TypeError, ValueError)):
                 parse_minutes(invalid)
 
