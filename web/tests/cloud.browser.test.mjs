@@ -60,9 +60,11 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   const ready=()=>until(()=>evaluate('!!document.querySelector("[data-view=config]")'),'工作台');
-  const login=async()=>{await until(()=>evaluate('!!document.querySelector("#cloud-login-form")'),'登录');await value('#cloud-email','admin@example.test');await value('#cloud-password','test-only');await click('#cloud-login-form button')};
+  const login=async()=>{await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录');await value('#cloud-email','admin@example.test');await value('#cloud-password','test-only');await click('#cloud-login-form button')};
   // Capture alerts while allowing tests to control application confirms.
-  await until(()=>evaluate('!!document.querySelector("#cloud-login-form")'),'登录表单');
+  // The COI service worker reloads the first non-isolated document. Wait for its
+  // replacement before interacting with the form or installing dialog hooks.
+  await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录表单');
   await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
   await login();await until(()=>evaluate('!!document.querySelector("#cloud-empty")'),'首次选择');await click('#cloud-empty');await ready();
   const addPerson=async name=>{await click('[data-view=config]');await click('#add-person');await value('#person-name',name);await click('#save-person');await until(()=>evaluate('!document.querySelector("#person-form")'),'保存人员')};
