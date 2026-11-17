@@ -34,6 +34,97 @@ def baggage_day(flights=None):
 
 
 class BaggageWindowTests(unittest.TestCase):
+    def test_cx937_ke0166_0830_to_1115_needs_three_distinct_people(self):
+        day = baggage_day()
+        day['workRules']['baggageWindow']['remainderToleranceMinutes'] = 15
+        scenario, issues = imported_day_to_scenario(imported_day_from_dict(day))
+        self.assertEqual([], issues)
+        self.assertEqual(3, len(scenario.rotations))
+        result = solve(scenario)
+        self.assertEqual([], validate_schedule(scenario, result.assignments))
+        baggage_ids = {rotation.task_id for rotation in scenario.rotations}
+        self.assertEqual(3, len({a.member_id for a in result.assignments if a.task_id in baggage_ids}))
+        first, second = scenario.rotations[:2]
+        owner = next(a.member_id for a in result.assignments if a.task_id == first.task_id)
+        broken = tuple(Assignment(a.task_id, owner) if a.task_id == second.task_id else a for a in result.assignments)
+        self.assertIn('baggage_rotation_person', {i.code for i in validate_schedule(scenario, broken)})
+
+    def test_configurable_remainder_threshold_boundaries_and_legacy(self):
+        for departure, tolerance, expected in [
+            ('10:15', 15, [(510,555)]),
+            ('10:45', 15, [(510,585)]),
+            ('10:46', 15, [(510,570),(570,586)]),
+            ('12:15', 15, [(510,570),(570,630),(630,675)]),
+            ('12:45', 15, [(510,570),(570,630),(630,705)]),
+            ('12:45', 0, [(510,570),(570,630),(630,690),(690,705)]),
+            ('12:15', 45, [(510,570),(570,675)]),
+            ('12:15', None, [(510,570),(570,675)]),
+        ]:
+            with self.subTest(departure=departure,tolerance=tolerance):
+                day=baggage_day([dict(id='A',flightNo='CX937',windowStart='10:10',windowEnd='11:30',departureTime=departure)])
+                if tolerance is not None:day['workRules']['baggageWindow']['remainderToleranceMinutes']=tolerance
+                sc,issues=imported_day_to_scenario(imported_day_from_dict(day))
+                self.assertEqual([],issues)
+                self.assertEqual(expected,[(t.start,t.end) for t in sc.tasks])
+
+    def test_invalid_remainder_tolerance_is_rejected(self):
+        for value in [True,-1,1441,1.5,'15',None]:
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                validate_work_rules(dict(pairs=[],baggage=[],baggageWindow={**window_rule(),'remainderToleranceMinutes':value}))
+
+    def test_tolerance_excel_restart_actual_use_legacy_import_and_formal_protection(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()/'.tmp') as folder:
+            source=Workbench(Path(folder)/'source.db');day=baggage_day()
+            state=source.execute(0,'import-complete-configuration',dict(day=day,workRules=day['workRules'],rotationMinutes=60,rotationEnabled=True))
+            for role in state['configuration']['roleConfigs']:
+                if role['roleName']!='大件行李拦截':state=source.execute(state['revision'],'save-role',{**role,'requiredCount':0})
+            pid=state['selectedPlanId'];state=source.execute(state['revision'],'solve',{},pid)
+            state=source.execute(state['revision'],'adopt',{},pid);formal=deepcopy(state['plans'][pid]['adopted'])
+            rules={**state['workRules'],'baggageWindow':{**window_rule(),'remainderToleranceMinutes':15}}
+            state=source.execute(state['revision'],'save-rules',dict(configuration=state['configuration'],balanceSettings=state['balanceSettings'],preferences=state['handoffPreferences'],workRules=rules))
+            # Saving settings alone never changes the original draft or formal.
+            self.assertEqual(2,state['plans'][pid]['baggageCoverage']['requiredPeople'])
+            self.assertEqual(3,state['plans'][pid]['baggageRulePreview']['requiredPeople'])
+            state=source.execute(state['revision'],'solve',{},pid)
+            self.assertEqual(3,state['plans'][pid]['baggageCoverage']['requiredPeople'])
+            self.assertEqual(formal,state['plans'][pid]['adopted'])
+            content=source.export_complete_configuration()
+            book=load_workbook(BytesIO(content));self.assertEqual('尾段宽限分钟',book['大件保障规则']['F1'].value)
+            self.assertEqual(15,book['大件保障规则']['F2'].value);book.close()
+            target=Workbench(Path(folder)/'empty.db');target.execute(0,'import-complete-configuration',import_complete_configuration(content))
+            target=Workbench(Path(folder)/'empty.db');state=target.snapshot();pid=state['selectedPlanId']
+            self.assertEqual(15,state['workRules']['baggageWindow']['remainderToleranceMinutes'])
+            state=target.execute(state['revision'],'solve',{},pid)
+            self.assertEqual(3,state['plans'][pid]['baggageCoverage']['requiredPeople'])
+            # Configuration import selects a fresh maintained-input plan;
+            # the imported formal remains on its original history plan.
+            self.assertIsNone(state['plans'][pid]['adopted'])
+            self.assertIn(formal,[p['adopted'] for p in state['plans'].values()])
+            # A real edit to the visible Excel cell changes subsequent computation.
+            book=load_workbook(BytesIO(content));book['大件保障规则']['F2']=45
+            out=BytesIO();book.save(out);book.close()
+            edited=Workbench(Path(folder)/'edited.db');edited.execute(0,'import-complete-configuration',import_complete_configuration(out.getvalue()))
+            edited=Workbench(Path(folder)/'edited.db');state=edited.snapshot()
+            state=edited.execute(state['revision'],'solve',{},state['selectedPlanId'])
+            self.assertEqual(2,state['plans'][state['selectedPlanId']]['baggageCoverage']['requiredPeople'])
+            # Old five-column Excel preserves an existing tolerance; empty targets keep the old algorithm.
+            book=load_workbook(BytesIO(content));book['大件保障规则'].delete_cols(6)
+            out=BytesIO();book.save(out);book.close();legacy=import_complete_configuration(out.getvalue())
+            self.assertNotIn('remainderToleranceMinutes',legacy['workRules']['baggageWindow'])
+            state=target.snapshot();state=target.execute(state['revision'],'import-complete-configuration',legacy)
+            self.assertEqual(15,state['workRules']['baggageWindow']['remainderToleranceMinutes'])
+            empty=Workbench(Path(folder)/'legacy.db');state=empty.execute(0,'import-complete-configuration',legacy)
+            self.assertNotIn('remainderToleranceMinutes',state['workRules']['baggageWindow'])
+            state=empty.execute(state['revision'],'solve',{},state['selectedPlanId'])
+            self.assertEqual(2,state['plans'][state['selectedPlanId']]['baggageCoverage']['requiredPeople'])
+            before=target.backup()
+            book=load_workbook(BytesIO(content));book['大件保障规则']['F2']=-1
+            out=BytesIO();book.save(out);book.close()
+            with self.assertRaises(ValueError):target.execute(target.snapshot()['revision'],'import-complete-configuration',import_complete_configuration(out.getvalue()))
+            self.assertEqual(before,target.backup())
+            restored=Workbench(Path(folder)/'restored.db');restored.restore(0,before)
+            after=restored.backup();self.assertEqual(after,Workbench(Path(folder)/'restored.db').backup())
+
     def test_enable_on_existing_draft_discards_stale_turns_and_cancel_keeps_valid_references(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()/'.tmp') as folder:
             wb=Workbench(Path(folder)/'source.db');day=baggage_day();day['workRules'].pop('baggageWindow')
@@ -182,12 +273,13 @@ class BaggageWindowTests(unittest.TestCase):
     def test_only_window_rule_propagates_but_old_daily_override_stays_independent(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()/'.tmp') as folder:
             wb=Workbench(Path(folder)/'source.db');day=baggage_day()
+            day['workRules']['baggageWindow']['remainderToleranceMinutes']=15
             state=wb.execute(0,'import-complete-configuration',dict(day=day,workRules=day['workRules'],rotationMinutes=60,rotationEnabled=True))
             pid=state['selectedPlanId'];day=deepcopy(state['plans'][pid]['day'])
             day.pop('workRules',None);day.pop('workRulesOverride',None)
             state=wb.execute(state['revision'],'save-input',dict(day=day),pid)
             state=wb.execute(state['revision'],'solve',{},pid)
-            self.assertEqual(window_rule(),state['plans'][pid]['day']['workRules']['baggageWindow'])
+            self.assertEqual({**window_rule(),'remainderToleranceMinutes':15},state['plans'][pid]['day']['workRules']['baggageWindow'])
             day=deepcopy(state['plans'][pid]['day']);day.update(workRulesOverride=True,workRules=dict(pairs=[],baggage=[]))
             state=wb.execute(state['revision'],'save-input',dict(day=day),pid)
             state=wb.execute(state['revision'],'solve',{},pid)
@@ -196,8 +288,9 @@ class BaggageWindowTests(unittest.TestCase):
             day=deepcopy(state['plans'][pid]['day']);day['workRules']['baggageWindow']={**window_rule(),'rotationMinutes':90}
             state=wb.execute(state['revision'],'save-input',dict(day=day),pid)
             data=wb.export_complete_configuration();payload=import_complete_configuration(data)
-            self.assertEqual(window_rule(),payload['workRules']['baggageWindow'])
+            self.assertEqual({**window_rule(),'remainderToleranceMinutes':15},payload['workRules']['baggageWindow'])
             self.assertEqual(90,payload['day']['workRules']['baggageWindow']['rotationMinutes'])
+            self.assertNotIn('remainderToleranceMinutes',payload['day']['workRules']['baggageWindow'])
             backup=wb.backup();restored=Workbench(Path(folder)/'restored.db');restored.restore(0,backup)
             after_restore=restored.backup()
             restored=Workbench(Path(folder)/'restored.db')

@@ -31,6 +31,7 @@ test("真实后端 Chrome：自由流程排序、系列保存、实际求解和�
   const runtimeErrors = [];
   let interceptedDrag = null;
   let acceptDialogs = true;
+  let promptReply;
   const call = (method, params = {}) => new Promise((resolveCall, reject) => {
     const id = ++nextId;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Chrome 调用超时：${method}`)); }, 15000);
@@ -102,7 +103,7 @@ test("真实后端 Chrome：自由流程排序、系列保存、实际求解和�
   ws.addEventListener("message", event => {
     const m = JSON.parse(event.data);
     if (m.method === 'Input.dragIntercepted') interceptedDrag = m.params.data;
-    if (m.method === "Page.javascriptDialogOpening") void call("Page.handleJavaScriptDialog", { accept: acceptDialogs, ...(m.params.type==='prompt'?{promptText:m.params.defaultPrompt}:{}) });
+    if (m.method === "Page.javascriptDialogOpening") void call("Page.handleJavaScriptDialog", { accept: acceptDialogs, ...(m.params.type==='prompt'?{promptText:promptReply??(m.params.defaultPrompt||'CX*')}:{}) });
     if (m.method === "Runtime.exceptionThrown") runtimeErrors.push(m.params.exceptionDetails);
     const p = pending.get(m.id); if (!p) return;
     pending.delete(m.id); m.error ? p.reject(new Error(JSON.stringify(m.error))) : p.resolveCall(m.result);
@@ -135,17 +136,18 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
   assert.equal(await evaluate('document.querySelector("#relative-time-rules")'),null);
   assert.match(await evaluate('document.querySelector("#handoff-preference-rules > summary").textContent'),/流动岗位管理/);
   await click('#add-flow-exception');
-  await value('[data-flow-rule]:last-child [data-flow-source]','大件行李拦截');
-  await click('[data-flow-rule]:last-child [data-flow-add-target]');
-  await value('[data-flow-rule]:last-child [data-flow-target]','登机核验');
-  assert.deepEqual(await evaluate('[...document.querySelector("[data-flow-rule]:last-child [data-flow-flight-scope]").options].map(o=>o.value)'),['same-flight','later-overlap']);
-  assert.equal(await evaluate('document.querySelector("[data-flow-rule]:last-child [data-flow-flight-scope]").value'),'same-flight');
-  await value('[data-flow-rule]:last-child [data-flow-flight-scope]','later-overlap');
-  await click('[data-flow-rule]:last-child [data-flow-add-target]');
-  await value('[data-flow-rule]:last-child [data-flow-target-row="1"] [data-flow-target]','接机1');
-  await click('[data-flow-rule]:last-child [data-flow-target-row="1"] [data-flow-up]');
-  await value('[data-flow-rule]:last-child [data-flow-scope]','CX*');
-  await value('[data-flow-rule]:last-child [data-flow-enabled]',true,true);
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-source]','大件行李拦截');
+  while(await evaluate('!!document.querySelector("#flow-exceptions [data-flow-rule]:last-of-type [data-flow-remove-target]")'))await click('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-remove-target]');
+  await click('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-add-target]');
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-target]','登机核验');
+  assert.deepEqual(await evaluate('[...document.querySelector("#flow-exceptions [data-flow-rule]:last-of-type [data-flow-flight-scope]").options].map(o=>o.value)'),['same-flight','later-overlap']);
+  assert.equal(await evaluate('document.querySelector("#flow-exceptions [data-flow-rule]:last-of-type [data-flow-flight-scope]").value'),'same-flight');
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-flight-scope]','later-overlap');
+  await click('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-add-target]');
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-target-row="1"] [data-flow-target]','接机1');
+  await click('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-target-row="1"] [data-flow-up]');
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-scope]','CX*');
+  await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-enabled]',true,true);
   await mutate(()=>click('#save-rules'));
   s=await state();
   assert.ok(s.handoffPreferences.some(p=>p.flightNo==='CX*'&&p.arrivalRole==='大件行李拦截'&&p.boardingRoles.join(',')==='接机1,登机核验'));
@@ -314,6 +316,7 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     const base='[data-work-editor="base"]';
     await click(`${base} [data-baggage-window-enabled]`);
     assert.equal(await evaluate(`document.querySelector('${base} [data-baggage-window-field="startBeforeMinutes"]').value`),'180');
+    assert.equal(await evaluate(`document.querySelector('${base} [data-baggage-window-field="remainderToleranceMinutes"]').value`),'15');
     await value(`${base} [data-baggage-window-field="rotationMinutes"]`,'90');
     await value(`${base} [data-baggage-window-field="rotationMinutes"]`,'60');
     for(const [index,target] of ['入境申报','登机1','登机2'].entries()){
@@ -337,7 +340,7 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     await click(`${base} [data-forbidden-rule="0"] [data-forbidden-add-target]`);
     await value(`${base} [data-forbidden-rule="0"] [data-forbidden-target]`,'登机1');
     await mutate(()=>click('#save-rules'));
-    source=await state();assert.deepEqual(source.workRules.baggageWindow,{startBeforeMinutes:180,endBeforeMinutes:60,rotationMinutes:60});
+    source=await state();assert.deepEqual(source.workRules.baggageWindow,{startBeforeMinutes:180,endBeforeMinutes:60,rotationMinutes:60,remainderToleranceMinutes:15});
     assert.match(await evaluate(`document.querySelector('${base} .baggage-window-preview').textContent`),/3 名不同人员/);
     assert.match(await evaluate(`document.querySelector('${base} .baggage-window-preview').textContent`),/大件3/);
     await click('[data-view="schedule"]');await rerun();
@@ -352,7 +355,7 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     await command('undo-edit',{},plan.id);
     await reloadPage();
     // Recalculate a populated draft with fewer turns, then restore the rule.
-    for(const [minutes,count] of [[120,1],[60,3]]){
+    for(const [minutes,count] of [[120,2],[60,3]]){
       await click('[data-view="rules"]');await value(`${base} [data-baggage-window-field="rotationMinutes"]`,String(minutes));
       await mutate(()=>click('#save-rules'));await click('[data-view="schedule"]');await rerun();
       const updated=await current();assert.equal(updated.valid,true,JSON.stringify(updated.issues));
@@ -362,6 +365,12 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     assert.deepEqual((await state()).workRules,source.workRules);
     assert.equal((await current()).baggageCoverage.requiredPeople,3);
     await click('[data-view="rules"]');await evaluate('document.querySelector("#handoff-preference-rules").open=true;document.querySelector("#work-relation-rules").open=true');
+    await value(`${base} [data-baggage-window-field="remainderToleranceMinutes"]`,'0');
+    await mutate(()=>click('#save-rules'));
+    assert.match(await evaluate(`document.querySelector('${base} .baggage-window-preview').textContent`),/4 名不同人员/);
+    await value(`${base} [data-baggage-window-field="remainderToleranceMinutes"]`,'15');
+    await mutate(()=>click('#save-rules'));
+    assert.match(await evaluate(`document.querySelector('${base} .baggage-window-preview').textContent`),/3 名不同人员/);
     for(const width of [1440,390]){
       await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
       await evaluate(`document.querySelector('${base} .baggage-window').scrollIntoView({block:'center'})`);
@@ -369,6 +378,76 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
       assert.ok(await evaluate(`[...document.querySelectorAll('${base} .baggage-window input')].every(el=>{const r=el.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth+1})`));
       await writeFile(join(temporaryRoot,`baggage-window-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
     }
+  });
+  await t.test('通用接续与手动特例：未配置航班继承、覆盖删除、原历史与迁移、四色宽窄屏',async()=>{
+    const day=structuredClone(fixture);day.serviceDate='2057-08-18';
+    day.roleNames=['接机1','接机2','登机主验','登机核验','登机人证核对/队伍秩序维护'];
+    day.flights=[{id:'F',flightNo:'CX937',windowStart:'10:00',windowEnd:'11:20'}];
+    day.roleConfigs=day.roleNames.map(roleName=>({roleName,requiredCount:1,workMode:roleName.startsWith('接机')?'arrival':'boarding',concurrent:false}));
+    day.roster=['甲','乙','丙'];day.memberConfigs=day.roster.map(memberName=>({memberName,eligibleRoleNames:day.roleNames}));
+    day.memberAvailability=day.roster.map(memberName=>({memberName,participating:true}));
+    day.cells=day.roleNames.map((roleName,i)=>({id:'flow'+i,flightId:'F',flightNo:'CX937',roleName,rawValue:'',internalNames:[],externalLabels:[],semantics:'empty',fixedMemberNames:i<2?[day.roster[i]]:[]}));
+    const shared={flightNo:'*',arrivalRole:'接机2',boardingRoles:['登机核验','登机主验'],enabled:true,ordered:true,targetFlightScopes:{'登机核验':'same-flight','登机主验':'same-flight'}};
+    const empty={pairs:[],baggage:[],baggageWindow:null,separationGroups:[],forbiddenHandoffs:[]};
+    // These explicit fixture requirements make the preferred target observable:
+    // without them a concurrent worker may legally serve both boarding roles.
+    empty.separationGroups.push({id:'boarding',name:'登机岗位分人',flightNo:'*',roles:day.roleNames.slice(2),enabled:true});
+    let source=await command('import-complete-configuration',{day,workRules:empty,handoffPreferences:[shared],rotationEnabled:false,rotationMinutes:60});
+    const planId=source.selectedPlanId;
+    const history=Object.fromEntries(Object.entries(source.plans).filter(([id])=>id!==planId).map(([id,p])=>[id,structuredClone(p.adopted)]));
+    for(const role of source.configuration.roleConfigs)if(!day.roleNames.includes(role.roleName))await command('save-role',{...role,requiredCount:0});
+    await reloadPage();await click('[data-view="rules"]');
+    await evaluate('document.querySelector("#handoff-preference-rules").open=true;document.querySelector("#work-relation-rules").open=true');
+    assert.equal(await evaluate('document.querySelector("#flow-exceptions").open'),false);
+    assert.equal(await evaluate('document.querySelectorAll("[data-flow-common] [data-flow-rule]").length'),1);
+    assert.equal(await evaluate('document.querySelectorAll("[data-flow-common] [data-flow-scope]").length'),0);
+    const before=(await state()).handoffPreferences;acceptDialogs=false;
+    await click('[data-flow-common] [data-flow-exception]');acceptDialogs=true;
+    assert.deepEqual((await state()).handoffPreferences,before);
+    assert.equal(await evaluate('document.querySelectorAll("#flow-exceptions [data-flow-rule]").length'),0);
+    const solveFlight=async(flightNo)=>{
+      const raw=structuredClone((await state()).plans[planId].day);
+      raw.flights[0].flightNo=flightNo;raw.cells.forEach(c=>c.flightNo=flightNo);
+      await command('save-input',{day:raw},planId);await reloadPage();await click('[data-view="schedule"]');await rerun();
+      const s=await state(),p=s.plans[planId];assert.equal(p.valid,true,JSON.stringify(p.issues));
+      const owner=s.people.find(p=>p.name==='乙').id;
+      return p.schedule.tasks.find(t=>['登机核验','登机主验'].includes(t.roleId)&&p.draft.some(a=>a.taskId===t.id&&a.memberId===owner)).roleId;
+    };
+    assert.equal(await solveFlight('KE0166'),'登机核验','无特例沿用通用');
+    await click('[data-view="rules"]');promptReply='CX937';await click('[data-flow-common] [data-flow-exception]');promptReply=undefined;
+    assert.equal(await evaluate('document.querySelector("#flow-exceptions").open'),true);
+    const exception='#flow-exceptions [data-flow-rule]';
+    assert.equal(await evaluate(`document.querySelector('${exception} [data-flow-target]').value`),'登机核验','新特例从此来源通用设置复制');
+    await click(`${exception} [data-flow-target-row="1"] [data-flow-up]`);await mutate(()=>click('#save-rules'));
+    assert.deepEqual((await state()).handoffPreferences[0],shared);
+    assert.equal(await solveFlight('CX937'),'登机主验','手动特例覆盖通用');
+    assert.equal(await solveFlight('TW616'),'登机核验','其他未配置航班仍用通用，不自动生成逐班设置');
+    const prefs=(await state()).handoffPreferences;
+    assert.equal(prefs.length,2);
+    const file=await fetch(`${baseUrl}/api/workspace/configuration/export/${planId}`).then(r=>r.arrayBuffer());
+    const preview=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:file}).then(r=>r.json());
+    assert.deepEqual(preview.payload.handoffPreferences,prefs);
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await until(()=>evaluate('!!document.querySelector("[data-view=rules]")'),'通用特例重启');
+    await click('[data-view="rules"]');await evaluate('document.querySelector("#handoff-preference-rules").open=true;document.querySelector("#work-relation-rules").open=true');
+    assert.equal(await evaluate('document.querySelector("#flow-exceptions").open'),false);
+    assert.deepEqual((await state()).handoffPreferences,prefs);
+    const accents=await evaluate('[".flow-settings",".baggage-window",".separation-settings",".forbidden-handoffs"].map(s=>getComputedStyle(document.querySelector(s)).getPropertyValue("--rule-accent")||getComputedStyle(document.querySelector(s)).borderLeftColor)');
+    assert.equal(new Set(accents).size,4);
+    for(const width of [1440,390]){
+      await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+      await evaluate('document.querySelector(".flow-settings").scrollIntoView({block:"start"})');
+      assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+      await writeFile(join(temporaryRoot,`flow-common-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+      await evaluate('document.querySelector("#flow-exceptions").open=true;document.querySelector("#flow-exceptions").scrollIntoView({block:"start"})');
+      assert.ok(await evaluate('[...document.querySelectorAll("#flow-exceptions input,#flow-exceptions select,#flow-exceptions button")].every(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth+1})'));
+      await writeFile(join(temporaryRoot,`flow-exception-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+      await evaluate('document.querySelector("#flow-exceptions").open=false');
+    }
+    await click(`${exception} [data-flow-remove-rule]`);await mutate(()=>click('#save-rules'));
+    assert.deepEqual((await state()).handoffPreferences,[shared]);
+    assert.equal(await solveFlight('CX937'),'登机核验','删除特例恢复通用');
+    for(const [id,formal] of Object.entries(history))assert.deepEqual((await state()).plans[id].adopted,formal,'既有正式历史保持');
+    await click('[data-view="rules"]');
   });
   await evaluate('document.querySelector("#handoff-preference-rules").open=true');
   for(const width of [1440,390]){

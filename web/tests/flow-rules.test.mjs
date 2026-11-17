@@ -15,6 +15,19 @@ test('任意来源与目标下拉，顺序增删和特例，名称转义且没�
   assert.match(markup,/<option value="later-overlap"/);
   assert.doesNotMatch(markup,/data-relative|durationMinutes|offsetMinutes|type="number"/);
 });
+test('通用设置单独突出，已有航班特例默认收起，不按航班模板复制通用规则',()=>{
+  const s=state();s.flightLibrary=['CX937','KE0166','TW616'].map(flightNo=>({flightNo}));
+  s.handoffPreferences.push({flightNo:'*',arrivalRole:'接机1',boardingRoles:['入境申报'],enabled:true});
+  const before=structuredClone(s),markup=handoffPreferences(s,true);
+  assert.match(markup,/data-flow-common/);
+  assert.match(markup,/<details[^>]*id="flow-exceptions"[^>]*>/);
+  assert.doesNotMatch(markup,/<details[^>]*id="flow-exceptions"[^>]*\bopen\b/);
+  assert.match(markup,/没有特例的航班.*通用/);
+  assert.equal((markup.match(/data-flow-rule=/g)||[]).length,2);
+  const common=markup.slice(markup.indexOf('data-flow-common'),markup.indexOf('<details'));
+  assert.ok(common.includes('data-flow-rule="1"'));assert.ok(!common.includes('data-flow-rule="0"'));
+  assert.deepEqual(s,before);
+});
 test('连续修改和排序使用当前草稿，删除最后目标后禁用，原状态保持',()=>{
   const original=state(),saved=[];
   original.handoffPreferences.push({flightNo:'*',arrivalRole:'自定义<&',boardingRoles:['接机1'],enabled:false});
@@ -35,4 +48,22 @@ test('连续修改和排序使用当前草稿，删除最后目标后禁用，�
   assert.deepEqual(saved.at(-1)[0].boardingRoles,[]);assert.equal(saved.at(-1)[0].enabled,false);
   assert.deepEqual(saved.at(-1)[0].targetFlightScopes,{});
   assert.deepEqual(original.handoffPreferences[0].boardingRoles,['接机1','入境申报']);
+});
+test('新增特例需明确航班，取消不修改；按来源复制通用，重复不覆盖旧特例',()=>{
+  const original=state(),saved=[],handlers={},details={open:false},alerts=[];
+  original.handoffPreferences=[{flightNo:'*',arrivalRole:'接机1',boardingRoles:['入境申报'],enabled:true,ordered:false,targetFlightScopes:{'入境申报':'later-overlap'}}];
+  const root={querySelectorAll:()=>[],querySelector:s=>s==='#flow-exceptions'?details:({addEventListener:(event,fn)=>handlers[s]=fn})};
+  const previousPrompt=globalThis.prompt,previousAlert=globalThis.alert;let reply=null;
+  globalThis.prompt=()=>reply;globalThis.alert=message=>alerts.push(message);
+  try{
+    bindHandoffPreferences(root,original,async(_,p)=>{saved.push(p.preferences);return true;});
+    handlers['#add-flow-exception']();assert.equal(saved.length,0,'取消不创建默认CX*');
+    reply='';handlers['#add-flow-exception']();assert.equal(saved.length,0);
+    reply='通用';handlers['#add-flow-exception']();assert.equal(saved.length,0);
+    reply='cx937';handlers['#add-flow-exception']();
+    assert.equal(details.open,true);assert.equal(saved.length,1);
+    assert.deepEqual(saved[0],[original.handoffPreferences[0],{...original.handoffPreferences[0],flightNo:'CX937'}]);
+    handlers['#add-flow-exception']();assert.equal(saved.length,1);assert.equal(alerts.length,2);
+    assert.equal(original.handoffPreferences.length,1);
+  }finally{globalThis.prompt=previousPrompt;globalThis.alert=previousAlert;}
 });

@@ -115,6 +115,12 @@ def _apply_configuration(state, payload):
                 for field in ('separationGroups','forbiddenHandoffs','baggageWindow'):
                     if field not in incoming and field in state.get('workRules', {}):
                         incoming[field] = deepcopy(state['workRules'][field])
+                window = incoming.get('baggageWindow')
+                previous_window = state.get('workRules', {}).get('baggageWindow')
+                if (window is not None and previous_window is not None
+                        and 'remainderToleranceMinutes' not in window
+                        and 'remainderToleranceMinutes' in previous_window):
+                    window['remainderToleranceMinutes'] = previous_window['remainderToleranceMinutes']
             state[key] = incoming
     if "balanceSettings" in data:
         settings = deepcopy(data["balanceSettings"])

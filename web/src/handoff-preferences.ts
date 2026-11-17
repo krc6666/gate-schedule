@@ -1,4 +1,5 @@
 import {flowRoles, html, type HandoffPreference, type State } from "./workbench-model";
+import {ruleScopeSections} from './rule-scope-view';
 
 const flightScopeOptions = {'same-flight':'本航班','later-overlap':'重叠且晚结束的其他航班'};
 const options = (roles: string[], selected: string, excluded: string[] = []) => roles.filter(r => r === selected || !excluded.includes(r)).map(r => `<option value="${html(r)}" ${r === selected ? "selected" : ""}>${html(r)}</option>`).join("");
@@ -6,7 +7,21 @@ const options = (roles: string[], selected: string, excluded: string[] = []) => 
 export function handoffPreferences(state: State, draft = false): string {
   const roles = flowRoles(state);
   const flights = [...new Set(state.flightLibrary.map(f => f.flightNo))];
-  return `<p class="section-note">选择来源岗位，并按顺序添加目标。大件1/2/3表示同一共享池的先后轮次，只有一轮为大件1；单轮规则优先，未配置该轮时沿用“大件行李拦截”通用来源规则，明确关闭单轮则不回退。第一目标已满、无资格或冲突时，继续匹配下一项。来源航班决定本规则适用于哪班。每个目标航班二选一，新增默认本航班；旧规则未选范围时保留原行为，修改该来源后按所选范围保存。未特别许可的重叠跨班仍冲突。禁止同人集合优先于接续；专人专岗及实际大件块仍检查。允许晚结束重叠航班表示流程许可，不代表现场交接时刻。无需填写岗位分钟。${draft ? "修改后点击上方保存配置" : "修改即保存"}，重新排班生效，完整配置和备份均保留。</p><datalist id="flow-flight-options">${flights.map(f => `<option value="${html(f)}"></option>`).join("")}</datalist><div class="flow-rule-list">${state.handoffPreferences.map((row, index) => `<fieldset class="flow-rule" data-flow-rule="${index}"><legend>接续规则 ${index + 1}</legend><div class="form-grid"><label>来源航班<input data-flow-scope list="flow-flight-options" value="${html(row.flightNo === "*" ? "通用" : row.flightNo)}" placeholder="通用、CX*或CX937" /></label><label>来源岗位<select data-flow-source aria-label="来源岗位">${options(roles, row.arrivalRole)}</select></label><label class="switch-label"><input type="checkbox" data-flow-enabled ${row.enabled ? "checked" : ""} />启用</label></div><ol class="flow-targets">${row.boardingRoles.map((target, order) => `<li data-flow-target-row="${order}"><label>第${order + 1}优先目标岗位 <select data-flow-target aria-label="第${order + 1}优先目标岗位">${options(roles, target, [row.arrivalRole, ...row.boardingRoles])}</select></label><label>目标航班 <select data-flow-flight-scope aria-label="第${order + 1}优先目标航班">${Object.entries(flightScopeOptions).map(([key,label])=>`<option value="${key}" ${(row.targetFlightScopes?.[target]??"same-flight")===key?"selected":""}>${label}</option>`).join("")}</select></label><div class="button-row"><button type="button" class="btn btn-sm" data-flow-up ${order === 0 ? "disabled" : ""}>↑ 上移</button><button type="button" class="btn btn-sm" data-flow-down ${order === row.boardingRoles.length - 1 ? "disabled" : ""}>↓ 下移</button><button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-target>删除目标</button></div></li>`).join("")}</ol><div class="button-row"><button type="button" class="btn btn-sm btn-outline-primary" data-flow-add-target ${roles.every(r => r === row.arrivalRole || row.boardingRoles.includes(r)) ? "disabled" : ""}>＋ 增加目标岗位</button><button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-rule>${row.flightNo === "*" ? "删除规则" : "删除特例，恢复继承"}</button></div>${row.flightNo !== "*" ? '<p class="section-note">具体航班优先，其次最长系列，最后通用。关闭此项不回退；删除恢复继承。规则按来源航班选择。</p>' : ""}</fieldset>`).join("") || '<p class="section-note">暂无接续规则，点击下方增加；来源和目标可自由选择。</p>'}</div><div class="button-row"><button type="button" id="add-flow-rule" class="btn btn-outline-primary">＋ 增加来源规则</button><button type="button" id="add-flow-exception" class="btn btn-outline-secondary">＋ 增加航班特例</button></div>`;
+  const card=(row:HandoffPreference,index:number)=>`<fieldset class="flow-rule ${row.flightNo==='*'?'is-common':'is-exception'}" data-flow-rule="${index}">
+    <legend><span class="rule-scope-badge">${row.flightNo==='*'?'通用':html(row.flightNo)+' 特例'}</span> ${html(row.arrivalRole)} <span class="rule-status">${row.enabled?'已启用':'已停用'}</span></legend>
+    <div class="form-grid">${row.flightNo==='*'?'':`<label>来源航班<input data-flow-scope list="flow-flight-options" value="${html(row.flightNo)}" placeholder="CX937 或 CX*" /></label>`}
+    <label>来源岗位<select data-flow-source aria-label="来源岗位">${options(roles,row.arrivalRole)}</select></label>
+    <label class="switch-label"><input type="checkbox" data-flow-enabled ${row.enabled?'checked':''}/>启用接续</label></div>
+    <ol class="flow-targets">${row.boardingRoles.map((target,order)=>`<li data-flow-target-row="${order}"><label>第${order+1}优先目标岗位 <select data-flow-target aria-label="第${order+1}优先目标岗位">${options(roles,target,[row.arrivalRole,...row.boardingRoles])}</select></label><label>目标航班 <select data-flow-flight-scope aria-label="第${order+1}优先目标航班">${Object.entries(flightScopeOptions).map(([key,label])=>`<option value="${key}" ${(row.targetFlightScopes?.[target]??'same-flight')===key?'selected':''}>${label}</option>`).join('')}</select></label><div class="button-row"><button type="button" class="btn btn-sm" data-flow-up ${order===0?'disabled':''}>↑ 上移</button><button type="button" class="btn btn-sm" data-flow-down ${order===row.boardingRoles.length-1?'disabled':''}>↓ 下移</button><button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-target>删除目标</button></div></li>`).join('')}</ol>
+    <div class="button-row"><button type="button" class="btn btn-sm btn-outline-primary" data-flow-add-target ${roles.every(r=>r===row.arrivalRole||row.boardingRoles.includes(r))?'disabled':''}>＋ 增加目标岗位</button>
+    ${row.flightNo==='*'?'<button type="button" class="btn btn-sm" data-flow-exception>＋ 为此岗位添加特例</button>':''}
+    <button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-rule>${row.flightNo==='*'?'删除通用规则':'删除特例，恢复继承'}</button></div></fieldset>`;
+  return `<section class="flow-settings"><p class="flow-inheritance-note">通用设置只需维护一次，没有特例的航班默认沿用通用；有不同安排时再手动添加特例。</p>
+    <datalist id="flow-flight-options">${flights.map(f=>`<option value="${html(f)}"></option>`).join('')}</datalist>
+    ${ruleScopeSections(state.handoffPreferences,'flow',card)}
+    <div class="button-row flow-add-actions"><button type="button" id="add-flow-rule" class="btn btn-outline-primary">＋ 添加通用来源岗位</button><button type="button" id="add-flow-exception" class="btn btn-outline-secondary">＋ 增加航班特例</button></div>
+    <p class="section-note">按目标顺序尽量接续；无资格、目标已满或冲突时尝试下一项。${draft?'修改后点击上方保存配置':'修改即保存'}，重新排班生效。</p>
+    <details id="flow-help" class="flow-help"><summary>接续与继承说明</summary><p class="section-note">具体航班优先，其次最长系列，最后通用。旧规则未选目标范围时保留原行为，修改该来源后按所选范围保存。大件1/2/3是同池轮次，只有一轮为大件1；单轮规则优先，未配置该轮沿用“大件行李拦截”，明确关闭不回退。接续为偏好，不能绕过分人、禁止、专岗、资格或实际时段；晚结束重叠航班表示流程许可，不推算交接分钟。配置、Excel和完整备份保留。</p></details></section>`;
 }
 
 export function bindHandoffPreferences(root: HTMLElement, state: State, save: (action: string, payload: unknown) => Promise<boolean>): void {
@@ -20,18 +35,29 @@ export function bindHandoffPreferences(root: HTMLElement, state: State, save: (a
     commit(next);
   };
   const unique = (scope: string, source: string, except = -1) => !current.some((r, i) => i !== except && r.flightNo === scope && r.arrivalRole === source);
+  const addException=(source:string)=>{
+    const flight=prompt('输入需要不同安排的航班号或系列，如 CX937 或 CX*。未设置特例的航班沿用通用。','')?.trim().toUpperCase();
+    if(!flight)return;
+    if(flight==='*'||flight==='通用'||(flight.includes('*')&&!/^[A-Z0-9]+\*$/.test(flight))){alert('请填写具体航班号或以 * 结尾的系列；通用设置在上方维护。');return;}
+    if(!unique(flight,source)){alert('该航班已有此来源岗位的特例，请展开航班特例修改。');return;}
+    const shared=current.find(r=>r.flightNo==='*'&&r.arrivalRole===source);
+    const next=shared?{...structuredClone(shared),flightNo:flight}:{flightNo:flight,arrivalRole:source,boardingRoles:[],enabled:false,ordered:true};
+    const details=root.querySelector<HTMLDetailsElement>('#flow-exceptions');if(details)details.open=true;
+    commit([...current,next]);
+  };
   root.querySelectorAll<HTMLElement>("[data-flow-rule]").forEach(container => {
     const index = Number(container.dataset.flowRule);
     const source = container.querySelector<HTMLSelectElement>("[data-flow-source]")!;
-    const scope = container.querySelector<HTMLInputElement>("[data-flow-scope]")!;
-    scope.oninput = () => scope.setCustomValidity("");
+    const scope = container.querySelector<HTMLInputElement>("[data-flow-scope]");
+    if(scope){scope.oninput = () => scope.setCustomValidity("");
     scope.onchange = () => {
-      const value = scope.value.trim().toUpperCase(); const flight = value === "通用" ? "*" : value;
-      if (!flight || (flight !== "*" && flight.includes("*") && !/^[A-Z0-9]+\*$/.test(flight)) || !unique(flight, current[index].arrivalRole, index)) {
-        scope.setCustomValidity("填写通用、具体航班或CX*；同航班同来源只能有一条规则"); scope.reportValidity(); return;
+      const flight = scope.value.trim().toUpperCase();
+      if (!flight || flight==='*'||flight==='通用'||(flight.includes("*") && !/^[A-Z0-9]+\*$/.test(flight)) || !unique(flight, current[index].arrivalRole, index)) {
+        scope.setCustomValidity("填写具体航班或CX*；同航班同来源只能有一条特例"); scope.reportValidity(); return;
       }
       scope.setCustomValidity(""); modify(index, row => { row.flightNo = flight; });
-    };
+    };}
+    container.querySelector<HTMLButtonElement>('[data-flow-exception]')?.addEventListener('click',()=>addException(current[index].arrivalRole));
     source.onchange = () => {
       if (!unique(current[index].flightNo, source.value, index)) { source.setCustomValidity("该航班已有这个来源岗位的规则"); source.reportValidity(); return; }
       source.setCustomValidity(""); modify(index, row => { row.arrivalRole = source.value; row.boardingRoles = row.boardingRoles.filter(r => r !== source.value); if (!row.boardingRoles.length) row.enabled = false; if(row.targetFlightScopes)for(const r of Object.keys(row.targetFlightScopes))if(!row.boardingRoles.includes(r))delete row.targetFlightScopes[r]; });
@@ -58,11 +84,11 @@ export function bindHandoffPreferences(root: HTMLElement, state: State, save: (a
       }
     });
   });
-  const add = (special: boolean) => {
-    const scope = special ? "CX*" : "*";
-    const source = roles.find(r => unique(scope, r));
-    if (source) commit([...current, { flightNo: scope, arrivalRole: source, boardingRoles: [], enabled: false, ordered: true }]);
+  const add = () => {
+    const source = roles.find(r => unique('*', r));
+    if (source) commit([...current, { flightNo: '*', arrivalRole: source, boardingRoles: [], enabled: false, ordered: true }]);
   };
-  root.querySelector<HTMLButtonElement>("#add-flow-rule")?.addEventListener("click", () => add(false));
-  root.querySelector<HTMLButtonElement>("#add-flow-exception")?.addEventListener("click", () => add(true));
+  const addCommon=root.querySelector<HTMLButtonElement>('#add-flow-rule');
+  if(addCommon){addCommon.disabled=!roles.some(r=>unique('*',r));addCommon.addEventListener('click',add);}
+  root.querySelector<HTMLButtonElement>("#add-flow-exception")?.addEventListener("click", () => {const source=current.find(r=>r.flightNo==='*')?.arrivalRole??roles[0];if(source)addException(source);});
 }

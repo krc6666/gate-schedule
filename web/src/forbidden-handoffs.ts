@@ -1,15 +1,16 @@
 import {flowRoles,html, type WorkRules, type State, type ForbiddenHandoff} from './workbench-model';
+import {ruleScopeSections} from './rule-scope-view';
 
 const scopes={'same-flight':'本航班','later-overlap':'重叠且晚结束的其他航班'};
 const options=(roles:string[],selected:string)=>roles.map(r=>`<option value="${html(r)}" ${r===selected?'selected':''}>${html(r)}</option>`).join('');
 
-export function forbiddenHandoffsHtml(state:State,rules:WorkRules):string {
+export function forbiddenHandoffsHtml(state:State,rules:WorkRules,kind='base'):string {
   const roles=flowRoles(state);
   return `<section class="forbidden-handoffs"><h3>禁止衔接</h3>
     <p class="section-note">明确指定哪些岗位不能由同一人接续承担。禁止优先于上方优先接续，即使绕经其他岗位也不能规避；本航班和晚结束重叠航班分别设置。修改后保存配置并重新排班。</p>
-    ${(rules.forbiddenHandoffs??[]).map((row,i)=>`<fieldset class="flow-rule" data-forbidden-rule="${i}">
-      <legend>禁止衔接 ${i+1} · ${row.enabled?'已启用':'已停用，不执行禁止'}</legend>
-      <div class="form-grid"><label>来源航班<input data-forbidden-scope value="${html(row.flightNo==='*'?'通用':row.flightNo)}" placeholder="通用、CX*或CX937" /></label>
+    ${ruleScopeSections(rules.forbiddenHandoffs??[],`forbidden-${kind}`, (row,i)=>`<fieldset class="flow-rule ${row.flightNo==='*'?'is-common':'is-exception'}" data-forbidden-rule="${i}">
+      <legend><span class="rule-scope-badge">${row.flightNo==='*'?'通用':html(row.flightNo)+' 特例'}</span> ${html(row.sourceRole)} · ${row.enabled?'已启用':'已停用，不执行禁止'}</legend>
+      <div class="form-grid">${row.flightNo==='*'?'':`<label>来源航班<input data-forbidden-scope value="${html(row.flightNo)}" placeholder="CX* 或 CX937" /></label>`}
       <label>来源岗位<select data-forbidden-source>${options(roles,row.sourceRole)}</select></label>
       <label class="switch-label"><input type="checkbox" data-forbidden-enabled ${row.enabled?'checked':''} ${row.targets.length?'':'disabled'}/>启用禁止衔接</label></div>
       ${row.targets.map((target,j)=>`<div class="forbidden-target" data-forbidden-target-row="${j}">
@@ -21,8 +22,8 @@ export function forbiddenHandoffsHtml(state:State,rules:WorkRules):string {
       <button type="button" class="btn btn-sm" data-forbidden-exception>＋ 增加航班特例</button>
       <button type="button" class="btn btn-sm" data-forbidden-delete>${row.flightNo==='*'?'删除禁止规则':'删除特例，恢复继承'}</button></div>
       ${row.flightNo==='*'?'':'<p class="section-note">特例替换此来源的全部通用目标；关闭不回退，删除恢复继承。</p>'}
-    </fieldset>`).join('') || '<p class="section-note">尚未设置明确的禁止衔接；已有分人集合和专岗仍然执行。</p>'}
-    <button type="button" class="btn btn-sm" data-forbidden-add-rule>＋ 新增禁止衔接</button></section>`;
+    </fieldset>`)}
+    <button type="button" class="btn btn-sm" data-forbidden-add-rule>＋ 新增通用禁止衔接</button></section>`;
 }
 
 /** Owns only editing; domain owns the meaning and final legality. */
@@ -36,7 +37,8 @@ export function bindForbiddenHandoffs(container:HTMLElement,state:State,modify:(
   },true);
   container.querySelectorAll<HTMLElement>('[data-forbidden-rule]').forEach(card=>{
     const i=Number(card.dataset.forbiddenRule);
-    card.querySelector<HTMLInputElement>('[data-forbidden-scope]')!.onchange=e=>change(i,row=>{
+    const scopeInput=card.querySelector<HTMLInputElement>('[data-forbidden-scope]');
+    if(scopeInput)scopeInput.onchange=e=>change(i,row=>{
       const v=(e.target as HTMLInputElement).value.trim().toUpperCase();row.flightNo=v==='通用'?'*':v;
     });
     card.querySelector<HTMLSelectElement>('[data-forbidden-source]')!.onchange=e=>change(i,row=>{
@@ -55,6 +57,7 @@ export function bindForbiddenHandoffs(container:HTMLElement,state:State,modify:(
       const v=prompt('输入来源航班特例，如 CX* 或 CX937。','CX*')?.trim().toUpperCase();if(!v)return;
       const scope=v==='通用'?'*':v;
       if(rules.forbiddenHandoffs!.some(r=>r.flightNo===scope&&r.sourceRole===row.sourceRole)){alert('该来源已有此航班特例，请直接修改。');return;}
+      const details=container.querySelector<HTMLDetailsElement>('.forbidden-handoffs > .rule-exceptions');if(details)details.open=true;
       rules.forbiddenHandoffs!.push({...structuredClone(row),flightNo:scope});
     });
     card.querySelectorAll<HTMLElement>('[data-forbidden-target-row]').forEach(target=>{

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .domain import Flight, ImportedDay, Member, Rotation, Scenario, Task, ValidationIssue, imported_member_names, imported_required_count, imported_work_mode, imported_task_timing, parse_minutes, attendance_bounds, flow_flight_window, baggage_turn_bounds
+from .domain import Flight, ImportedDay, Member, Rotation, Scenario, Task, ValidationIssue, imported_member_names, imported_required_count, imported_work_mode, imported_task_timing, parse_minutes, compile_attendance_bounds, flow_flight_window, baggage_turn_bounds
 from .io import scenario_from_dict, scenario_to_dict
 from .validator import validate_scenario
 
@@ -29,6 +29,7 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
     member_names = imported_member_names(day)
     member_names = tuple(dict.fromkeys((*member_names, *(name for occupancy in day.extra_occupancies for name in occupancy.member_names))))
     members: list[Member] = []
+    resolve_attendance = compile_attendance_bounds(day)
     for name in member_names:
         config = config_by_member.get(name)
         availability = availability_by_member.get(name)
@@ -42,7 +43,7 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
             continue
         if not availability.participating:
             continue
-        bounds, issue = attendance_bounds(day, availability)
+        bounds, issue = resolve_attendance(availability)
         if issue:
             issues.append(issue)
             continue
@@ -112,7 +113,7 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
             if baggage_window is not None:
                 # A turn remains one assignment, including flight boundaries
                 # and the final remainder. Do not silently split it into people.
-                for rotation_index, (start, end) in enumerate(baggage_turn_bounds(window_start, window_end, baggage_window['rotationMinutes'])):
+                for rotation_index, (start, end) in enumerate(baggage_turn_bounds(window_start, window_end, baggage_window['rotationMinutes'], baggage_window.get('remainderToleranceMinutes'))):
                     active = [item for item in group_cells if item[2] < end and start < item[3]]
                     if any(item[1] != 1 for item in active):
                         issues.append(ValidationIssue('invalid_baggage_count', '大件行李拦截每轮只需1人，轮换人数由保障窗口计算'))

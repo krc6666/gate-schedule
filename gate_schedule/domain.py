@@ -908,36 +908,48 @@ def prepare_regular_day(day: ImportedDay, implicit_roles: tuple[str, ...], confi
     return replace(day, release_policy="task", attendance_mode="duty", role_configs=tuple(prepared))
 
 
-def attendance_bounds(day: ImportedDay, entry: ImportedMemberAvailability):
-    """Selected duty staff have no special time bound until a complete pair is supplied."""
-    start, end = entry.available_from, entry.available_until
-    if start in (None, "") and end in (None, ""):
-        if day.attendance_mode == "duty" or not entry.participating:
-            starts = [0]
-            for cell in day.cells:
-                if imported_required_count(day, cell) in (None, 0):
-                    continue
-                try:
-                    timing, issue = imported_task_timing(day, cell)
-                    if not issue:
-                        starts.append(timing[0])
-                except (ValueError, TypeError):
-                    pass  # Invalid task inputs are reported by their own validator.
-            for occupancy in day.extra_occupancies:
-                try:
-                    starts.append(parse_minutes(occupancy.start))
-                except (ValueError, TypeError):
-                    pass
-            return (min(starts), None), None
-    if not start or not end:
-        return None, ValidationIssue("incomplete_availability", f"人员 {entry.member_name} 请填写完整的到岗和离岗时间，或清空两项取消特殊限制")
-    try:
-        bounds = parse_minutes(start), parse_minutes(end)
-    except (TypeError, ValueError):
-        return None, ValidationIssue("invalid_availability", f"人员 {entry.member_name} 的到岗或离岗时间无效")
-    if bounds[1] <= bounds[0]:
-        return None, ValidationIssue("availability_order", f"人员 {entry.member_name} 的离岗时间必须晚于到岗时间")
-    return bounds, None
+def compile_attendance_bounds(day: ImportedDay):
+    """Resolve this day's entries, scanning its default start only when first needed.
+
+    Keep the resolver local to one conversion or validation. It must never be
+    reused for a different day or after changing that day's rule inputs.
+    """
+    default_start = None
+
+    def resolve(entry: ImportedMemberAvailability):
+        nonlocal default_start
+        start, end = entry.available_from, entry.available_until
+        if start in (None, "") and end in (None, ""):
+            if day.attendance_mode == "duty" or not entry.participating:
+                if default_start is None:
+                    starts = [0]
+                    for cell in day.cells:
+                        if imported_required_count(day, cell) in (None, 0):
+                            continue
+                        try:
+                            timing, issue = imported_task_timing(day, cell)
+                            if not issue:
+                                starts.append(timing[0])
+                        except (ValueError, TypeError):
+                            pass  # Invalid task inputs are reported by their own validator.
+                    for occupancy in day.extra_occupancies:
+                        try:
+                            starts.append(parse_minutes(occupancy.start))
+                        except (ValueError, TypeError):
+                            pass
+                    default_start = min(starts)
+                return (default_start, None), None
+        if not start or not end:
+            return None, ValidationIssue("incomplete_availability", f"人员 {entry.member_name} 请填写完整的到岗和离岗时间，或清空两项取消特殊限制")
+        try:
+            bounds = parse_minutes(start), parse_minutes(end)
+        except (TypeError, ValueError):
+            return None, ValidationIssue("invalid_availability", f"人员 {entry.member_name} 的到岗或离岗时间无效")
+        if bounds[1] <= bounds[0]:
+            return None, ValidationIssue("availability_order", f"人员 {entry.member_name} 的离岗时间必须晚于到岗时间")
+        return bounds, None
+
+    return resolve
 
 
 def phase_handoff_options(day: ImportedDay) -> list[dict]:
@@ -969,7 +981,7 @@ def empty_work_rules():
 
 
 def default_baggage_window():
-    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60)
+    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60,remainderToleranceMinutes=15)
 
 
 def unchanged_task_ids(before: Scenario | None, after: Scenario | None) -> set[str]:
@@ -978,11 +990,12 @@ def unchanged_task_ids(before: Scenario | None, after: Scenario | None) -> set[s
     return {task.id for task in after.tasks if previous.get(task.id) == task} if after else set()
 
 
-def baggage_turn_bounds(start: int, end: int, interval: int) -> tuple[tuple[int, int], ...]:
-    """Count full rotations; the final person covers the uncounted remainder."""
+def baggage_turn_bounds(start: int, end: int, interval: int, tolerance: int | None = None) -> tuple[tuple[int, int], ...]:
+    """An explicit tolerance decides whether a remainder needs another person."""
     if end <= start or interval <= 0:
         raise ValueError('大件保障窗口与轮值时长必须为正')
-    count = max(1, (end - start) // interval)
+    full, remainder = divmod(end - start, interval)
+    count = max(1, full + int(tolerance is not None and remainder > tolerance))
     return tuple((start + index * interval,
                   end if index == count - 1 else start + (index + 1) * interval)
                  for index in range(count))
@@ -1031,11 +1044,14 @@ def validate_baggage_window(value):
     """Opt-in baggage timing; absence never changes an archived contract."""
     if value is None:
         return None
-    if (not isinstance(value, dict) or set(value) != {'startBeforeMinutes','endBeforeMinutes','rotationMinutes'}
+    required = {'startBeforeMinutes','endBeforeMinutes','rotationMinutes'}
+    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'remainderToleranceMinutes'}
             or any(type(n) is not int for n in value.values())
             or not 0 <= value['endBeforeMinutes'] < value['startBeforeMinutes'] <= 1440
             or not 1 <= value['rotationMinutes'] <= 1440):
         raise ValueError('大件保障规则需0至1440分钟提前量，开检提前大于截载提前，轮值1至1440分钟')
+    if 'remainderToleranceMinutes' in value and not 0 <= value['remainderToleranceMinutes'] <= 1440:
+        raise ValueError('大件尾段宽限须为0至1440分钟的整数')
     return value
 
 
@@ -1767,6 +1783,7 @@ def validate_imported_day(day: ImportedDay) -> list[ValidationIssue]:
             if role_name not in day.role_names:
                 issues.append(ValidationIssue("unknown_member_role", f"人员 {config.member_name} 的可做岗位不存在：{role_name}"))
         seen_members.add(config.member_name)
+    resolve_attendance = compile_attendance_bounds(day)
     seen_attendance: set[str] = set()
     for entry in day.member_availability:
         if entry.member_name not in known_names:
@@ -1775,7 +1792,7 @@ def validate_imported_day(day: ImportedDay) -> list[ValidationIssue]:
             issues.append(ValidationIssue("duplicate_attendance_member", f"出勤人员重复：{entry.member_name}"))
         if type(entry.participating) is not bool:
             issues.append(ValidationIssue("invalid_participation", f"人员 {entry.member_name} 的参加排班选项无效"))
-        _, issue = attendance_bounds(day, entry)
+        _, issue = resolve_attendance(entry)
         if issue:
             issues.append(issue)
         seen_attendance.add(entry.member_name)

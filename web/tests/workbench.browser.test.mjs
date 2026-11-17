@@ -102,7 +102,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   ws.addEventListener("message", event => {
     const m = JSON.parse(event.data);
     if (m.method === 'Input.dragIntercepted') interceptedDrag = m.params.data;
-    if (m.method === "Page.javascriptDialogOpening") void call("Page.handleJavaScriptDialog", { accept: acceptDialogs });
+    if (m.method === "Page.javascriptDialogOpening") void call("Page.handleJavaScriptDialog", { accept: acceptDialogs, ...(m.params.type==='prompt'?{promptText:m.params.defaultPrompt||'FLOW*'}:{}) });
     if (m.method === "Runtime.exceptionThrown") runtimeErrors.push(m.params.exceptionDetails);
     const p = pending.get(m.id); if (!p) return;
     pending.delete(m.id); m.error ? p.reject(new Error(JSON.stringify(m.error))) : p.resolveCall(m.result);
@@ -1706,8 +1706,9 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   });
   await t.test('自由流程：来源目标增删排序、特例关闭继承与保存',async()=>{
     await click('[data-view="rules"]');const before=(await state()).handoffPreferences;
-    await click('#add-flow-exception');const row='[data-flow-rule]:last-child';
+    await click('#add-flow-exception');const row='#flow-exceptions [data-flow-rule]:last-of-type';
     await value(row+' [data-flow-scope]','FLOW*');await value(row+' [data-flow-source]','大件行李拦截');
+    while(await evaluate(`!!document.querySelector('${row} [data-flow-remove-target]')`))await click(row+' [data-flow-remove-target]');
     await click(row+' [data-flow-add-target]');await value(row+' [data-flow-target]','接机1');
     await click(row+' [data-flow-add-target]');await value(row+' [data-flow-target-row="1"] [data-flow-target]','接机2');
     await click(row+' [data-flow-target-row="1"] [data-flow-up]');

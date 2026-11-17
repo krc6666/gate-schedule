@@ -10,6 +10,24 @@ from tests.test_balance_configuration import configuration
 
 
 class CloudDocumentsTests(unittest.TestCase):
+    def test_baggage_tolerance_is_preserved_in_complete_cloud_documents(self):
+        from tests.test_baggage_window import baggage_day
+        for group, tolerance in [('A',15),('B',45)]:
+            wb=self.groups.workbench(group);day=baggage_day()
+            day['workRules']['baggageWindow']['remainderToleranceMinutes']=tolerance
+            state=wb.execute(wb.snapshot()['revision'],'import-complete-configuration',dict(day=day,workRules=day['workRules'],rotationEnabled=True,rotationMinutes=60))
+            for role in state['configuration']['roleConfigs']:
+                if role['roleName']!='大件行李拦截':state=wb.execute(state['revision'],'save-role',{**role,'requiredCount':0})
+            state=wb.execute(state['revision'],'solve',{},state['selectedPlanId'])
+            wb.execute(state['revision'],'adopt',{},state['selectedPlanId'])
+        documents=json.loads(json.dumps(self.store.documents));before=deepcopy(documents)
+        validate_cloud_documents(documents);self.assertEqual(before,documents)
+        restored=GroupWorkspaces(Path('unused'),store=BrowserStore(documents))
+        for group,count,tolerance in [('A',3,15),('B',2,45)]:
+            state=restored.workbench(group).snapshot()
+            self.assertEqual(tolerance,state['workRules']['baggageWindow']['remainderToleranceMinutes'])
+            self.assertEqual(count,state['plans'][state['selectedPlanId']]['baggageCoverage']['requiredPeople'])
+
     def setUp(self):
         self.store = BrowserStore()
         self.groups = GroupWorkspaces(Path('unused'), store=self.store)

@@ -474,6 +474,7 @@ print(json.dumps([relative_day(),shared_pool_day()]))`],{cwd:repo,encoding:'utf8
   const baggageDay=JSON.parse(execFileSync(python,['-c','import json;from tests.test_baggage_flow_roles import turn_day;print(json.dumps(turn_day()))'],{cwd:repo,encoding:'utf8'}));
   baggageDay.serviceDate='2057-08-12';
   const baggageRules={...baggageDay.workRules,forbiddenHandoffs:[{flightNo:'*',sourceRole:'大件1',targets:[{role:'登机1',flightScope:'same-flight'}],enabled:true}]};
+  baggageRules.baggageWindow.remainderToleranceMinutes=15;
   baggageRules.separationGroups.push({id:'second',name:'第二轮与申报分人',flightNo:'*',roles:['大件2','入境申报'],enabled:true});
   const baggageState=await command('B','import-complete-configuration',{day:baggageDay,workRules:baggageRules,handoffPreferences:baggageDay.flowPreferences,rotationEnabled:false,rotationMinutes:15});
   for(const role of baggageState.configuration.roleConfigs)if(!baggageDay.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
@@ -486,7 +487,7 @@ print(json.dumps([relative_day(),shared_pool_day()]))`],{cwd:repo,encoding:'utf8
   await command('B','edit-slot',{taskId:baggageBlocks[1].id,slot:0,memberId:baggageOwner(baggageBlocks[0].id)},baggagePlan.id);
   assert.ok((await state('B')).plans[baggagePlan.id].issues.some(i=>i.code==='baggage_rotation_person'));
   await command('B','undo-edit',{},baggagePlan.id);
-  for(const [minutes,count] of [[120,1],[60,3]]){
+  for(const [minutes,count] of [[120,2],[60,3]]){
     const current=await state('B');
     await command('B','save-rules',{configuration:current.configuration,balanceSettings:current.balanceSettings,preferences:current.handoffPreferences,workRules:{...baggageRules,baggageWindow:{...baggageRules.baggageWindow,rotationMinutes:minutes}}});
     baggagePlan=await solveCoverage();assert.equal(baggagePlan.valid,true,JSON.stringify(baggagePlan.issues));assert.equal(baggagePlan.baggageCoverage.requiredPeople,count);
@@ -501,6 +502,13 @@ print(json.dumps([relative_day(),shared_pool_day()]))`],{cwd:repo,encoding:'utf8
   await command('B','save-input',{day:shortBaggageDay},baggagePlan.id);
   baggagePlan=await solveCoverage();assert.equal(baggagePlan.baggageCoverage.requiredPeople,1);
   assert.deepEqual(baggagePlan.baggageCoverage.groups[0].turns,[{start:'08:30',end:'09:15',role:'大件1'}]);
+  const cxKeDay=JSON.parse(execFileSync(python,['-c','import json;from tests.test_baggage_window import baggage_day;print(json.dumps(baggage_day()))'],{cwd:repo,encoding:'utf8'}));
+  cxKeDay.serviceDate='2057-08-13';cxKeDay.workRules.baggageWindow.remainderToleranceMinutes=15;
+  const cxKeState=await command('B','import-complete-configuration',{day:cxKeDay,workRules:cxKeDay.workRules,handoffPreferences:[],rotationEnabled:true,rotationMinutes:60});
+  for(const role of cxKeState.configuration.roleConfigs)if(role.roleName!=='大件行李拦截')await command('B','save-role',{...role,requiredCount:0});
+  baggagePlan=await solveCoverage();assert.equal(baggagePlan.valid,true,JSON.stringify(baggagePlan.issues));
+  assert.equal(baggagePlan.baggageCoverage.requiredPeople,3,'CX937/KE0166 08:30–11:15，宽限15分钟需要3人');
+  assert.equal(new Set(baggagePlan.draft.map(a=>a.memberId)).size,3);
   assert.ok(!requests.some(url=>new URL(url,base).pathname.startsWith("/api/")),"不得请求任何Python后台");
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));

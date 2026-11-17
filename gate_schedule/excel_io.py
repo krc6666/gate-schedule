@@ -23,7 +23,7 @@ from .duty_excel import write_roster_configuration, read_roster_configuration
 
 from .domain import (
     Assignment, ImportedCell, ImportedCellSemantics, ImportedDay, ImportedFlight, ImportedRemark, Scenario,
-    ImportedRoleConfig, ImportedMemberConfig, ImportedMemberAvailability, ImportedOccupancy, ValidationIssue, BaggageRotationSettings, imported_member_names, imported_required_count, imported_work_mode, parse_minutes, format_minutes, WORK_MODES, task_timing_label, attendance_bounds,
+    ImportedRoleConfig, ImportedMemberConfig, ImportedMemberAvailability, ImportedOccupancy, ValidationIssue, BaggageRotationSettings, imported_member_names, imported_required_count, imported_work_mode, parse_minutes, format_minutes, WORK_MODES, task_timing_label,
     validate_handoff_preferences, validate_display_preferences,
     validate_balance_settings,
     validate_team_leader_settings,

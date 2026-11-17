@@ -1,6 +1,7 @@
 import {baggageWindowHtml,bindBaggageWindow} from './baggage-window';
 import {html,flowRoles, type WorkRules, type SeparationGroup, type State, type Day, type Plan} from './workbench-model';
 import {forbiddenHandoffsHtml,bindForbiddenHandoffs} from './forbidden-handoffs';
+import {ruleScopeSections} from './rule-scope-view';
 const empty = (): WorkRules => ({pairs: [], baggage: []});
 const options = (roles: string[], selected: string) => roles.map(r => `<option value="${html(r)}" ${r === selected ? 'selected' : ''}>${html(r)}</option>`).join('');
 function legacyEditor(state: State, rules: WorkRules): string {
@@ -10,12 +11,12 @@ function legacyEditor(state: State, rules: WorkRules): string {
 function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): string {
   const roles = flowRoles(state);
   const groups = rules.separationGroups ?? [];
-  return `<div data-work-editor="${kind}">${baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined)}${groups.map((g,i) => `
-    <fieldset class="separation-group" data-separation-group="${i}">
+  return `<div data-work-editor="${kind}">${baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined)}<section class="separation-settings"><h3>禁止同人集合</h3>${ruleScopeSections(groups,`separation-${kind}`,(g,i) => `
+    <fieldset class="separation-group ${g.flightNo==='*'?'is-common':'is-exception'}" data-separation-group="${i}">
       <legend>${html(g.name)} · ${html(g.flightNo==='*'?'通用':g.flightNo)} · <span data-group-state>${g.enabled?'已启用':'已停用，不执行分人'}</span></legend>
       <div class="separation-fields">
         <label>组名称 <input data-group-name value="${html(g.name)}" /></label>
-        <label>适用航班 <input data-group-scope value="${html(g.flightNo==='*'?'通用':g.flightNo)}" placeholder="通用 / CX* / CX937" /></label>
+        ${g.flightNo==='*'?'':`<label>适用航班 <input data-group-scope value="${html(g.flightNo)}" placeholder="CX* / CX937" /></label>`}
         <label><input type="checkbox" data-group-enabled ${g.enabled?'checked':''} ${g.roles.length<2?'disabled':''} />启用同航班分人</label>
       </div>
       <p class="section-note ${g.enabled?'':'inactive-rule-note'}">${g.roles.length<2?'请至少选两个岗位，选满两岗自动启用。':g.enabled?'此集合已启用：组内任意两个岗位均不能同人；接机与登机放在同一组也会禁止相互接续。':'此集合已停用，当前不会禁止人员重复。点击“启用此集合”，保存配置后重新排班。'}${g.flightNo!=='*'?' 此项覆盖同组通用/系列设置；关闭不回退，删除后恢复继承。':''}</p>
@@ -27,10 +28,10 @@ function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): s
         <button type="button" class="btn btn-sm" data-group-delete>${g.flightNo==='*'?'删除通用设置':'删除此特例（恢复继承）'}</button>
         ${groups.filter(r=>r.id===g.id).length>1?'<button type="button" class="btn btn-sm" data-group-delete-all>删除整组（含特例）</button>':''}
       </div>
-    </fieldset>`).join('') || '<p class="section-note">尚未设置分人组。可添加“接机组”“登机组”，自由选择组内岗位。</p>'}
-    <button type="button" class="btn btn-sm" data-group-add>＋ 新增分人组</button>
+    </fieldset>`)}
+    <button type="button" class="btn btn-sm" data-group-add>＋ 新增通用分人组</button>
     ${kind==='base' && state.groupedWorkRules && rules.pairs.some(r=>r.scope==='same-flight'&&r.mode==='separate')?'<button type="button" class="btn btn-sm" id="convert-work-groups">旧同航班分人规则转为分人组</button><p class="section-note">转换使用已保存配置；有未保存改动时，请先保存。跨航班及兼任许可仍保留在高级区。</p>':''}
-    ${forbiddenHandoffsHtml(state,rules)}${legacyEditor(state,rules)}</div>`;
+    </section>${forbiddenHandoffsHtml(state,rules,kind)}${legacyEditor(state,rules)}</div>`;
 }
 export function workRulesHtml(state: State, day: Day | null, plan: Plan | null): string {
   const current = state.workRules ?? empty();
@@ -73,7 +74,8 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
     container.querySelectorAll<HTMLElement>('[data-separation-group]').forEach(card=>{
       const i=Number(card.dataset.separationGroup);
       card.querySelector<HTMLInputElement>('[data-group-name]')!.onchange=e=>changeGroup(i,g=>{g.name=(e.target as HTMLInputElement).value.trim();});
-      card.querySelector<HTMLInputElement>('[data-group-scope]')!.onchange=e=>changeGroup(i,g=>{const v=(e.target as HTMLInputElement).value.trim();g.flightNo=v==='通用'?'*':v;});
+      const scopeInput=card.querySelector<HTMLInputElement>('[data-group-scope]');
+      if(scopeInput)scopeInput.onchange=e=>changeGroup(i,g=>{const v=(e.target as HTMLInputElement).value.trim().toUpperCase();g.flightNo=v==='通用'?'*':v;},true);
       card.querySelector<HTMLInputElement>('[data-group-enabled]')!.onchange=e=>changeGroup(i,g=>{g.enabled=(e.target as HTMLInputElement).checked;},true);
       card.querySelector<HTMLButtonElement>('[data-group-activate]')?.addEventListener('click',()=>changeGroup(i,g=>{g.enabled=true;},true));
       card.querySelectorAll<HTMLSelectElement>('[data-group-role]').forEach((select,j)=>select.onchange=()=>changeGroup(i,g=>{g.roles[j]=select.value;},true));
@@ -89,6 +91,7 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
         if(!flight)return;
         const scope=flight==='通用'?'*':flight;
         if(r.separationGroups!.some(row=>row.id===g.id&&row.flightNo===scope)){alert('同组已存在此航班范围，请直接修改对应设置。');return;}
+        const details=container.querySelector<HTMLDetailsElement>(`#separation-${kind}-exceptions`);if(details)details.open=true;
         r.separationGroups!.push({...structuredClone(g),flightNo:scope});
       },true);
       card.querySelector<HTMLButtonElement>('[data-group-delete]')!.onclick=()=>modify(kind,r=>{r.separationGroups!.splice(i,1);},true);
