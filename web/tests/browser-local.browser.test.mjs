@@ -56,9 +56,9 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
     try { await until(()=>evaluate("document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"浏览器本机工作台",120000); }
     catch(error) { throw Error(String(error)+"; "+await evaluate("document.body.innerText")); }
   };
-  const reload=async()=>{
+  const reload=async(ms=120000)=>{
     await evaluate("window.__reloadPending=true; location.reload(); true");
-    try { await until(()=>evaluate("!window.__reloadPending && document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",120000); }
+    try { await until(()=>evaluate("!window.__reloadPending && document.documentElement?.dataset.gateLocal === 'true' && !!document.querySelector('[data-view=\"config\"]')"),"重新打开工作台",ms); }
     catch(error) { throw Error(String(error)+'; '+await evaluate("JSON.stringify({pending:window.__reloadPending,local:document.documentElement?.dataset.gateLocal,isolated:crossOriginIsolated,text:document.body.innerText})")); }
   };
   await ready();
@@ -104,9 +104,9 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   assert.equal(priority.roles[0].flightNo,"A100");
   assert.equal(priority.roles[0].members.find(p=>p.memberId==="stable-a").adjustment,1);
   assert.ok(duty.rows.some(r=>r.dutyMemberId),"浏览器必须真实计算月度轮值");
-  await evaluate("location.reload(); true");
-  try { await until(()=>evaluate("!!document.querySelector('[data-view=\"config\"]')"),"刷新恢复",20000); }
-  catch(error) { throw Error(String(error)+"; "+await evaluate("(async()=>JSON.stringify({text:document.body.innerText,coi:crossOriginIsolated,controller:!!navigator.serviceWorker.controller,header:await fetch(location.href).then(r=>Object.fromEntries(r.headers))}))()")); }
+  // Old controls may survive until navigation commits. Wait for the replacement
+  // document and its fetch runtime, keeping this check's original 20s bound.
+  await reload(20000);
   assert.equal((await state("A")).people[0].name,"网页甲");
   assert.deepEqual((await state("A")).plans[planId].adopted.assignments,imported.plans[planId].draft);
   assert.deepEqual((await report("priority-statistics?month=2026-08")).roles,priority.roles);
