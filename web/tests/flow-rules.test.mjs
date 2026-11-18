@@ -2,9 +2,25 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {build} from 'esbuild';
 import {fileURLToPath} from 'node:url';
-const bundle=await build({stdin:{contents:'export {handoffPreferences,bindHandoffPreferences} from "./handoff-preferences";',resolveDir:fileURLToPath(new URL('../src/',import.meta.url))},bundle:true,write:false,format:'esm',target:'es2022'});
-const {handoffPreferences,bindHandoffPreferences}=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const bundle=await build({stdin:{contents:'export {handoffPreferences,bindHandoffPreferences} from "./handoff-preferences"; export {workRulesHtml} from "./work-rules"; export {forbiddenHandoffsHtml} from "./forbidden-handoffs";',resolveDir:fileURLToPath(new URL('../src/',import.meta.url))},bundle:true,write:false,format:'esm',target:'es2022'});
+const {handoffPreferences,bindHandoffPreferences,workRulesHtml,forbiddenHandoffsHtml}=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 const state=()=>({configuration:{roleConfigs:['大件行李拦截','接机1','入境申报','自定义<&'].map(roleName=>({roleName}))},flightLibrary:[],handoffPreferences:[{flightNo:'CX*',arrivalRole:'大件行李拦截',boardingRoles:['接机1','入境申报'],enabled:true,ordered:true}]});
+
+test('流动填写只消费可选目录，专岗旧引用明确只读，不静默改值或污染其他选择',()=>{
+  const s=state();
+  s.flowRuleRoles=['接机1','入境申报'];
+  s.workRules={pairs:[],baggage:[],separationGroups:[{id:'g',name:'旧分人',flightNo:'*',roles:['大件行李拦截','接机1'],enabled:true}],forbiddenHandoffs:[{flightNo:'*',sourceRole:'大件行李拦截',targets:[{role:'入境申报',flightScope:'same-flight'}],enabled:true}]};
+  const before=structuredClone(s);
+  for(const markup of [handoffPreferences(s,true),workRulesHtml(s,null,null),forbiddenHandoffsHtml(s,s.workRules)]){
+    const options=markup.match(/<option[^>]*value="大件行李拦截"[^>]*>/g)??[];
+    assert.ok(options.length>0,'已有引用仍有占位项，防浏览器自动换岗');
+    assert.ok(options.every(option=>option.includes('selected')&&option.includes('disabled')),'专岗只能作为已选禁用原值，不可新选');
+    assert.match(markup,/专岗/);
+  }
+  assert.deepEqual(s,before,'渲染不得清除旧规则');
+  const blank={...s,handoffPreferences:[{flightNo:'*',arrivalRole:'接机1',boardingRoles:['入境申报'],enabled:true}]};
+  assert.doesNotMatch(handoffPreferences(blank,true),/<option[^>]*value="大件行李拦截"/,'没有引用的专岗完全不出现在填写选项中');
+});
 test('任意来源与目标下拉，顺序增删和特例，名称转义且没有任务分钟输入',()=>{
   const markup=handoffPreferences(state(),true);
   for(const selector of ['data-flow-source','data-flow-target','data-flow-up','data-flow-down','data-flow-remove-target','data-flow-add-target','data-flow-remove-rule','add-flow-rule','add-flow-exception'])assert.ok(markup.includes(selector));

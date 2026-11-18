@@ -127,6 +127,8 @@ def _apply_configuration(state, payload):
         settings.setdefault('priorityFlightRoles', deepcopy(state['balanceSettings'].get('priorityFlightRoles', [])))
         if 'coveragePriorities' in state['balanceSettings']:
             settings.setdefault('coveragePriorities', deepcopy(state['balanceSettings']['coveragePriorities']))
+        if 'coverageRoleOrder' in state['balanceSettings']:
+            settings.setdefault('coverageRoleOrder', deepcopy(state['balanceSettings']['coverageRoleOrder']))
         identities = {identity: by_name[name]["id"] for name, identity in data.get("peopleIds", {}).items()}
         for adjustment in settings["priorityAdjustments"]:
             adjustment["memberId"] = identities.get(adjustment["memberId"], adjustment["memberId"])

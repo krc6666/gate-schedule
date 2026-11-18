@@ -474,6 +474,7 @@ class Scenario:
     priority_flight_roles: tuple[tuple[str, str], ...] = ()
     coverage_priorities: tuple[tuple[str, str], ...] = ()
     dedicated_flight_protection: bool = True
+    coverage_role_order: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, order=True)
@@ -508,6 +509,36 @@ def validate_coverage_priorities(items, role_names=None):
 def task_coverage_priority(scenario: Scenario, task: Task) -> str:
     """One role policy applies across flights, shared tasks and rotation segments."""
     return dict(scenario.coverage_priorities).get(task.role_id, 'normal')
+
+
+def validate_coverage_role_order(items, role_names=None):
+    if (not isinstance(items, list)
+            or any(not isinstance(role, str) or not role or role != role.strip() for role in items)
+            or len(items) != len(set(items))
+            or role_names is not None and not set(items) <= set(role_names)):
+        raise ValueError('同档保岗顺序必须是不重复的有效岗位列表')
+
+
+def coverage_order_weights(scenario: Scenario) -> dict[str, int]:
+    """Bounded, additive preference within each tier; never a staffing constraint.
+
+    Omitted roles tie with the last listed role. Empty/one-role tiers have no
+    preference. Callers must retain the existing coverage objectives first.
+    """
+    priorities = dict(scenario.coverage_priorities)
+    weights = {}
+    for tier in COVERAGE_PRIORITIES:
+        roles = [role for role in scenario.coverage_role_order if priorities.get(role, 'normal') == tier]
+        weights.update((role, len(roles) - index - 1) for index, role in enumerate(roles))
+    return weights
+
+
+def coverage_signature(scenario: Scenario, assignments) -> tuple[int, ...]:
+    """Staffed counts of the existing coverage goals, including shared tasks once."""
+    counts = {}
+    for assignment in assignments:
+        counts[assignment.task_id] = counts.get(assignment.task_id, 0) + 1
+    return tuple(sum(counts.get(t.id, 0) for t in group) for group in coverage_task_groups(scenario))
 
 
 def coverage_task_groups(scenario: Scenario) -> tuple[tuple[Task, ...], ...]:
@@ -671,7 +702,7 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
     import re
 
     required = set(default_balance_settings())
-    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'priorityFlightRoles', 'coveragePriorities'}:
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'priorityFlightRoles', 'coveragePriorities', 'coverageRoleOrder'}:
         raise ValueError("重点轮换与航班数设置字段不完整或未知")
     gap = value["flightCountGap"]
     if gap is not None and (type(gap) is not int or gap < 0):
@@ -682,6 +713,8 @@ def validate_balance_settings(value, role_names, member_ids=None) -> dict:
     catalog = set(role_names)
     if 'coveragePriorities' in value:
         validate_coverage_priorities(value['coveragePriorities'], catalog)
+    if 'coverageRoleOrder' in value:
+        validate_coverage_role_order(value['coverageRoleOrder'], catalog)
     if 'priorityFlightRoles' in value:
         validate_priority_flight_roles(value['priorityFlightRoles'], catalog)
     if (not isinstance(roles, list)
@@ -738,6 +771,10 @@ class ValidationIssue:
     member_id: str | None = None
     related_task_ids: tuple[str, ...] = ()
 
+    @property
+    def severity(self):
+        return 'warning' if self.code == 'coverage_order_unmet' else 'error'
+
 
 @dataclass(frozen=True)
 class SolveResult:
@@ -748,8 +785,8 @@ class SolveResult:
 
 
 def draft_blocking_issues(issues):
-    """Only an unfilled headcount is permitted in an automatic unfinished draft."""
-    return [issue for issue in issues if issue.code != "coverage_shortfall"]
+    """Shortfalls and soft preference notices never waive a hard violation."""
+    return [issue for issue in issues if issue.code != "coverage_shortfall" and issue.severity != 'warning']
 
 
 WORK_MODES = {"timed": "特殊实际时段", "arrival": "接机环节", "boarding": "登机环节", "continuous": "全程保障"}
@@ -1278,9 +1315,15 @@ def flow_source_rule(rows, field, role, flight_no):
     return None
 
 
-def flow_rule_roles(role_names, preferences=(), rule_sets=(), scenarios=()):
-    """Stable choices include configured/future turns and actual generated ones."""
-    result=list(dict.fromkeys(role_names))
+def flow_rule_roles(role_names, preferences=(), rule_sets=(), scenarios=(), *, role_configs=()):
+    """Editable flow choices exclude dedicated roles, including physical turn aliases.
+
+    Stored rule references remain untouched; historical tasks never override the
+    current group's maintained dedicated switch for future editing choices.
+    """
+    dedicated = {r['roleName'] for r in role_configs if r.get('exclusiveSameFlight', False)}
+    result=[role for role in dict.fromkeys(role_names)
+            if role not in dedicated and not ('大件行李拦截' in dedicated and is_baggage_turn_role(role))]
     if '大件行李拦截' not in result:
         return result
     extra={f'大件{i}' for i in range(1,4)}

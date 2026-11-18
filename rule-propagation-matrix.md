@@ -1,3 +1,33 @@
+# 2026-11-18 流动岗位可选目录排除专岗（不新增排班硬规则）
+
+| 环节 | 事实与消费 |
+| --- | --- |
+| 输入事实 | 当前组configuration.roleConfigs.exclusiveSameFlight，既有专岗开关与迁移合同保持 |
+| 编辑目录 | domain.flow_rule_roles唯一排除专岗及其大件轮次；workbench.snapshot传入当前组长期配置，投影flowRuleRoles |
+| 界面/人工 | 接续、禁止衔接、分人集合、高级旧关系只用可选目录；旧值已选禁用并提示，明确替换/删除；禁止复制含旧专岗引用的特例，防浏览器因选项消失自动换值 |
+| 候选池/求解 | 无新约束；实际候选、旧接续含义、专岗冲突仍消费原domain事实，不将编辑限制变成新排班硬规则 |
+| 最终校验 | 原专岗、资格、冲突和人工反向回归继续执行；本轮不新增禁止归档错误 |
+| 输出/迁移 | 正式历史不追改；开关及旧引用随完整Excel/SQLite/备份原路迁移，重启投影选项；无新持久字段，A/B隔离 |
+| 测试 | test_flow_role_choices：大件别名、旧引用、取消恢复、Excel空库重启、无关保存、A/B；flow-rules渲染原值/无副作用；relative-rules真实Chrome及静态browser-local/WASM |
+
+---
+
+# 2026-11-18 同档保岗软顺序（不新增排班硬规则）
+
+| 环节 | 唯一事实与传播 |
+| --- | --- |
+| 输入 | domain.validate_coverage_role_order/validate_balance_settings拥有coverageRoleOrder可选有序岗位列表合同；规则页分档启用/上下移/恢复，统一保存；每组全局、A/B隔离 |
+| 候选池 | 不授予任何资格，不改候选或冲突；manual_editing.slot_issues只过滤warning对“可安排”的影响，全部硬问题保留 |
+| 求解 | domain.coverage_order_weights唯一生成同档有界线性权重，solver在原coverage_task_groups目标之后增加一项加权缺口软目标，不增加按序必须排满的约束 |
+| 人工/后置 | 允许反转偏好；固定、半休、冲突、专岗专人、轮换等仍完整校验；缺字段保存保留已有顺序；三档与其他档排序不被恢复按钮清空 |
+| 最终校验 | validator独立查单人合法改善，domain.coverage_signature验证原覆盖目标不降；完整硬校验复查试调，coverage_order_unmet仅warning；draft_blocking_issues不将偏好升级为自动结果拒绝 |
+| 快照/归档 | workspace_document.plan_scenario从日计划消费，正式快照保留当时顺序及提示；旧缺字段不补写、不自动重算；人工可带提示归档 |
+| 输出 | issue_data仅为偏好附severity=warning；当前/历史/上一班黄色提示，Excel带问题说明；资格冲突等仍红色。CLI仍返回领域code/message |
+| 迁移 | configuration_transfer保留旧缺字段；excel_io可见顺序表+版本，空表清空、缺配套/非法拒绝；SQLite/完整备份/完整A/B根文档原路携带，无旁路设置或新数据存储 |
+| 回归 | tests/test_coverage_order.py：三档争人/反转、原覆盖目标、JSON、人工提示/候选、硬规则反向、共享任务、Excel空库重启实际求解、旧导入保留/空表清空、A/B、归档/导出/恢复/原子拒绝；balance-ui及browser-local真实Chrome/WASM操作与迁移，dedicated-shortage验证提示不变红 |
+
+---
+
 # 2026-11-17 手调性能：按日输入复用默认出勤起点（机制策略，不改业务规则）
 
 | 环节 | 唯一事实与接入/验证范围 |

@@ -42,14 +42,15 @@ def issue_data(scenario, issues):
         if len(related) > 1 and not all(labels.get(k, k) in message for k in related):
             message = ' / '.join(labels.get(k, k) for k in related) + '：' + message
         result.append({"code": issue.code, "message": message, "taskId": issue.task_id,
-                       "memberId": issue.member_id, "relatedTaskIds": list(related)})
+                       "memberId": issue.member_id, "relatedTaskIds": list(related),
+                       **({'severity': issue.severity} if issue.severity == 'warning' else {})})
     return result
 
 
 def slot_issues(scenario, assignments, task_id, slot, member_id):
     trial = replace_slot(scenario, assignments, task_id, slot, member_id)
     return trial, [i for i in validate_schedule(scenario, trial)
-                   if i.code not in {'coverage_shortfall', 'flight_count_spread'} and (i.task_id == task_id or task_id in i.related_task_ids or i.member_id == member_id)]
+                   if i.severity != 'warning' and i.code not in {'coverage_shortfall', 'flight_count_spread'} and (i.task_id == task_id or task_id in i.related_task_ids or i.member_id == member_id)]
 
 
 def candidate_options(scenario, assignments, task_id, slot=0):

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from .domain import Assignment, Scenario, ValidationIssue, has_role_qualification, task_pair_conflict, member_flight_participation, task_flight_ids, flight_balance_members
 from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_rest_period_violation, validate_priority_flight_roles, validate_coverage_priorities
+from .domain import validate_coverage_role_order, coverage_order_weights, coverage_signature, task_coverage_priority
 
 
 def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
@@ -32,6 +33,12 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
     if scenario.flight_count_gap is not None and (type(scenario.flight_count_gap) is not int or scenario.flight_count_gap < 0):
         issues.append(ValidationIssue("invalid_flight_count_gap", "当天航班数最大差距必须为空或非负整数"))
     priority_roles = scenario.priority_role_ids
+    try:
+        if not isinstance(scenario.coverage_role_order, (tuple, list)):
+            raise ValueError('顺序必须是列表')
+        validate_coverage_role_order(list(scenario.coverage_role_order))
+    except (ValueError, TypeError):
+        issues.append(ValidationIssue('invalid_coverage_order', '同档保岗顺序无效'))
     try:
         validate_coverage_priorities([{'roleName': r, 'priority': p} for r, p in scenario.coverage_priorities])
     except (ValueError, TypeError):
@@ -105,7 +112,7 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
     return issues
 
 
-def validate_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -> list[ValidationIssue]:
+def _validate_schedule_rules(scenario: Scenario, assignments: tuple[Assignment, ...]) -> list[ValidationIssue]:
     issues = validate_scenario(scenario)
     tasks = {task.id: task for task in scenario.tasks}
     members = {member.id: member for member in scenario.members}
@@ -178,6 +185,44 @@ def validate_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -
             issues.append(ValidationIssue("flight_count_spread",
                 f"当天参与航班最多{maximum}班、最少{minimum}班，差{maximum - minimum}，超过上限{scenario.flight_count_gap}；请整体调整人员安排",
                 related_task_ids=related))
+    return issues
+
+
+def validate_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -> list[ValidationIssue]:
+    """Independent hard validation plus bounded, explainable preference witnesses.
+
+    A notice proves only one legal improvement at unchanged existing coverage,
+    not that all multi-person rearrangements have been searched or optimized.
+    """
+    assignments = tuple(assignments)
+    issues = _validate_schedule_rules(scenario, assignments)
+    if not scenario.coverage_role_order or any(i.code != 'coverage_shortfall' for i in issues):
+        return issues
+    weights = coverage_order_weights(scenario)
+    tasks = {t.id: t for t in scenario.tasks}
+    by_task = defaultdict(list)
+    for a in assignments:
+        by_task[a.task_id].append(a.member_id)
+    signature = coverage_signature(scenario, assignments)
+    for target in scenario.tasks:
+        weight = weights.get(target.role_id, 0)
+        if not weight or len(by_task[target.id]) >= target.required_count:
+            continue
+        for source_assignment in assignments:
+            source = tasks[source_assignment.task_id]
+            if (weights.get(source.role_id, 0) >= weight
+                    or task_coverage_priority(scenario, source) != task_coverage_priority(scenario, target)
+                    or source_assignment.member_id in by_task[target.id]):
+                continue
+            trial = tuple(a for a in assignments if a != source_assignment) + (Assignment(target.id, source_assignment.member_id),)
+            if coverage_signature(scenario, trial) != signature:
+                continue
+            if any(i.code != 'coverage_shortfall' for i in _validate_schedule_rules(scenario, trial)):
+                continue
+            issues.append(ValidationIssue('coverage_order_unmet',
+                f'顺序偏好未满足：{target.id} 排在 {source.id} 前且仍缺人；可将 {source_assignment.member_id} 从后者调至前者，保持原有覆盖目标及硬规则。仅作提醒，可保留人工安排并归档。',
+                target.id, source_assignment.member_id, (target.id, source.id)))
+            break
     return issues
 
 

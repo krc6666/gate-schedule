@@ -167,7 +167,8 @@ class Workbench:
         state['flowRuleRoles'] = flow_rule_roles(
             [r['roleName'] for r in state['configuration']['roleConfigs']],
             [*state['handoffPreferences'],*(r for p in state['plans'].values() for r in p['day'].get('flowPreferences') or [])],
-            [state['workRules'],*(p['day'].get('workRules') for p in state['plans'].values())], flow_scenarios)
+            [state['workRules'],*(p['day'].get('workRules') for p in state['plans'].values())], flow_scenarios,
+            role_configs=state['configuration']['roleConfigs'])
         selected = state['plans'].get(state.get('selectedPlanId'))
         if selected:
             day = selected['day']['serviceDate']
@@ -194,6 +195,8 @@ class Workbench:
         incoming = deepcopy(payload['balanceSettings'])
         if 'coveragePriorities' in state['balanceSettings']:
             incoming.setdefault('coveragePriorities', deepcopy(state['balanceSettings']['coveragePriorities']))
+        if 'coverageRoleOrder' in state['balanceSettings']:
+            incoming.setdefault('coverageRoleOrder', deepcopy(state['balanceSettings']['coverageRoleOrder']))
         settings = validate_balance_settings(incoming, [r["roleName"] for r in state["configuration"]["roleConfigs"]], {p["id"] for p in state["people"]})
         if settings["priorityAdjustments"] != state["balanceSettings"]["priorityAdjustments"]:
             raise WorkspaceError("累计次数已改变，请刷新后重试；次数请在统计表用加减按钮调整")

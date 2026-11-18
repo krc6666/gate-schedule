@@ -1,11 +1,10 @@
 import {baggageWindowHtml,bindBaggageWindow} from './baggage-window';
-import {html,flowRoles, type WorkRules, type SeparationGroup, type State, type Day, type Plan} from './workbench-model';
+import {html,flowRoles,flowRoleOptions as options,flowRoleNotice, type WorkRules, type SeparationGroup, type State, type Day, type Plan} from './workbench-model';
 import {forbiddenHandoffsHtml,bindForbiddenHandoffs} from './forbidden-handoffs';
 import {ruleScopeSections} from './rule-scope-view';
 const empty = (): WorkRules => ({pairs: [], baggage: []});
-const options = (roles: string[], selected: string) => roles.map(r => `<option value="${html(r)}" ${r === selected ? 'selected' : ''}>${html(r)}</option>`).join('');
 function legacyEditor(state: State, rules: WorkRules): string {
-  const roles = state.configuration.roleConfigs.map(r => r.roleName);
+  const roles = flowRoles(state);
   return `<details class="legacy-work-rules"><summary>高级：旧岗位关系（${rules.pairs.length}项，仍然生效）</summary><div class="table-responsive"><table class="data-table"><thead><tr><th>适用航班</th><th>岗位一</th><th>岗位二</th><th>范围</th><th>是否分人</th><th>操作</th></tr></thead><tbody>${rules.pairs.map((r, i) => `<tr data-work-pair="${i}"><td><input data-work-field="flightNo" value="${html(r.flightNo === '*' ? '通用' : r.flightNo)}" placeholder="通用或CX*" /></td><td><select data-work-field="firstRole">${options(roles, r.firstRole)}</select></td><td><select data-work-field="secondRole">${options(roles, r.secondRole)}</select></td><td><select data-work-field="scope">${Object.entries({'same-flight':'同航班','later-flight':'晚结束航班','after-baggage':'大件完成后'}).map(([k,v])=>`<option value="${k}" ${r.scope===k?'selected':''}>${v}</option>`).join('')}</select></td><td><select data-work-field="mode"><option value="separate" ${r.mode==='separate'?'selected':''}>必须分人</option><option value="sequence" ${r.mode!=='separate'?'selected':''}>按接续优先级安排</option></select></td><td><button type="button" class="btn btn-sm" data-work-delete-pair="${i}">删除</button></td></tr>`).join('') || '<tr><td colspan="6">未设置额外分人要求。</td></tr>'}</tbody></table></div><button type="button" class="btn btn-sm" data-work-add-pair>＋ 增加岗位关系</button></details>`;
 }
 function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): string {
@@ -14,6 +13,7 @@ function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): s
   return `<div data-work-editor="${kind}">${baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined)}<section class="separation-settings"><h3>禁止同人集合</h3>${ruleScopeSections(groups,`separation-${kind}`,(g,i) => `
     <fieldset class="separation-group ${g.flightNo==='*'?'is-common':'is-exception'}" data-separation-group="${i}">
       <legend>${html(g.name)} · ${html(g.flightNo==='*'?'通用':g.flightNo)} · <span data-group-state>${g.enabled?'已启用':'已停用，不执行分人'}</span></legend>
+      ${flowRoleNotice(roles,g.roles)}
       <div class="separation-fields">
         <label>组名称 <input data-group-name value="${html(g.name)}" /></label>
         ${g.flightNo==='*'?'':`<label>适用航班 <input data-group-scope value="${html(g.flightNo)}" placeholder="CX* / CX937" /></label>`}
@@ -23,8 +23,8 @@ function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): s
       <div class="separation-roles">${g.roles.map((role,j)=>`<div data-group-role-row="${j}"><label>组内岗位 <select data-group-role>${options(roles.filter(r=>r===role||!g.roles.includes(r)),role)}</select></label><button type="button" class="btn btn-sm" data-group-remove-role="${j}">移除岗位</button></div>`).join('')}</div>
       <div class="button-row">
         ${!g.enabled&&g.roles.length>=2?'<button type="button" class="btn btn-sm btn-primary" data-group-activate>启用此集合</button>':''}
-        <button type="button" class="btn btn-sm" data-group-add-role ${g.roles.length>=roles.length?'disabled':''}>＋ 添加岗位</button>
-        <button type="button" class="btn btn-sm" data-group-exception>＋ 增加航班特例</button>
+        <button type="button" class="btn btn-sm" data-group-add-role ${roles.every(role=>g.roles.includes(role))?'disabled':''}>＋ 添加岗位</button>
+        <button type="button" class="btn btn-sm" data-group-exception ${g.roles.some(role=>!roles.includes(role))?'disabled':''}>＋ 增加航班特例</button>
         <button type="button" class="btn btn-sm" data-group-delete>${g.flightNo==='*'?'删除通用设置':'删除此特例（恢复继承）'}</button>
         ${groups.filter(r=>r.id===g.id).length>1?'<button type="button" class="btn btn-sm" data-group-delete-all>删除整组（含特例）</button>':''}
       </div>
@@ -87,6 +87,7 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
         if(next){const count=g.roles.length;g.roles.push(next);if(count<2&&g.roles.length>=2)g.enabled=true;}
       },true);
       card.querySelector<HTMLButtonElement>('[data-group-exception]')!.onclick=()=>changeGroup(i,(g,r)=>{
+        if(g.roles.some(role=>!flowRoles(state).includes(role)))return;
         const flight=prompt('输入航班特例：如 CX* 或 CX937。同组具体航班优先，其次最长系列，最后通用。','CX*')?.trim();
         if(!flight)return;
         const scope=flight==='通用'?'*':flight;
@@ -106,7 +107,7 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
       }));
     });
     container.querySelector<HTMLButtonElement>('[data-work-add-pair]')!.onclick=()=>modify(kind, rules=>{
-      const roles=state.configuration.roleConfigs.map(r=>r.roleName);if(roles.length<2)return;
+      const roles=flowRoles(state);if(roles.length<2)return;
       rules.pairs.push({flightNo:'*',firstRole:roles[0],secondRole:roles[1],scope:'same-flight',mode:'separate'});
     },true);
     container.querySelectorAll<HTMLButtonElement>('[data-work-delete-pair]').forEach(b=>b.onclick=()=>modify(kind,r=>{r.pairs.splice(Number(b.dataset.workDeletePair),1);},true));

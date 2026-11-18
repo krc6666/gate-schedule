@@ -6,7 +6,7 @@ from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups
+from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups, coverage_order_weights
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
@@ -349,7 +349,11 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
     # Domain owns dedicated/flight-end/role ordering, including shared tasks.
     coverage_costs = tuple((sum(missing_by_task[t.id] for t in group),
                             sum(t.required_count for t in group)) for group in coverage_groups)
-    priority_costs = (*coverage_costs, *priority_costs)
+    order_weights = coverage_order_weights(scenario)
+    ordered_tasks = [(t, order_weights.get(t.role_id, 0)) for t in scenario.tasks]
+    order_bound = sum(t.required_count * weight for t, weight in ordered_tasks)
+    order_costs = ((sum(missing_by_task[t.id] * weight for t, weight in ordered_tasks), order_bound),) if allow_partial and order_bound else ()
+    priority_costs = (*coverage_costs, *order_costs, *priority_costs)
     for cost, bound in reversed(priority_costs):
         if bound:
             weight = preference_bound + 1

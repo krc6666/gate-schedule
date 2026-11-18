@@ -109,6 +109,8 @@
 .schedule-sheet .wb-matrix .schedule-cell-vacancy{background:#fff4cf;box-shadow:inset 0 -2px #d69b13}
 .schedule-sheet .wb-matrix .schedule-cell-conflict{background:#ffe5e5;box-shadow:inset 0 -2px #c5303b}
 .schedule-cell-vacancy .cell-warning{background:#fff4cf;border-color:#b9850e;color:#815800}
+.coverage-preference-note{color:#815800}
+.previous-cell-vacancy .previous-warning{color:#815800}
 .wb-main .palette-person[draggable="true"]{touch-action:none;user-select:none}
 .priority-rule-content{padding:14px}.priority-rule-content .weekday-choices{display:flex;flex-wrap:wrap;gap:8px 16px}.priority-rule-content .weekday-choices label{display:flex;align-items:center;gap:6px}
 .priority-filter{margin-bottom:10px}.priority-statistics-table{min-width:440px}.priority-statistics-table th,.priority-statistics-table td{text-align:center}.priority-statistics-table th:first-child{text-align:left;min-width:85px}

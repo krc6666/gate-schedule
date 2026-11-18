@@ -3,7 +3,7 @@ from __future__ import annotations
 from .domain import ExternalSupportRequirement, Flight, Member, Rotation, Scenario, Task, parse_minutes, validate_balance_settings, default_team_leader_settings, validate_team_leader_settings
 
 
-from .domain import default_half_rest_settings, validate_half_rest_settings, validate_priority_flight_roles, validate_coverage_priorities
+from .domain import default_half_rest_settings, validate_half_rest_settings, validate_priority_flight_roles, validate_coverage_priorities, validate_coverage_role_order
 
 
 def scenario_from_dict(data: dict) -> Scenario:
@@ -51,6 +51,7 @@ def scenario_from_dict(data: dict) -> Scenario:
     leaders = validate_team_leader_settings(data.get("teamLeaderSettings", default_team_leader_settings()))
     validate_priority_flight_roles(data.get('priorityFlightRoles', []))
     validate_coverage_priorities(data.get('coveragePriorities', []))
+    validate_coverage_role_order(data.get('coverageRoleOrder', []))
     return Scenario(
         service_date=data["serviceDate"],
         model_version=data.get("modelVersion", "phase-0"),
@@ -64,6 +65,7 @@ def scenario_from_dict(data: dict) -> Scenario:
         balance_exempt_half_rest=validate_half_rest_settings(data.get("halfRestSettings", default_half_rest_settings()))["exemptFlightCount"],
         priority_flight_roles=tuple((p['flightNo'], p['roleName']) for p in data.get('priorityFlightRoles', [])),
         coverage_priorities=tuple((p['roleName'], p['priority']) for p in data.get('coveragePriorities', [])),
+        coverage_role_order=tuple(data.get('coverageRoleOrder', [])),
         flights=flights,
         members=tuple(
             Member(
@@ -112,6 +114,7 @@ def scenario_to_dict(scenario: Scenario) -> dict:
         **({'flowPreferences': list(scenario.flow_preferences)} if scenario.flow_preferences is not None else {}),
         **({'priorityFlightRoles': [{'flightNo': f, 'roleName': r} for f, r in scenario.priority_flight_roles]} if scenario.priority_flight_roles else {}),
         **({'coveragePriorities': [{'roleName': r, 'priority': p} for r, p in scenario.coverage_priorities]} if scenario.coverage_priorities else {}),
+        **({'coverageRoleOrder': list(scenario.coverage_role_order)} if scenario.coverage_role_order else {}),
         "serviceDate": scenario.service_date,
         "modelVersion": scenario.model_version,
         "minimumTransitionMinutes": scenario.minimum_transition_minutes,

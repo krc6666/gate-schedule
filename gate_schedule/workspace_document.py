@@ -92,6 +92,7 @@ def plan_scenario(plan):
         priority_flight_roles=tuple((p['flightNo'], p['roleName']) for p in plan.get('balanceSettings', {}).get('priorityFlightRoles', []))
             if plan.get('balanceSettings', {}).get('priorityEnabled', False) else (),
         coverage_priorities=tuple((p['roleName'], p['priority']) for p in plan.get('balanceSettings', {}).get('coveragePriorities', [])),
+        coverage_role_order=tuple(plan.get('balanceSettings', {}).get('coverageRoleOrder', [])),
         team_leader_last=plan.get("teamLeaderSettings", default_team_leader_settings())["lastUsed"],
         balance_exempt_team_leaders=plan.get("teamLeaderSettings", default_team_leader_settings())["exemptFlightCount"],
         balance_exempt_half_rest=plan.get("halfRestSettings", default_half_rest_settings())["exemptFlightCount"],
@@ -248,6 +249,7 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
         validate_balance_settings(plan["balanceSettings"], plan["balanceSettings"]["priorityRoleNames"]
             + [r['roleName'] for r in plan['balanceSettings'].get('priorityFlightRoles', [])]
             + [r['roleName'] for r in plan['balanceSettings'].get('coveragePriorities', [])]
+            + plan['balanceSettings'].get('coverageRoleOrder', [])
             + [r["roleName"] for r in state["configuration"]["roleConfigs"]])
     BaggageRotationSettings(plan["rotationEnabled"], plan["rotationMinutes"])
     _validate_day_structure(day)

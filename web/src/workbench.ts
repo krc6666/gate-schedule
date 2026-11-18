@@ -437,7 +437,7 @@ function bindRules(): void {
     flightCountGap: root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked ? root.querySelector<HTMLInputElement>("#flight-count-gap")!.valueAsNumber : null,
   });
   root.querySelectorAll<HTMLInputElement>('[data-coverage-role]').forEach(input => input.onchange = () => {
-    const balance = structuredClone(edits.settings.balanceSettings ?? state.balanceSettings);
+    const balance = structuredClone(readBalance());
     const roleName = input.dataset.coverageRole!;
     balance.coveragePriorities = (balance.coveragePriorities ?? []).filter(item => item.roleName !== roleName);
     if (input.checked) {
@@ -445,7 +445,13 @@ function bindRules(): void {
       balance.coveragePriorities.push({ roleName, priority: input.dataset.coveragePriority as NonNullable<BalanceSettings['coveragePriorities']>[number]['priority'] });
     }
     edits.settings.balanceSettings = balance;
-    updateSaveStatus();
+    render();
+  });
+  root.querySelectorAll<HTMLButtonElement>('[data-coverage-order-action]').forEach(button => button.onclick = () => {
+    edits.settings.balanceSettings = changeCoverageOrder(state, readBalance(),
+      button.dataset.coverageOrderTier as import('./workbench-model').CoveragePriority,
+      button.dataset.coverageOrderAction!, button.dataset.coverageOrderRole);
+    render();
   });
   for (const input of root.querySelectorAll<HTMLInputElement>("#priority-enabled, [data-priority-role], #flight-count-gap-enabled, #flight-count-gap")) input.onchange=()=>{
     root.querySelector<HTMLInputElement>("#flight-count-gap")!.disabled=!root.querySelector<HTMLInputElement>("#flight-count-gap-enabled")!.checked;
@@ -758,7 +764,7 @@ function scheduleHtml(p: Plan | null): string {
     const names = groups.join(" / ");
     const cellIssues = shownIssues.filter(issue => issue.taskId === cell?.id || merged && p.day.cells.some(c => c.roleName === role && merged.columns.includes(c.flightNo) && c.id === issue.taskId) || segments.some(s => s.task_id === issue.taskId || issue.relatedTaskIds?.includes(s.task_id)));
     const hasIssue = cellIssues.length > 0;
-    const hasVacancy = cellIssues.some(issue => issue.code === "coverage_shortfall");
+    const hasVacancy = cellIssues.some(issue => issue.code === "coverage_shortfall" || issue.severity === 'warning');
     const hasConflict = cellIssues.some(issue => needsRedWarning(issue, schedule));
     if (viewingFormal) {
       const pending = cell && p.formalCellDrafts?.[cell.id];
@@ -1070,3 +1076,4 @@ async function start(): Promise<void> {
   }
 }
 void start();
+import { changeCoverageOrder } from './coverage-order';

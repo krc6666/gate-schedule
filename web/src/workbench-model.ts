@@ -19,20 +19,21 @@ export type TaskHandoffOption = {key:string; sourceTaskId:string; targetTaskId:s
 export type DisplayPreferences = { layout: "flights" | "matrix"; zoom: number };
 export type PriorityFlightRole = { flightNo: string; roleName: string };
 export type CoveragePriority = "protect" | "normal" | "leave-empty";
-export type BalanceSettings = { coveragePriorities?: { roleName: string; priority: CoveragePriority }[]; flightCountGap: number | null; priorityEnabled: boolean; priorityRoleNames: string[]; priorityFlightRoles?: PriorityFlightRole[]; priorityAdjustments: { month: string; memberId: string; flightNo?: string; roleName: string; delta: number }[] };
+export type BalanceSettings = { coverageRoleOrder?: string[]; coveragePriorities?: { roleName: string; priority: CoveragePriority }[]; flightCountGap: number | null; priorityEnabled: boolean; priorityRoleNames: string[]; priorityFlightRoles?: PriorityFlightRole[]; priorityAdjustments: { month: string; memberId: string; flightNo?: string; roleName: string; delta: number }[] };
 export type PriorityStatistics = { revision: number; month: string; months: string[]; totals: { memberId: string; count: number }[]; scopedTotals?: {flightNo: string; roleName: string; totals: {memberId: string; count: number}[]}[]; legacyAdjustments?: (BalanceSettings['priorityAdjustments'][number] & {memberName: string})[]; roles: { flightNo?: string; roleName: string; members: { memberId: string; memberName: string; qualified: boolean; historyCount: number; adjustment: number; effectiveCount: number; dates: string[] }[] }[] };
 export type RoleStatistics = { revision: number; month: string; months: string[]; members: { memberId: string; memberName: string; removed: boolean }[]; totals: { memberId: string; count: number }[]; roles: { roleName: string; members: { memberId: string; memberName: string; qualified: boolean; count: number; dates: string[] }[] }[] };
 export type MemberFlights = { memberId: string; memberName: string; flightIds: string[]; flightNos: string[]; count: number };
 export type FlightTemplate = Omit<Flight, "id"> & { roleNames?: string[]; roles?: { roleName: string; requiredCount: number | null; workModeOverride?: string | null; workStart?: string | null; workEnd?: string | null }[] };
 export type Day = { flowPreferences?: HandoffPreference[]; workRules?:WorkRules; workRulesOverride?:boolean; taskHandoffs?:string[]; attendanceMode?: string; releasePolicy?: string; phaseHandoffs?: [string, string][]; serviceDate: string; title: string; flights: Flight[]; roleNames: string[]; cells: Cell[]; remarks: { rawText: string; kind: string }[]; roster: string[]; roleConfigs: RoleConfig[]; memberConfigs: { memberName: string; eligibleRoleNames: string[] }[]; memberAvailability: Attendance[]; extraOccupancies: { id: string; label: string; memberNames: string[]; start: string; end: string }[]; remarksReviewed: boolean; transitionMinutes: number };
 export type Assignment = { taskId: string; memberId: string };
-export type Issue = { code: string; message: string; taskId: string | null; memberId: string | null; relatedTaskIds?: string[] };
+export type Issue = { code: string; message: string; taskId: string | null; memberId: string | null; relatedTaskIds?: string[]; severity?: 'warning' | 'error' };
 export type Candidate = { id: string; name: string; available: boolean; manualAllowed?: boolean; reasons: string[]; issues: Issue[]; revision: number; status: "assigned" | "blocked" | "continuation" | "concurrent" | "available" | "unverified"; label: string; requiresConfiguration?: boolean };
 export type EditFeedback = { hasWarnings: boolean; message: string; issues: Issue[] };
 export type EditPreview = { valid: boolean; revision: number; issues: Issue[]; suggestions: string[] };
 export type Task = { timingMode?: string; timingLabel?: string; concurrent?: boolean; exclusiveSameFlight?: boolean; id: string; flightId: string | null; roleId: string; start: string; end: string; requiredCount: number; lockedMemberIds: string[]; qualifiedMemberIds: string[] };
 
 export function needsRedWarning(issue: Issue, schedule: Schedule): boolean {
+  if (issue.severity === 'warning') return false;
   return issue.code !== "coverage_shortfall" || schedule.tasks.some(task => task.exclusiveSameFlight && (task.id === issue.taskId || issue.relatedTaskIds?.includes(task.id)));
 }
 export type Segment = { timing_mode?: string; timing_label?: string; task_id: string; start: number; end: number; members: string[] };
@@ -54,3 +55,12 @@ export const time = (value: number) => {
 };
 
 export const flowRoles = (state:State):string[] => state.flowRuleRoles ?? state.configuration.roleConfigs.map(r=>r.roleName);
+
+export const flowRoleOptions = (roles: string[], selected: string, excluded: string[] = []): string =>
+  roles.filter(role => role === selected || !excluded.includes(role)).map(role => `<option value="${html(role)}" ${role === selected ? 'selected' : ''}>${html(role)}</option>`).join('')
+  + (selected && !roles.includes(selected) ? `<option value="${html(selected)}" selected disabled>${html(selected)}（已设专岗，不可用于新增流动）</option>` : '');
+
+export const flowRoleNotice = (roles: string[], referenced: string[]): string => {
+  const unavailable = [...new Set(referenced.filter(role => !roles.includes(role)))];
+  return unavailable.length ? `<p class="section-note inactive-rule-note" data-flow-unavailable>已设专岗，不可用于新增流动：${unavailable.map(html).join('、')}。原引用保留，请明确替换或移除；不会自动更改旧配置或班表。</p>` : '';
+};

@@ -1,8 +1,7 @@
-import {flowRoles,html, type WorkRules, type State, type ForbiddenHandoff} from './workbench-model';
+import {flowRoles,flowRoleOptions as options,flowRoleNotice,html, type WorkRules, type State, type ForbiddenHandoff} from './workbench-model';
 import {ruleScopeSections} from './rule-scope-view';
 
 const scopes={'same-flight':'本航班','later-overlap':'重叠且晚结束的其他航班'};
-const options=(roles:string[],selected:string)=>roles.map(r=>`<option value="${html(r)}" ${r===selected?'selected':''}>${html(r)}</option>`).join('');
 
 export function forbiddenHandoffsHtml(state:State,rules:WorkRules,kind='base'):string {
   const roles=flowRoles(state);
@@ -10,6 +9,7 @@ export function forbiddenHandoffsHtml(state:State,rules:WorkRules,kind='base'):s
     <p class="section-note">明确指定哪些岗位不能由同一人接续承担。禁止优先于上方优先接续，即使绕经其他岗位也不能规避；本航班和晚结束重叠航班分别设置。修改后保存配置并重新排班。</p>
     ${ruleScopeSections(rules.forbiddenHandoffs??[],`forbidden-${kind}`, (row,i)=>`<fieldset class="flow-rule ${row.flightNo==='*'?'is-common':'is-exception'}" data-forbidden-rule="${i}">
       <legend><span class="rule-scope-badge">${row.flightNo==='*'?'通用':html(row.flightNo)+' 特例'}</span> ${html(row.sourceRole)} · ${row.enabled?'已启用':'已停用，不执行禁止'}</legend>
+      ${flowRoleNotice(roles,[row.sourceRole,...row.targets.map(target=>target.role)])}
       <div class="form-grid">${row.flightNo==='*'?'':`<label>来源航班<input data-forbidden-scope value="${html(row.flightNo)}" placeholder="CX* 或 CX937" /></label>`}
       <label>来源岗位<select data-forbidden-source>${options(roles,row.sourceRole)}</select></label>
       <label class="switch-label"><input type="checkbox" data-forbidden-enabled ${row.enabled?'checked':''} ${row.targets.length?'':'disabled'}/>启用禁止衔接</label></div>
@@ -19,7 +19,7 @@ export function forbiddenHandoffsHtml(state:State,rules:WorkRules,kind='base'):s
         <button type="button" class="btn btn-sm" data-forbidden-remove-target>删除目标</button></div>`).join('')}
       ${row.targets.length?'':'<p class="section-note">添加目标后自动启用，默认禁止本航班。</p>'}
       <div class="button-row"><button type="button" class="btn btn-sm" data-forbidden-add-target>＋ 添加禁止目标</button>
-      <button type="button" class="btn btn-sm" data-forbidden-exception>＋ 增加航班特例</button>
+      <button type="button" class="btn btn-sm" data-forbidden-exception ${[row.sourceRole,...row.targets.map(t=>t.role)].some(role=>!roles.includes(role))?'disabled':''}>＋ 增加航班特例</button>
       <button type="button" class="btn btn-sm" data-forbidden-delete>${row.flightNo==='*'?'删除禁止规则':'删除特例，恢复继承'}</button></div>
       ${row.flightNo==='*'?'':'<p class="section-note">特例替换此来源的全部通用目标；关闭不回退，删除恢复继承。</p>'}
     </fieldset>`)}
@@ -54,6 +54,7 @@ export function bindForbiddenHandoffs(container:HTMLElement,state:State,modify:(
     });
     card.querySelector<HTMLButtonElement>('[data-forbidden-delete]')!.onclick=()=>modify(r=>{r.forbiddenHandoffs!.splice(i,1);},true);
     card.querySelector<HTMLButtonElement>('[data-forbidden-exception]')!.onclick=()=>change(i,(row,rules)=>{
+      if([row.sourceRole,...row.targets.map(t=>t.role)].some(role=>!roles.includes(role)))return;
       const v=prompt('输入来源航班特例，如 CX* 或 CX937。','CX*')?.trim().toUpperCase();if(!v)return;
       const scope=v==='通用'?'*':v;
       if(rules.forbiddenHandoffs!.some(r=>r.flightNo===scope&&r.sourceRole===row.sourceRole)){alert('该来源已有此航班特例，请直接修改。');return;}

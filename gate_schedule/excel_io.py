@@ -994,7 +994,7 @@ def export_archived_schedule(raw_day, scenario, assignments, issues, pending):
                 dedicated_gap = any(i['code'] == 'coverage_shortfall' and any(
                     t.exclusive_same_flight for key, t in tasks.items()
                     if key == i.get('taskId') or key in i.get('relatedTaskIds', [])) for i in relevant)
-                color = 'FFF3CD' if all(i['code']=='coverage_shortfall' for i in relevant) and not dedicated_gap else 'FDE2E2'
+                color = 'FFF3CD' if all(i['code']=='coverage_shortfall' or i.get('severity') == 'warning' for i in relevant) and not dedicated_gap else 'FDE2E2'
                 sheet.cell(sheet.max_row,index).fill=PatternFill('solid',fgColor=color)
     problems = book.create_sheet('排班问题')
     problems.append(['状态', '带问题归档' if issues else '校验通过'])
@@ -1259,6 +1259,12 @@ def export_complete_configuration(data, *, history_schedules=None):
             coverage.append(['岗位', '缺人时安排'])
             for item in balance['coveragePriorities']:
                 coverage.append([item['roleName'], COVERAGE_PRIORITIES[item['priority']]])
+        if 'coverageRoleOrder' in balance:
+            sheet.append(['同档保岗顺序版本', 1])
+            order = book.create_sheet('同档保岗顺序')
+            order.append(['序号', '岗位'])
+            for index, role in enumerate(balance['coverageRoleOrder'], 1):
+                order.append([index, role])
         adjustments = book.create_sheet("重点次数修正")
         adjustments.append(["月份", "人员ID", "姓名", "岗位", "修正次数"] + (['航班号'] if by_flight else []))
         names_by_id = {identity: name for name, identity in data.get("peopleIds", {}).items()}
@@ -1578,6 +1584,8 @@ def import_complete_configuration(content):
                     identities[name] = identity
             data["peopleIds"] = identities
         balance_sheets = {"排班平衡", "重点次数修正"}
+        if '同档保岗顺序' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
+            raise ValueError('同档保岗顺序、排班平衡和重点次数修正必须一起保留')
         if '保岗优先级' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
             raise ValueError('保岗优先级、排班平衡和重点次数修正必须一起保留')
         if '航班重点岗位' in book.sheetnames and not balance_sheets <= set(book.sheetnames):
@@ -1586,6 +1594,11 @@ def import_complete_configuration(content):
             if not balance_sheets <= set(book.sheetnames):
                 raise ValueError("排班平衡和重点次数修正两张表必须一起保留")
             entries = pairs("排班平衡")
+            has_order = '同档保岗顺序版本' in entries
+            if has_order and (type(entries['同档保岗顺序版本']) is not int or entries['同档保岗顺序版本'] != 1 or '同档保岗顺序' not in book.sheetnames):
+                raise ValueError('同档保岗顺序表缺失或版本无效')
+            if not has_order and '同档保岗顺序' in book.sheetnames:
+                raise ValueError('同档保岗顺序版本缺失')
             has_coverage = '保岗优先级版本' in entries
             if has_coverage and (entries['保岗优先级版本'] != 1 or '保岗优先级' not in book.sheetnames):
                 raise ValueError('保岗优先级表缺失或版本无效')
@@ -1596,7 +1609,7 @@ def import_complete_configuration(content):
                 raise ValueError('航班重点岗位表缺失或范围版本无效')
             if not by_flight and '航班重点岗位' in book.sheetnames:
                 raise ValueError('航班重点岗位范围版本缺失')
-            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"} | ({'重点岗位范围版本'} if by_flight else set()) | ({'保岗优先级版本'} if has_coverage else set()):
+            if set(entries) != {"当天航班数最大差距", "重点岗位轮换启用", "重点岗位"} | ({'重点岗位范围版本'} if by_flight else set()) | ({'保岗优先级版本'} if has_coverage else set()) | ({'同档保岗顺序版本'} if has_order else set()):
                 raise ValueError("排班平衡需完整填写差距开关值、重点轮换启用和重点岗位项目")
             if entries["重点岗位轮换启用"] not in {"是", "否"}:
                 raise ValueError("重点岗位轮换启用请明确填是或否")
@@ -1627,6 +1640,13 @@ def import_complete_configuration(content):
                         raise ValueError('保岗优先级请填写优先保岗、正常安排或缺人时优先留空')
                     items.append({'roleName': _text(role), 'priority': levels[_text(priority)]})
                 data['balanceSettings']['coveragePriorities'] = items
+            if has_order:
+                ordered = list(rows('同档保岗顺序', ['序号', '岗位']))
+                positions = [position for position, _ in ordered]
+                if (any(type(p) is not int or p < 1 for p in positions)
+                        or len(set(positions)) != len(positions)):
+                    raise ValueError('同档保岗顺序的序号必须为不重复的正整数')
+                data['balanceSettings']['coverageRoleOrder'] = [_text(role) for _, role in sorted(ordered)]
         if "每周航班" in book.sheetnames:
             weekly = {}
             empty = set()

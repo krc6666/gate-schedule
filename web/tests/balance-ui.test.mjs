@@ -118,6 +118,17 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
   assert.equal(await evaluate('document.querySelector("[data-coverage-role=主验][data-coverage-priority=protect]").checked'),false,'两项互斥');
   await change('[data-coverage-role="主验"][data-coverage-priority="leave-empty"]',false,true);
   assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'取消勾选恢复正常安排');
+  assert.match(await evaluate('document.querySelector("[data-coverage-order-group=normal]").textContent'),/未排序/);
+  const shownOrder=()=>evaluate('[...document.querySelectorAll("[data-coverage-order-group=normal] tbody th")].map(el=>el.textContent)');
+  const beforeOrder=await shownOrder();
+  await click('[data-coverage-order-tier=normal][data-coverage-order-action=enable]');
+  await click(`[data-coverage-order-role="${beforeOrder[1]}"][data-coverage-order-action=up]`);
+  assert.deepEqual(await shownOrder(),[beforeOrder[1],beforeOrder[0],...beforeOrder.slice(2)],'上移修改本档顺序');
+  await click(`[data-coverage-order-role="${beforeOrder[1]}"][data-coverage-order-action=down]`);
+  assert.deepEqual(await shownOrder(),beforeOrder,'下移恢复原顺序');
+  await click('[data-coverage-order-tier=normal][data-coverage-order-action=reset]');
+  assert.match(await evaluate('document.querySelector("[data-coverage-order-group=normal]").textContent'),/未排序/);
+  assert.equal(commands.length,0,'顺序调整只改草稿，与统一保存共用');
   await click('#add-flow-rule');await click('[data-flow-rule="0"] [data-flow-add-target]');
   await click('#export-complete-configuration');
   assert.equal(await evaluate('document.querySelector("#app-dialog").open'),true);

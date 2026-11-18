@@ -1,22 +1,22 @@
-import {flowRoles, html, type HandoffPreference, type State } from "./workbench-model";
+import {flowRoles, flowRoleOptions as options, flowRoleNotice, html, type HandoffPreference, type State } from "./workbench-model";
 import {ruleScopeSections} from './rule-scope-view';
 
 const flightScopeOptions = {'same-flight':'本航班','later-overlap':'重叠且晚结束的其他航班'};
-const options = (roles: string[], selected: string, excluded: string[] = []) => roles.filter(r => r === selected || !excluded.includes(r)).map(r => `<option value="${html(r)}" ${r === selected ? "selected" : ""}>${html(r)}</option>`).join("");
 
 export function handoffPreferences(state: State, draft = false): string {
   const roles = flowRoles(state);
   const flights = [...new Set(state.flightLibrary.map(f => f.flightNo))];
   const card=(row:HandoffPreference,index:number)=>`<fieldset class="flow-rule ${row.flightNo==='*'?'is-common':'is-exception'}" data-flow-rule="${index}">
     <legend><span class="rule-scope-badge">${row.flightNo==='*'?'通用':html(row.flightNo)+' 特例'}</span> ${html(row.arrivalRole)} <span class="rule-status">${row.enabled?'已启用':'已停用'}</span></legend>
+    ${flowRoleNotice(roles,[row.arrivalRole,...row.boardingRoles])}
     <div class="form-grid">${row.flightNo==='*'?'':`<label>来源航班<input data-flow-scope list="flow-flight-options" value="${html(row.flightNo)}" placeholder="CX937 或 CX*" /></label>`}
     <label>来源岗位<select data-flow-source aria-label="来源岗位">${options(roles,row.arrivalRole)}</select></label>
-    <label class="switch-label"><input type="checkbox" data-flow-enabled ${row.enabled?'checked':''}/>启用接续</label></div>
+    <label class="switch-label"><input type="checkbox" data-flow-enabled ${row.enabled?'checked':''} ${!row.enabled&&[row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role))?'disabled':''}/>启用接续</label></div>
     <ol class="flow-targets">${row.boardingRoles.map((target,order)=>`<li data-flow-target-row="${order}"><label>第${order+1}优先目标岗位 <select data-flow-target aria-label="第${order+1}优先目标岗位">${options(roles,target,[row.arrivalRole,...row.boardingRoles])}</select></label><label>目标航班 <select data-flow-flight-scope aria-label="第${order+1}优先目标航班">${Object.entries(flightScopeOptions).map(([key,label])=>`<option value="${key}" ${(row.targetFlightScopes?.[target]??'same-flight')===key?'selected':''}>${label}</option>`).join('')}</select></label><div class="button-row"><button type="button" class="btn btn-sm" data-flow-up ${order===0?'disabled':''}>↑ 上移</button><button type="button" class="btn btn-sm" data-flow-down ${order===row.boardingRoles.length-1?'disabled':''}>↓ 下移</button><button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-target>删除目标</button></div></li>`).join('')}</ol>
-    <div class="button-row"><button type="button" class="btn btn-sm btn-outline-primary" data-flow-add-target ${roles.every(r=>r===row.arrivalRole||row.boardingRoles.includes(r))?'disabled':''}>＋ 增加目标岗位</button>
-    ${row.flightNo==='*'?'<button type="button" class="btn btn-sm" data-flow-exception>＋ 为此岗位添加特例</button>':''}
+    <div class="button-row"><button type="button" class="btn btn-sm btn-outline-primary" data-flow-add-target ${[row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role))||roles.every(r=>r===row.arrivalRole||row.boardingRoles.includes(r))?'disabled':''}>＋ 增加目标岗位</button>
+    ${row.flightNo==='*'?`<button type="button" class="btn btn-sm" data-flow-exception ${[row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role))?'disabled':''}>＋ 为此岗位添加特例</button>`:''}
     <button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-rule>${row.flightNo==='*'?'删除通用规则':'删除特例，恢复继承'}</button></div></fieldset>`;
-  return `<section class="flow-settings"><p class="flow-inheritance-note">通用设置只需维护一次，没有特例的航班默认沿用通用；有不同安排时再手动添加特例。</p>
+  return `<section class="flow-settings"><p class="flow-inheritance-note">通用设置只需维护一次，没有特例的航班默认沿用通用；有不同安排时再手动添加特例。已设“同航班专岗专人”的岗位不进入流动来源或目标选项；取消专岗并保存后恢复可选。</p>
     <datalist id="flow-flight-options">${flights.map(f=>`<option value="${html(f)}"></option>`).join('')}</datalist>
     ${ruleScopeSections(state.handoffPreferences,'flow',card)}
     <div class="button-row flow-add-actions"><button type="button" id="add-flow-rule" class="btn btn-outline-primary">＋ 添加通用来源岗位</button><button type="button" id="add-flow-exception" class="btn btn-outline-secondary">＋ 增加航班特例</button></div>
@@ -36,11 +36,12 @@ export function bindHandoffPreferences(root: HTMLElement, state: State, save: (a
   };
   const unique = (scope: string, source: string, except = -1) => !current.some((r, i) => i !== except && r.flightNo === scope && r.arrivalRole === source);
   const addException=(source:string)=>{
+    const shared=current.find(r=>r.flightNo==='*'&&r.arrivalRole===source);
+    if([source,...(shared?.boardingRoles??[])].some(role=>!roles.includes(role)))return;
     const flight=prompt('输入需要不同安排的航班号或系列，如 CX937 或 CX*。未设置特例的航班沿用通用。','')?.trim().toUpperCase();
     if(!flight)return;
     if(flight==='*'||flight==='通用'||(flight.includes('*')&&!/^[A-Z0-9]+\*$/.test(flight))){alert('请填写具体航班号或以 * 结尾的系列；通用设置在上方维护。');return;}
     if(!unique(flight,source)){alert('该航班已有此来源岗位的特例，请展开航班特例修改。');return;}
-    const shared=current.find(r=>r.flightNo==='*'&&r.arrivalRole===source);
     const next=shared?{...structuredClone(shared),flightNo:flight}:{flightNo:flight,arrivalRole:source,boardingRoles:[],enabled:false,ordered:true};
     const details=root.querySelector<HTMLDetailsElement>('#flow-exceptions');if(details)details.open=true;
     commit([...current,next]);
@@ -59,18 +60,20 @@ export function bindHandoffPreferences(root: HTMLElement, state: State, save: (a
     };}
     container.querySelector<HTMLButtonElement>('[data-flow-exception]')?.addEventListener('click',()=>addException(current[index].arrivalRole));
     source.onchange = () => {
+      if(!roles.includes(source.value))return;
       if (!unique(current[index].flightNo, source.value, index)) { source.setCustomValidity("该航班已有这个来源岗位的规则"); source.reportValidity(); return; }
       source.setCustomValidity(""); modify(index, row => { row.arrivalRole = source.value; row.boardingRoles = row.boardingRoles.filter(r => r !== source.value); if (!row.boardingRoles.length) row.enabled = false; if(row.targetFlightScopes)for(const r of Object.keys(row.targetFlightScopes))if(!row.boardingRoles.includes(r))delete row.targetFlightScopes[r]; });
     };
-    container.querySelector<HTMLInputElement>("[data-flow-enabled]")!.onchange = event => modify(index, row => { row.enabled = (event.target as HTMLInputElement).checked && row.boardingRoles.length > 0; row.ordered = true; });
+    container.querySelector<HTMLInputElement>("[data-flow-enabled]")!.onchange = event => modify(index, row => { row.enabled = (event.target as HTMLInputElement).checked && row.boardingRoles.length > 0 && [row.arrivalRole,...row.boardingRoles].every(role=>roles.includes(role)); row.ordered = true; });
     container.querySelector<HTMLButtonElement>("[data-flow-add-target]")!.onclick = () => modify(index, row => {
+      if([row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role)))return;
       const next = roles.find(r => r !== row.arrivalRole && !row.boardingRoles.includes(r));
       if (next) { (row.targetFlightScopes??={})[next]='same-flight'; row.boardingRoles.push(next); row.enabled = true; row.ordered = true; }
     });
     container.querySelector<HTMLButtonElement>("[data-flow-remove-rule]")!.onclick = () => commit(current.filter((_, i) => i !== index));
     container.querySelectorAll<HTMLElement>("[data-flow-target-row]").forEach(target => {
       const order = Number(target.dataset.flowTargetRow);
-      target.querySelector<HTMLSelectElement>("[data-flow-target]")!.onchange = event => modify(index, row => { const previous=row.boardingRoles[order], next=(event.target as HTMLSelectElement).value; if(previous!==next && row.targetFlightScopes && previous in row.targetFlightScopes){row.targetFlightScopes[next]=row.targetFlightScopes[previous];delete row.targetFlightScopes[previous];} row.boardingRoles[order]=next; row.ordered = true; });
+      target.querySelector<HTMLSelectElement>("[data-flow-target]")!.onchange = event => modify(index, row => { const previous=row.boardingRoles[order], next=(event.target as HTMLSelectElement).value; if(!roles.includes(next))return; if(previous!==next && row.targetFlightScopes && previous in row.targetFlightScopes){row.targetFlightScopes[next]=row.targetFlightScopes[previous];delete row.targetFlightScopes[previous];} row.boardingRoles[order]=next; row.ordered = true; });
       target.querySelector<HTMLSelectElement>("[data-flow-flight-scope]")!.onchange=event=>modify(index,row=>{
         (row.targetFlightScopes??={})[row.boardingRoles[order]]=(event.target as HTMLSelectElement).value as NonNullable<HandoffPreference['targetFlightScopes']>[string];
       });
@@ -90,5 +93,6 @@ export function bindHandoffPreferences(root: HTMLElement, state: State, save: (a
   };
   const addCommon=root.querySelector<HTMLButtonElement>('#add-flow-rule');
   if(addCommon){addCommon.disabled=!roles.some(r=>unique('*',r));addCommon.addEventListener('click',add);}
-  root.querySelector<HTMLButtonElement>("#add-flow-exception")?.addEventListener("click", () => {const source=current.find(r=>r.flightNo==='*')?.arrivalRole??roles[0];if(source)addException(source);});
+  const addSpecial=root.querySelector<HTMLButtonElement>('#add-flow-exception');
+  if(addSpecial){addSpecial.disabled=!roles.length;addSpecial.addEventListener('click',()=>{const source=current.find(r=>r.flightNo==='*'&&[r.arrivalRole,...r.boardingRoles].every(role=>roles.includes(role)))?.arrivalRole??roles[0];if(source)addException(source);});}
 }

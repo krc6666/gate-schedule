@@ -163,7 +163,7 @@ export class ScheduleEditor {
           if (!ensureCurrent()) return;
           if (preview.revision !== expectedRevision) throw Error("班表已改变，请重新读取后再选人");
           const issues = preview.issues.filter(i => i.code === "edit" || i.taskId === t.cellId || t.ids.includes(i.taskId ?? "") || i.relatedTaskIds?.some(id => t.ids.includes(id)));
-          this.popup!.querySelector(".candidate-preview")!.innerHTML = issues.length ? `<span class="text-danger">${issues.map(i => html(i.message)).join("<br>")}</span>` : "当前输入未发现本格冲突；回车保存";
+          this.popup!.querySelector(".candidate-preview")!.innerHTML = issues.length ? issues.map(i => `<span class="${i.severity === 'warning' ? 'coverage-preference-note' : 'text-danger'}">${html(i.message)}</span>`).join('<br>') : "当前输入未发现本格冲突；回车保存";
           if (preview.suggestions.length) this.popup!.querySelector(".candidate-preview")!.innerHTML += `<p>可能是：${preview.suggestions.map(html).join("、")}，请确认姓名。</p>`;
         }
       } catch (error) {

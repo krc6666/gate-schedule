@@ -1,4 +1,5 @@
 import {workRulesHtml} from "./work-rules";
+import { coverageOrderHtml } from './coverage-order';
 import { html, time, needsRedWarning, type State, type Day, type Plan, type Person, type Schedule, type RoleConfig, type Issue } from "./workbench-model";
 import { templatePositions } from "./template-config";
 import { handoffPreferences } from "./handoff-preferences";
@@ -65,7 +66,7 @@ export function rulesPage(state: State, p: Plan | null, day: Day | null): string
   const coverageRules = coverage ? `<p class="section-note">由你勾选，默认全部不勾。两项互斥，都不勾就是正常安排。先保障所有航班的专人专岗，再按航班结束由早到晚补人；同一结束时间内先保优先岗位，再排正常岗位，最后排优先留空岗位。所有航班同名岗位共用选择。资格、时间冲突和固定仍须满足；专岗配不齐仍生成可行部分，缺口标红。保存后重新排班生效，原班表保留。</p><div class="table-responsive"><table class="data-table"><thead><tr><th>岗位</th><th>${html(coverage.choices.protect)}</th><th>${html(coverage.choices['leave-empty'])}</th></tr></thead><tbody>${config.roleConfigs.map(role => {
     const value = balance.coveragePriorities?.find(item => item.roleName === role.roleName)?.priority;
     return `<tr><th>${html(role.roleName)}</th>${(['protect', 'leave-empty'] as const).map(key => `<td><input type="checkbox" data-coverage-role="${html(role.roleName)}" data-coverage-priority="${key}" aria-label="${html(role.roleName)} ${html(coverage.choices[key])}" ${key === value ? 'checked' : ''} /></td>`).join('')}</tr>`;
-  }).join('')}</tbody></table></div>` : '<p class="section-note">请刷新页面后设置岗位空缺优先级。</p>';
+  }).join('')}</tbody></table></div>${coverageOrderHtml(state)}` : '<p class="section-note">请刷新页面后设置岗位空缺优先级。</p>';
   return `<div class="rules-toolbar"><label>搜索规则<input id="rules-search" type="search" placeholder="输入岗位、轮换、差距、走动等关键词" /></label><span id="rules-save-status" role="status">已保存</span><button id="save-rules" class="btn btn-primary">保存配置</button></div><p class="section-note">修改后统一点击“保存配置”；长期规则重新排班后生效，原班表保留。</p><p id="rules-search-empty" hidden role="status">没有找到相关规则，请换个关键词。</p>
   ${group("coverage-priority-rules", "岗位空缺优先级", "自行勾选 · 所有航班统一生效", coverageRules)}
   ${group("base-rule-settings", "轮换与走动", `稀缺资质自动优先 · ${config.rotationEnabled ? `大件轮换 ${config.rotationMinutes} 分钟` : "大件轮换关闭"} · 走动 ${config.transitionMinutes} 分钟`, `${settings("base", config.rotationEnabled, config.rotationMinutes, config.transitionMinutes)}<h4>稀缺岗位资质轮换（自动）</h4><p class="section-note">系统比较当天有需求岗位的资质人员数：只计正常参加排班且具备该岗资质的人员，人数相对越少，越优先保障该岗轮换；人数相同的岗位同等优先，无需手动勾选。晚到、早退和具体任务冲突仍在实际选人时检查。</p><p class="section-note">例如甲岗2人、乙岗8人有资质，先争取甲岗轮着做。各稀缺层级依次考虑当天分散承担、本自然月同岗正式次数与修正较少者、上一归档同岗换人，再考虑其他重点岗位和接续偏好；人数最多或各岗人数相同时沿用其他规则。先保障岗位覆盖及分队长最后补位设置，资质、出勤、固定、冲突和航班数差距仍须满足。只有1个合格人或无法安全换人时允许继续同人，不因轮换留下空岗。此规则重新排班生效，大件到点轮换开关仅控制大件时段。</p>`)}

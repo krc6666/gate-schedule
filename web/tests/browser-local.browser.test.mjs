@@ -113,6 +113,10 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   await click('[data-view="rules"]');
   assert.equal(await evaluate('document.querySelectorAll("[data-coverage-role]:checked").length'),0,'新设置不得替用户预选岗位');
   await evaluate('document.querySelector("#coverage-priority-rules").open=true');
+  await click('[data-coverage-order-tier="normal"][data-coverage-order-action="enable"]');
+  const orderBefore=await evaluate('[...document.querySelectorAll("[data-coverage-order-group=normal] tbody th")].map(el=>el.textContent)');
+  assert.ok(orderBefore.length>1);
+  await click(`[data-coverage-order-role="${orderBefore[1]}"][data-coverage-order-action="up"]`);
   await click('[data-coverage-role="登机主验"][data-coverage-priority="protect"]');
   await evaluate('document.querySelector("#relaxed-shift-rules").open=true');
   await click('[data-relaxed-enabled="earlyDeparture"]');
@@ -121,8 +125,10 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   await click('#save-rules');
   await until(async()=> (await state('A')).balanceSettings.coveragePriorities?.some(i=>i.roleName==='登机主验'&&i.priority==='protect'),'保岗勾选真实保存');
   await until(()=>evaluate('!document.querySelector("#save-rules").disabled'),'保存完成');
+  const savedOrder=(await state('A')).balanceSettings.coverageRoleOrder;
+  assert.deepEqual(savedOrder,[orderBefore[1],orderBefore[0],...orderBefore.slice(2)],'同档顺序真实保存，不自动重排旧正式');
   const bBalance=(await state('B')).balanceSettings;
-  await command('B','update-balance-settings',{balanceSettings:{...bBalance,coveragePriorities:[{roleName:'登机主验',priority:'leave-empty'}]}});
+  await command('B','update-balance-settings',{balanceSettings:{...bBalance,coveragePriorities:[{roleName:'登机主验',priority:'leave-empty'}],coverageRoleOrder:[...savedOrder].reverse()}});
   await reload();
   await click('[data-view="rules"]');
   assert.equal(await evaluate('document.querySelector("[data-coverage-role=登机主验][data-coverage-priority=protect]").checked'),true,'刷新后保岗勾选保持');
@@ -165,6 +171,8 @@ print(json.dumps(d))`],{cwd:repo,encoding:"utf8"}));
   assert.deepEqual(normalizedPeople(restoredA.people),normalizedPeople(savedA.people));
   assert.deepEqual(restoredA.balanceSettings,savedA.balanceSettings);
   assert.deepEqual(restoredB.balanceSettings.coveragePriorities,[{roleName:'登机主验',priority:'leave-empty'}],'另一组相反选择随文件迁移');
+  assert.deepEqual(restoredA.balanceSettings.coverageRoleOrder,savedOrder,'A组顺序随Excel导入空浏览器再刷新保留');
+  assert.deepEqual(restoredB.balanceSettings.coverageRoleOrder,[...savedOrder].reverse(),'B组独立顺序保留');
   assert.deepEqual(restoredA.dutyRoster,savedA.dutyRoster);
   assert.deepEqual(restoredA.plans[planId].adopted,savedA.plans[planId].adopted);
   assert.deepEqual(normalizedPeople(restoredB.people),normalizedPeople(savedB.people));
@@ -510,6 +518,45 @@ print(json.dumps([relative_day(),shared_pool_day()]))`],{cwd:repo,encoding:'utf8
   assert.equal(baggagePlan.baggageCoverage.requiredPeople,3,'CX937/KE0166 08:30–11:15，宽限15分钟需要3人');
   assert.equal(new Set(baggagePlan.draft.map(a=>a.memberId)).size,3);
   assert.ok(!requests.some(url=>new URL(url,base).pathname.startsWith("/api/")),"不得请求任何Python后台");
+  // The real WASM solver consumes the same soft order after shortage, not just
+  // the page or native solver. Reverse it, then retain a manual counterexample.
+  const orderFixture=JSON.parse(execFileSync(python,['-c',`import json
+from tests.test_coverage_order import configured
+from gate_schedule.domain import empty_work_rules
+d=configured()
+d['day']['serviceDate']='2061-03-02'
+d['workRules']=empty_work_rules()
+d['handoffPreferences']=[]
+print(json.dumps(d))`],{cwd:repo,encoding:'utf8'}));
+  let orderState=await command('B','import-complete-configuration',orderFixture);
+  for(const role of orderState.configuration.roleConfigs)if(!orderFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  let orderedPlan=await solveCoverage();
+  const assignedRoles=plan=>new Set(plan.schedule.tasks.filter(t=>plan.draft.some(a=>a.taskId===t.id)).map(t=>t.roleId));
+  assert.deepEqual(assignedRoles(orderedPlan),new Set(['登机主验']),'WASM缺人时先保同档前岗');
+  orderState=await state('B');
+  await command('B','update-balance-settings',{balanceSettings:{...orderState.balanceSettings,coverageRoleOrder:['秩序维护','登机主验']}});
+  orderedPlan=await solveCoverage();
+  assert.deepEqual(assignedRoles(orderedPlan),new Set(['秩序维护']),'WASM反转顺序真正改变保岗');
+  const manualOrder=orderedPlan.schedule.tasks.filter(t=>t.roleId==='登机主验').map(t=>({taskId:t.id,memberId:orderedPlan.draft[0].memberId}));
+  await command('B','assign',{assignments:manualOrder},orderedPlan.id);
+  let orderHints=(await state('B')).plans[orderedPlan.id].issues.filter(i=>i.code==='coverage_order_unmet');
+  assert.ok(orderHints.length&&orderHints.every(i=>i.severity==='warning'),'WASM人工反转显示软提示');
+  await command('B','adopt',{},orderedPlan.id);
+  await reload();
+  assert.deepEqual((await state('B')).plans[orderedPlan.id].formalIssues.filter(i=>i.code==='coverage_order_unmet'),orderHints,'偏好未满足可归档并在刷新后保留');
+  // The static runtime projects editable flow choices from this group's saved
+  // dedicated flags, while keeping legacy references and formal snapshots.
+  assert.ok(!(await state('B')).flowRuleRoles.includes('登机主验'));
+  const oldFlow=[{flightNo:'*',arrivalRole:'登机主验',boardingRoles:['秩序维护'],enabled:true}];
+  await command('B','save-handoff-preferences',{preferences:oldFlow});
+  await reload();await value('#active-group','B');await click('[data-view="rules"]');
+  assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-source] option")].some(o=>o.value==="登机主验"&&o.selected&&o.disabled)'));
+  assert.deepEqual((await state('B')).handoffPreferences,oldFlow);
+  await command('B','save-role',{roleName:'秩序维护',exclusiveSameFlight:false});
+  await reload();await value('#active-group','B');await click('[data-view="rules"]');
+  assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-target] option")].some(o=>o.value==="秩序维护"&&!o.disabled)'));
+  assert.ok(!(await state('B')).flowRuleRoles.includes('登机主验'));
+  assert.deepEqual((await state('B')).plans[orderedPlan.id].formalIssues.filter(i=>i.code==='coverage_order_unmet'),orderHints);
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));
 });
