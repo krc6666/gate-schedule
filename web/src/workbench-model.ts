@@ -58,9 +58,9 @@ export const flowRoles = (state:State):string[] => state.flowRuleRoles ?? state.
 
 export const flowRoleOptions = (roles: string[], selected: string, excluded: string[] = []): string =>
   roles.filter(role => role === selected || !excluded.includes(role)).map(role => `<option value="${html(role)}" ${role === selected ? 'selected' : ''}>${html(role)}</option>`).join('')
-  + (selected && !roles.includes(selected) ? `<option value="${html(selected)}" selected disabled>${html(selected)}（已设专岗，不可用于新增流动）</option>` : '');
+  + (selected && !roles.includes(selected) ? `<option value="${html(selected)}" selected disabled>${html(selected)}（不在当前岗位目录）</option>` : '');
 
 export const flowRoleNotice = (roles: string[], referenced: string[]): string => {
   const unavailable = [...new Set(referenced.filter(role => !roles.includes(role)))];
-  return unavailable.length ? `<p class="section-note inactive-rule-note" data-flow-unavailable>已设专岗，不可用于新增流动：${unavailable.map(html).join('、')}。原引用保留，请明确替换或移除；不会自动更改旧配置或班表。</p>` : '';
+  return unavailable.length ? `<p class="section-note inactive-rule-note" data-flow-unavailable>不在当前岗位目录：${unavailable.map(html).join('、')}。原引用保留，请明确替换或移除；不会自动更改旧配置或班表。</p>` : '';
 };

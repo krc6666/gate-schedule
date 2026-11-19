@@ -6,6 +6,7 @@ import {readFile, mkdir, mkdtemp, rm, writeFile, readdir} from "node:fs/promises
 import {join, resolve, extname} from "node:path";
 import {fileURLToPath} from "node:url";
 import {createHash} from "node:crypto";
+import {dedicatedCrossConfiguration} from './dedicated-cross-fixture.mjs';
 
 const repo=fileURLToPath(new URL("../../",import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -335,12 +336,12 @@ print(json.dumps(configuration([preference(targets=['登机核验']),preference(
   const coverageFixture=JSON.parse(execFileSync(python,['-c',"import json;from tests.test_early_flight_coverage import coverage_configuration;print(json.dumps(coverage_configuration()))"],{cwd:repo,encoding:'utf8'}));
   let coverageState=await command('B','import-complete-configuration',coverageFixture);
   for(const role of coverageState.configuration.roleConfigs)if(!coverageFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
-  const solveCoverage=async()=>{
+  const solveCoverage=async(action='solve',payload={})=>{
     const s=await state('B'),pid=s.selectedPlanId;
-    const started=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action:'solve',planId:pid})})}).then(r=>r.json())`);
+    const started=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action,payload,planId:pid})})}).then(r=>r.json())`);
     const done=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${started.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM专岗与早结束航班优先');
     assert.equal(done.status,'completed',JSON.stringify(done));
-    const after=await state('B');return after.plans[pid];
+    const after=await state('B');return after.plans[after.selectedPlanId];
   };
   let coveragePlan=await solveCoverage();
   const coverageTasks=coveragePlan.schedule.tasks.filter(t=>coveragePlan.draft.some(a=>a.taskId===t.id));
@@ -354,6 +355,18 @@ print(json.dumps(configuration([preference(targets=['登机核验']),preference(
   await until(()=>evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-conflict").length>0'),'浏览器专岗缺口标红');
   await click('[data-view="config"]');assert.equal(await evaluate('document.querySelectorAll("[data-role-concurrent]").length'),0);
   await click('[data-view="history"]');assert.ok(await evaluate('document.querySelectorAll(".history-matrix .schedule-cell-conflict").length>0'));
+  const withholdingFixture=JSON.parse(execFileSync(python,['-c',"import json;from tests.test_coverage_priorities import shortage_handoff_configuration;print(json.dumps(shortage_handoff_configuration()))"],{cwd:repo,encoding:'utf8'}));
+  const withholdingState=await command('B','import-complete-configuration',withholdingFixture);
+  for(const role of withholdingState.configuration.roleConfigs)if(!withholdingFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
+  const assertWithheld=plan=>{
+    assert.ok(plan.draft.length>0,'接机仍正常安排');
+    assert.ok(plan.draft.every(a=>plan.schedule.tasks.find(t=>t.id===a.taskId).roleId!=='登机查验'),'缺人时留空岗不能因接续而填回');
+    assert.ok(plan.issues.some(i=>i.code==='coverage_shortfall'),'所有实际缺口仍显示');
+  };
+  let withheld=await solveCoverage();assertWithheld(withheld);
+  const followingDay=structuredClone(withheld.day);followingDay.serviceDate='2026-08-22';
+  withheld=await solveCoverage('archive-next',{day:followingDay});assertWithheld(withheld);
+  assert.equal(withheld.day.serviceDate,'2026-08-22','真实WASM归档排后天仍按留空优先执行');
   const relationsFixture=JSON.parse(execFileSync(python,['-c',"import json;from tests.test_work_relations import configuration;print(json.dumps(configuration()))"],{cwd:repo,encoding:'utf8'}));
   let relationsState=await command('B','import-complete-configuration',relationsFixture);
   for(const role of relationsState.configuration.roleConfigs)if(!relationsFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
@@ -544,19 +557,33 @@ print(json.dumps(d))`],{cwd:repo,encoding:'utf8'}));
   await command('B','adopt',{},orderedPlan.id);
   await reload();
   assert.deepEqual((await state('B')).plans[orderedPlan.id].formalIssues.filter(i=>i.code==='coverage_order_unmet'),orderHints,'偏好未满足可归档并在刷新后保留');
-  // The static runtime projects editable flow choices from this group's saved
-  // dedicated flags, while keeping legacy references and formal snapshots.
-  assert.ok(!(await state('B')).flowRuleRoles.includes('登机主验'));
+  // Dedicated roles remain editable for cross-flight rules. Same-flight
+  // restrictions are enforced by the domain, not by removing role choices.
+  assert.ok((await state('B')).flowRuleRoles.includes('登机主验'));
   const oldFlow=[{flightNo:'*',arrivalRole:'登机主验',boardingRoles:['秩序维护'],enabled:true}];
   await command('B','save-handoff-preferences',{preferences:oldFlow});
   await reload();await value('#active-group','B');await click('[data-view="rules"]');
-  assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-source] option")].some(o=>o.value==="登机主验"&&o.selected&&o.disabled)'));
+  assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-source] option")].some(o=>o.value==="登机主验"&&o.selected&&!o.disabled)'));
   assert.deepEqual((await state('B')).handoffPreferences,oldFlow);
   await command('B','save-role',{roleName:'秩序维护',exclusiveSameFlight:false});
   await reload();await value('#active-group','B');await click('[data-view="rules"]');
   assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-target] option")].some(o=>o.value==="秩序维护"&&!o.disabled)'));
-  assert.ok(!(await state('B')).flowRuleRoles.includes('登机主验'));
+  assert.ok((await state('B')).flowRuleRoles.includes('登机主验'));
   assert.deepEqual((await state('B')).plans[orderedPlan.id].formalIssues.filter(i=>i.code==='coverage_order_unmet'),orderHints);
+  // Run the corrected dedicated contract in the shipped WASM solver too.
+  const dedicatedInput=dedicatedCrossConfiguration();
+  const dedicatedImported=await command('B','import-complete-configuration',dedicatedInput);
+  const dedicatedId=dedicatedImported.selectedPlanId;
+  const dedicatedStart=await evaluate(`fetch('/api/groups/B/workspace/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify({expectedRevision:dedicatedImported.revision,action:'solve',planId:dedicatedId})})}).then(r=>r.json())`);
+  const dedicatedDone=await until(async()=>{const r=await evaluate(`fetch('/api/groups/B/workspace/runs/${dedicatedStart.id}').then(r=>r.json())`);return r.status!=='running'?r:false},'WASM专岗跨班接续');
+  assert.equal(dedicatedDone.status,'completed',JSON.stringify(dedicatedDone));
+  const dedicatedState=await state('B'),dedicatedPlan=dedicatedState.plans[dedicatedId];
+  assert.equal(dedicatedPlan.valid,true,JSON.stringify(dedicatedPlan.issues));
+  const dedicatedWorker=dedicatedState.people.find(p=>p.name==='跨班验证员').id;
+  assert.equal(dedicatedPlan.draft.filter(a=>a.memberId===dedicatedWorker).length,2);
+  assert.ok(dedicatedPlan.schedule.tasks.some(t=>t.roleId==='入境申报'&&t.exclusiveSameFlight));
+  await reload();
+  assert.equal((await state('B')).plans[dedicatedId].draft.filter(a=>a.memberId===dedicatedWorker).length,2);
   assert.deepEqual(errors,[],"网页不得发生未处理错误");
   await writeFile(join(repo,".tmp/browser-local-result.json"),JSON.stringify({requests,errors,base,productionCopy,passed:true},null,2));
 });

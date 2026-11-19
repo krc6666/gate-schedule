@@ -62,12 +62,13 @@ class SeparationGroupTests(unittest.TestCase):
         self.assertIn('overlap',{i.code for i in validate_schedule(special,legal)})
         for changed in (
             replace(sc,minimum_transition_minutes=5),
-            replace(sc,dedicated_flight_protection=True,tasks=(replace(sc.tasks[0],exclusive_same_flight=True),*sc.tasks[1:])),
             replace(sc,tasks=tuple(replace(t,timing_mode='exact') for t in sc.tasks)),
             replace(sc,flow_preferences=(dict(**preference(['登机1'],source='入境申报'),targetFlightScopes={'登机1':'same-flight'}),)),
         ):
             with self.subTest(changed=changed):
                 self.assertTrue(validate_schedule(changed,legal))
+        dedicated=replace(sc,dedicated_flight_protection=True,tasks=(replace(sc.tasks[0],exclusive_same_flight=True),*sc.tasks[1:]))
+        self.assertEqual([],validate_schedule(dedicated,legal),'专岗不禁止明确的跨航班接续')
 
     def test_shortage_leaves_group_gap_instead_of_reusing_person(self):
         sc=replace(scene(),members=scene().members[:1])

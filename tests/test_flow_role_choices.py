@@ -14,15 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FlowRoleChoiceTests(unittest.TestCase):
-    def test_dedicated_roles_excluded_and_baggage_aliases_follow_physical_role(self):
+    def test_dedicated_roles_remain_editable_for_cross_flight_rules(self):
         names = ['督导', '接机1', '登机1', '大件行李拦截']
         configs = [{'roleName': role, 'exclusiveSameFlight': role in {'督导', '大件行李拦截'}} for role in names]
         old = [{'flightNo': '*', 'arrivalRole': '大件9', 'boardingRoles': ['督导'], 'enabled': True}]
-        self.assertEqual(['接机1', '登机1'], flow_rule_roles(names, old, role_configs=configs))
+        self.assertTrue(set(names) <= set(flow_rule_roles(names, old, role_configs=configs)))
         configs[-1]['exclusiveSameFlight'] = False
         result = flow_rule_roles(names, old, role_configs=configs)
         self.assertTrue({'大件行李拦截', '大件1', '大件2', '大件3', '大件9'} <= set(result))
-        self.assertNotIn('督导', result)
+        self.assertIn('督导', result)
         self.assertIn('督导', flow_rule_roles(names), '旧调用无专岗事实时不推测')
 
     def test_save_restart_legacy_references_migration_and_cancel_dedicated(self):
@@ -32,12 +32,12 @@ class FlowRoleChoiceTests(unittest.TestCase):
             data['handoffPreferences'] = [{'flightNo': '*', 'arrivalRole': '登机主验', 'boardingRoles': ['秩序维护'], 'enabled': True}]
             state = work.execute(work.snapshot()['revision'], 'import-complete-configuration', data)
             before = deepcopy(state['handoffPreferences'])
-            self.assertNotIn('登机主验', state['flowRuleRoles'])
-            self.assertNotIn('秩序维护', state['flowRuleRoles'])
+            self.assertIn('登机主验', state['flowRuleRoles'])
+            self.assertIn('秩序维护', state['flowRuleRoles'])
             self.assertEqual(before, state['handoffPreferences'], '旧引用不得被过滤目录自动改写')
             state = work.execute(state['revision'], 'save-role', {'roleName': '秩序维护', 'exclusiveSameFlight': False})
             self.assertIn('秩序维护', state['flowRuleRoles'])
-            self.assertNotIn('登机主验', state['flowRuleRoles'])
+            self.assertIn('登机主验', state['flowRuleRoles'])
             incoming = import_complete_configuration(work.export_complete_configuration())
             target = Workbench(Path(directory) / 'target.db')
             target.execute(target.snapshot()['revision'], 'import-complete-configuration', incoming)
@@ -45,7 +45,7 @@ class FlowRoleChoiceTests(unittest.TestCase):
             state = target.snapshot()
             self.assertEqual(before, state['handoffPreferences'])
             self.assertIn('秩序维护', state['flowRuleRoles'])
-            self.assertNotIn('登机主验', state['flowRuleRoles'])
+            self.assertIn('登机主验', state['flowRuleRoles'])
             settings = {**state['balanceSettings'], 'coverageRoleOrder': []}
             state = target.execute(state['revision'], 'update-balance-settings', {'balanceSettings': settings})
             self.assertEqual(before, state['handoffPreferences'], '保存无关规则不清除旧专岗引用')
@@ -59,5 +59,7 @@ class FlowRoleChoiceTests(unittest.TestCase):
                 work.execute(work.snapshot()['revision'], 'import-complete-configuration', configured())
             work = groups.workbench('B')
             work.execute(work.snapshot()['revision'], 'save-role', {'roleName': '登机主验', 'exclusiveSameFlight': False})
-            self.assertNotIn('登机主验', groups.workbench('A').snapshot()['flowRuleRoles'])
+            self.assertIn('登机主验', groups.workbench('A').snapshot()['flowRuleRoles'])
+            self.assertTrue(next(r['exclusiveSameFlight'] for r in groups.workbench('A').snapshot()['configuration']['roleConfigs'] if r['roleName']=='登机主验'))
+            self.assertFalse(next(r.get('exclusiveSameFlight',False) for r in groups.workbench('B').snapshot()['configuration']['roleConfigs'] if r['roleName']=='登机主验'))
             self.assertIn('登机主验', groups.workbench('B').snapshot()['flowRuleRoles'])

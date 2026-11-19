@@ -100,7 +100,7 @@ class RelativeSchedulingTests(unittest.TestCase):
         self.assertEqual(-20, scenario.tasks[0].start)
         self.assertTrue(scenario.dedicated_flight_protection)
 
-    def test_dedicated_protection_uses_original_flight_end_and_rejects_manual_break(self):
+    def test_dedicated_same_flight_flag_does_not_extend_actual_occupation(self):
         flights = (Flight('A', 'A', '2026-08-02', 600, 690), Flight('B', 'B', '2026-08-02', 650, 740))
         tasks = (Task('ded', 'A', '督导', 600, 620, 1, 'mobile', exclusive_same_flight=True),
                  Task('next', 'B', '登机核验', 660, 680, 1, 'mobile'))
@@ -110,9 +110,9 @@ class RelativeSchedulingTests(unittest.TestCase):
         self.assertEqual('OPTIMAL', result.status)
         self.assertEqual([], validate_schedule(scenario, result.assignments))
         broken = tuple(Assignment(t.id, '甲') for t in tasks)
-        self.assertIn('dedicated_flight_protection', {i.code for i in validate_schedule(scenario, broken)})
+        self.assertEqual([], validate_schedule(scenario, broken))
         choices = candidate_options(scenario, (Assignment('ded', '甲'),), 'next')
-        self.assertFalse(next(c['available'] for c in choices if c['id'] == '甲'))
+        self.assertTrue(next(c['available'] for c in choices if c['id'] == '甲'))
         after = replace(scenario, tasks=(tasks[0], replace(tasks[1], start=690, end=710)))
         self.assertEqual([], validate_schedule(after, broken))
         legacy = scenario_to_dict(scenario); legacy.pop('dedicatedFlightProtection')

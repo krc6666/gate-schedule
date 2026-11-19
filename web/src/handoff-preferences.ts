@@ -16,7 +16,7 @@ export function handoffPreferences(state: State, draft = false): string {
     <div class="button-row"><button type="button" class="btn btn-sm btn-outline-primary" data-flow-add-target ${[row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role))||roles.every(r=>r===row.arrivalRole||row.boardingRoles.includes(r))?'disabled':''}>＋ 增加目标岗位</button>
     ${row.flightNo==='*'?`<button type="button" class="btn btn-sm" data-flow-exception ${[row.arrivalRole,...row.boardingRoles].some(role=>!roles.includes(role))?'disabled':''}>＋ 为此岗位添加特例</button>`:''}
     <button type="button" class="btn btn-sm btn-outline-danger" data-flow-remove-rule>${row.flightNo==='*'?'删除通用规则':'删除特例，恢复继承'}</button></div></fieldset>`;
-  return `<section class="flow-settings"><p class="flow-inheritance-note">通用设置只需维护一次，没有特例的航班默认沿用通用；有不同安排时再手动添加特例。已设“同航班专岗专人”的岗位不进入流动来源或目标选项；取消专岗并保存后恢复可选。</p>
+  return `<section class="flow-settings"><p class="flow-inheritance-note">通用设置只需维护一次，没有特例的航班默认沿用通用；有不同安排时再手动添加特例。“同航班专岗专人”只禁止同一人兼做该航班其他岗位；跨航班可按所选范围接续，仍检查资格、分人、禁止和实际任务冲突。缺人时优先留空高于接续。</p>
     <datalist id="flow-flight-options">${flights.map(f=>`<option value="${html(f)}"></option>`).join('')}</datalist>
     ${ruleScopeSections(state.handoffPreferences,'flow',card)}
     <div class="button-row flow-add-actions"><button type="button" id="add-flow-rule" class="btn btn-outline-primary">＋ 添加通用来源岗位</button><button type="button" id="add-flow-exception" class="btn btn-outline-secondary">＋ 增加航班特例</button></div>

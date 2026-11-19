@@ -42,9 +42,55 @@ class ExclusiveRoleTests(unittest.TestCase):
         first = replace(value.tasks[1], timing_mode='exact', start=600, end=620)
         later = replace(value.tasks[0], timing_mode='exact', start=650, end=670)
         self.assertEqual('exclusive_same_flight', task_pair_conflict(value, first, later)[0])
-        self.assertEqual('dedicated_flight_protection', task_pair_conflict(value, first, replace(later, flight_id='B'))[0])
-        legacy = replace(value, dedicated_flight_protection=False)
-        self.assertIsNone(task_pair_conflict(legacy, first, replace(later, flight_id='B')))
+        self.assertIsNone(task_pair_conflict(value, first, replace(later, flight_id='B')))
+
+    def test_explicit_later_overlap_flow_can_cross_a_dedicated_role(self):
+        value = self.example()
+        source = replace(value.tasks[1], flight_id='A', task_kind='mobile', timing_mode='phase', start=610, end=690, locked_member_ids=('甲',))
+        target = replace(value.tasks[0], id='later', flight_id='B', task_kind='mobile', timing_mode='phase', start=660, end=735)
+        flights = value.flights
+        flow = dict(flightNo='*', arrivalRole=source.role_id, boardingRoles=[target.role_id],
+                    targetFlightScopes={target.role_id:'later-overlap'}, enabled=True, ordered=True)
+        scene = replace(value, flights=flights, tasks=(source,target),
+                        flow_preferences=(flow,), dedicated_flight_protection=True)
+        self.assertIsNone(task_pair_conflict(scene, source, target))
+        result = solve(scene)
+        self.assertIn(result.status, {'OPTIMAL','FEASIBLE'})
+        self.assertIn(Assignment(target.id, '甲'), result.assignments)
+        self.assertEqual([], validate_schedule(scene, result.assignments))
+        choice = next(c for c in candidate_options(scene, (Assignment(source.id,'甲'),), target.id) if c['id']=='甲')
+        self.assertEqual((True,'continuation'), (choice['available'],choice['status']))
+        # A dedicated target also restricts only its own flight. Both flags can
+        # coexist along a legal cross-flight route.
+        both = replace(scene,tasks=(source,replace(target,exclusive_same_flight=True)))
+        self.assertIsNone(task_pair_conflict(both,*both.tasks))
+        legal=(Assignment(source.id,'甲'),Assignment(target.id,'甲'))
+        self.assertEqual([],validate_schedule(both,legal))
+        # Moving that same target back into CX937 must still be rejected, even
+        # if a saved preference asks for the same-flight continuation.
+        same=replace(scene,tasks=(source,replace(target,flight_id='A')),
+                     flow_preferences=({**flow,'targetFlightScopes':{target.role_id:'same-flight'}},))
+        self.assertIn('exclusive_same_flight',{i.code for i in validate_schedule(same,legal)})
+        no_route=replace(scene,flow_preferences=())
+        self.assertEqual('overlap',task_pair_conflict(no_route,*no_route.tasks)[0])
+
+    def test_dedicated_cross_flight_preference_does_not_override_leave_empty(self):
+        value=self.example()
+        source=replace(value.tasks[1],task_kind='mobile',locked_member_ids=('甲',))
+        target=replace(value.tasks[0],id='later',flight_id='B',task_kind='mobile',start=660,end=735)
+        missing=replace(target,id='missing',role_id='无人资质岗')
+        flow=dict(flightNo='*',arrivalRole=source.role_id,boardingRoles=[target.role_id],
+                  targetFlightScopes={target.role_id:'later-overlap'},enabled=True,ordered=True)
+        scene=replace(value,tasks=(source,target,missing),flow_preferences=(flow,),
+                      coverage_priorities=((target.role_id,'leave-empty'),))
+        result=solve(scene,allow_partial=True)
+        self.assertIn(result.status,{'OPTIMAL','FEASIBLE'})
+        self.assertFalse(any(a.task_id==target.id for a in result.assignments))
+        # With no competing shortage the valid dedicated continuation is used.
+        enough=replace(scene,tasks=(source,target))
+        result=solve(enough)
+        self.assertEqual([],validate_schedule(enough,result.assignments))
+        self.assertIn(Assignment(target.id,'甲'),result.assignments)
 
     def test_shared_coverage_counts_and_same_role_segments_are_allowed(self):
         value = self.example()

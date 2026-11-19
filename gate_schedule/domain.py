@@ -562,6 +562,46 @@ def coverage_task_groups(scenario: Scenario) -> tuple[tuple[Task, ...], ...]:
     return tuple(groups)
 
 
+def coverage_shortage_windows(scenario: Scenario):
+    """Overlapping staffing windows, with ordinary and leave-empty tasks.
+
+    A shared baggage block connects all of its flights. Actual blocks can
+    extend a flight window; touching endpoints alone do not share a shortage.
+    This is an automatic staffing preference, never an assignment prohibition.
+    """
+    flights = {f.id: f for f in scenario.flights}
+    intervals = []
+    for task in scenario.tasks:
+        related = [flights[f] for f in task_flight_ids(task) if f in flights]
+        intervals.append((min([task.start] + [f.window_start for f in related]),
+                          max([task.end] + [f.window_end for f in related]), task))
+    windows = []
+    for start, end, task in sorted(intervals, key=lambda item: (item[0], item[1], item[2].id)):
+        if windows and start < windows[-1][0]:
+            windows[-1][0] = max(windows[-1][0], end)
+            windows[-1][1].append(task)
+        else:
+            windows.append([end, [task]])
+    return tuple((tuple(t for t in tasks if task_coverage_priority(scenario, t) != 'leave-empty'),
+                  tuple(t for t in tasks if task_coverage_priority(scenario, t) == 'leave-empty'))
+                 for _, tasks in windows)
+
+
+def coverage_optimization_groups(scenario: Scenario):
+    """Keep dedicated precedence, then ordinary coverage, then leave-empty."""
+    ordinary, leave_empty = [], []
+    for group in coverage_task_groups(scenario):
+        if all(t.exclusive_same_flight for t in group):
+            ordinary.append(group)
+            continue
+        for selected, target in ((False, ordinary), (True, leave_empty)):
+            tasks = tuple(t for t in group
+                          if (task_coverage_priority(scenario, t) == 'leave-empty') == selected)
+            if tasks:
+                target.append(tasks)
+    return tuple(ordinary), tuple(leave_empty)
+
+
 def single_switch_role_settings(role):
     """Normalize newly maintained input, never archived role/task snapshots."""
     exclusive = role.get('exclusiveSameFlight', False)
@@ -1316,14 +1356,12 @@ def flow_source_rule(rows, field, role, flight_no):
 
 
 def flow_rule_roles(role_names, preferences=(), rule_sets=(), scenarios=(), *, role_configs=()):
-    """Editable flow choices exclude dedicated roles, including physical turn aliases.
+    """All maintained roles may describe cross-flight rules, including dedicated ones.
 
-    Stored rule references remain untouched; historical tasks never override the
-    current group's maintained dedicated switch for future editing choices.
+    Dedicated means no other role on that same flight. It does not remove the
+    role from cross-flight configuration; task_pair_conflict owns legality.
     """
-    dedicated = {r['roleName'] for r in role_configs if r.get('exclusiveSameFlight', False)}
-    result=[role for role in dict.fromkeys(role_names)
-            if role not in dedicated and not ('大件行李拦截' in dedicated and is_baggage_turn_role(role))]
+    result=list(dict.fromkeys(role_names))
     if '大件行李拦截' not in result:
         return result
     extra={f'大件{i}' for i in range(1,4)}
@@ -1385,14 +1423,13 @@ def flow_target_scope_allows(scenario, source, target, row, role=None):
 def flow_later_overlap_permitted(scenario, source, target):
     """Only an explicit direct ordinary-process route may bridge overlap.
 
-    Real rotation/support blocks, shared pools and dedicated duties never
+    Real rotation/support blocks and shared pools never
     acquire this permission from a transitive path or a default setting.
     """
     if (set(task_flight_ids(source)) & set(task_flight_ids(target))
             or len(task_flight_ids(source)) != 1 or len(task_flight_ids(target)) != 1
             or source.task_kind != 'mobile' or target.task_kind != 'mobile'
-            or source.timing_mode != 'phase' or target.timing_mode != 'phase'
-            or source.exclusive_same_flight or target.exclusive_same_flight):
+            or source.timing_mode != 'phase' or target.timing_mode != 'phase'):
         return False
     row = flow_preference(scenario,source)
     return bool(row and row['enabled'] and target.role_id in row['boardingRoles']
@@ -1522,16 +1559,6 @@ def task_pair_conflict(scenario: Scenario, first: Task, second: Task) -> tuple[s
         dedicated = first if first.exclusive_same_flight else second
         numbers = "、".join(f.flight_no for f in scenario.flights if f.id in shared_flights)
         return "exclusive_same_flight", f"{numbers} 的 {dedicated.role_id} 已开启同航班专岗专人，不能由同一人兼做该航班其他岗位"
-    if scenario.dedicated_flight_protection and (first.exclusive_same_flight or second.exclusive_same_flight):
-        flights = {f.id: f for f in scenario.flights}
-        for dedicated, other in ((first, second), (second, first)):
-            if not dedicated.exclusive_same_flight:
-                continue
-            for flight_id in task_flight_ids(dedicated):
-                protected_flight = flights.get(flight_id)
-                if (protected_flight and set(task_flight_ids(other)) - set(task_flight_ids(dedicated))
-                        and other.start < protected_flight.window_end and protected_flight.window_start < other.end):
-                    return 'dedicated_flight_protection', f'{protected_flight.flight_no}仍在保障期间，专岗人员不能支援重叠航班'
     rule = work_pair_rule(scenario,first,second,'same-flight') if shared_flights else None
     if rule and rule['mode'] == 'separate':
         return 'role_separation', f'{first.role_id} 与 {second.role_id} 已设置必须分人，不能安排同一人员'

@@ -6,7 +6,7 @@ from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups, coverage_order_weights
+from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups, coverage_order_weights, coverage_shortage_windows, coverage_optimization_groups
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
@@ -347,13 +347,34 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         leader_choices = [v for (member, _), v in variables.items() if member in leader_ids]
         priority_costs = ((sum(leader_choices), len(leader_choices)), *priority_costs)
     # Domain owns dedicated/flight-end/role ordering, including shared tasks.
-    coverage_costs = tuple((sum(missing_by_task[t.id] for t in group),
-                            sum(t.required_count for t in group)) for group in coverage_groups)
+    ordinary_groups, leave_empty_groups = coverage_optimization_groups(scenario) if allow_partial else ((), ())
+    def coverage_costs(groups):
+        return tuple((sum(missing_by_task[t.id] for t in group),
+                      sum(t.required_count for t in group)) for group in groups)
+    withheld_costs = []
+    for index, (ordinary, leave_empty) in enumerate(coverage_shortage_windows(scenario) if allow_partial else ()):
+        if not ordinary or not leave_empty:
+            continue
+        missing = sum(missing_by_task[t.id] for t in ordinary)
+        bound = sum(t.required_count for t in ordinary)
+        shortage = model.new_bool_var(f'coverage_shortage_{index}')
+        model.add(missing <= bound * shortage)
+        model.add(missing >= shortage)
+        for task in leave_empty:
+            staffed = task.required_count - missing_by_task[task.id]
+            unwanted = model.new_int_var(0, task.required_count, f'leave_empty_staffed_{task.id}')
+            model.add(unwanted >= staffed - task.required_count * (1 - shortage))
+            model.add(unwanted <= staffed)
+            model.add(unwanted <= task.required_count * shortage)
+            withheld_costs.append((unwanted, task.required_count))
+    withholding_cost = ((sum(cost for cost, _ in withheld_costs),
+                          sum(bound for _, bound in withheld_costs)),) if withheld_costs else ()
     order_weights = coverage_order_weights(scenario)
     ordered_tasks = [(t, order_weights.get(t.role_id, 0)) for t in scenario.tasks]
     order_bound = sum(t.required_count * weight for t, weight in ordered_tasks)
     order_costs = ((sum(missing_by_task[t.id] * weight for t, weight in ordered_tasks), order_bound),) if allow_partial and order_bound else ()
-    priority_costs = (*coverage_costs, *order_costs, *priority_costs)
+    priority_costs = (*coverage_costs(ordinary_groups), *withholding_cost,
+                      *coverage_costs(leave_empty_groups), *order_costs, *priority_costs)
     for cost, bound in reversed(priority_costs):
         if bound:
             weight = preference_bound + 1

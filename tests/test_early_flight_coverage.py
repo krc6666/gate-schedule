@@ -63,12 +63,15 @@ class EarlyFlightCoverageTests(unittest.TestCase):
             with self.subTest(reverse=reverse):
                 self.assertEqual({'early'}, {a.task_id for a in solve(scene, allow_partial=True).assignments})
 
-    def test_earlier_flight_can_outrank_total_headcount_and_later_role_preference(self):
+    def test_earlier_leave_empty_role_yields_to_later_ordinary_coverage(self):
         scene = competing_flights()
         scene = replace(scene, tasks=(scene.tasks[0],
             replace(scene.tasks[1], id='late1', end=560, role_id='专岗'),
             replace(scene.tasks[1], id='late2', start=560, role_id='专岗')),
             coverage_priorities=(('专岗', 'protect'), ('普通岗', 'leave-empty')))
+        self.assertEqual({'late1', 'late2'}, {a.task_id for a in solve(scene, allow_partial=True).assignments})
+        # Earlier-flight precedence remains within non-leave-empty roles.
+        scene = replace(scene, coverage_priorities=(('专岗', 'protect'),))
         self.assertEqual({'early'}, {a.task_id for a in solve(scene, allow_partial=True).assignments})
 
     def test_late_dedicated_position_precedes_early_ordinary_position(self):
