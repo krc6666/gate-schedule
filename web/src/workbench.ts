@@ -1046,6 +1046,7 @@ root.addEventListener("input", event => {
 });
 root.addEventListener("change", () => cloudBridge.refresh());
 cloudBridge.hasEdits = () => hasUnsaved() || !!dialog && editedDialog === dialog;
+cloudBridge.canTransfer = () => !busy && !dialog && !edits.confirming;
 cloudBridge.prepare = async () => {
   if (busy || dialog || edits.confirming) return false;
   const ok = await edits.save();

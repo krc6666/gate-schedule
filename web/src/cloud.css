@@ -14,5 +14,7 @@
 .cloud-login input { display:block; width:100%; margin-top:8px; padding:10px; border:1px solid #ccd5de; border-radius:6px; }
 .cloud-login p { color:#687582; line-height:1.7; }
 .cloud-login > button { margin:8px 0; }
+.cloud-session-notice { max-width:1440px; margin:auto; padding:0 24px 10px; display:flex; flex-wrap:wrap; align-items:center; gap:10px; color:#52606f; }
+.cloud-session-notice:empty { display:none; }
 [data-gate-cloud=true] .app-header .save-state { display:none; }
 @media(max-width:600px) { .cloud-toolbar-inner { padding:10px 12px; gap:8px; } .cloud-toolbar-inner .btn { white-space:nowrap; padding:8px 10px; } .cloud-status { font-size:12px; } }

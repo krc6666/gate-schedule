@@ -31,6 +31,19 @@ test('任意来源与目标下拉，顺序增删和特例，名称转义且没�
   assert.match(markup,/<option value="later-overlap"/);
   assert.doesNotMatch(markup,/data-relative|durationMinutes|offsetMinutes|type="number"/);
 });
+
+test('接续和禁止条目默认折叠，新建入口在列表之前且名称明确区分',()=>{
+  const s=state();
+  const markup=handoffPreferences(s,true);
+  assert.match(markup,/<details[^>]*data-flow-rule="0"/);
+  assert.doesNotMatch(markup,/<details[^>]*data-flow-rule="0"[^>]*\bopen\b/);
+  assert.ok(markup.indexOf('id="add-flow-rule"')<markup.indexOf('data-flow-rule="0"'));
+  assert.match(markup,/新增接续兼职/);
+  assert.match(markup,/data-rule-path/);
+  const forbidden=forbiddenHandoffsHtml(s,{pairs:[],baggage:[],forbiddenHandoffs:[{flightNo:'*',sourceRole:'接机1',targets:[{role:'入境申报',flightScope:'same-flight'}],enabled:true}]});
+  assert.match(forbidden,/<details[^>]*data-forbidden-rule="0"/);
+  assert.ok(forbidden.indexOf('data-forbidden-add-rule')<forbidden.indexOf('data-forbidden-rule="0"'));
+});
 test('通用设置单独突出，已有航班特例默认收起，不按航班模板复制通用规则',()=>{
   const s=state();s.flightLibrary=['CX937','KE0166','TW616'].map(flightNo=>({flightNo}));
   s.handoffPreferences.push({flightNo:'*',arrivalRole:'接机1',boardingRoles:['入境申报'],enabled:true});
@@ -40,7 +53,7 @@ test('通用设置单独突出，已有航班特例默认收起，不按航班�
   assert.doesNotMatch(markup,/<details[^>]*id="flow-exceptions"[^>]*\bopen\b/);
   assert.match(markup,/没有特例的航班.*通用/);
   assert.equal((markup.match(/data-flow-rule=/g)||[]).length,2);
-  const common=markup.slice(markup.indexOf('data-flow-common'),markup.indexOf('<details'));
+  const common=markup.slice(markup.indexOf('data-flow-common'),markup.indexOf('id="flow-exceptions"'));
   assert.ok(common.includes('data-flow-rule="1"'));assert.ok(!common.includes('data-flow-rule="0"'));
   assert.deepEqual(s,before);
 });
@@ -68,7 +81,7 @@ test('连续修改和排序使用当前草稿，删除最后目标后禁用，�
 test('新增特例需明确航班，取消不修改；按来源复制通用，重复不覆盖旧特例',()=>{
   const original=state(),saved=[],handlers={},details={open:false},alerts=[];
   original.handoffPreferences=[{flightNo:'*',arrivalRole:'接机1',boardingRoles:['入境申报'],enabled:true,ordered:false,targetFlightScopes:{'入境申报':'later-overlap'}}];
-  const root={querySelectorAll:()=>[],querySelector:s=>s==='#flow-exceptions'?details:({addEventListener:(event,fn)=>handlers[s]=fn})};
+  const root={querySelectorAll:()=>[],querySelector:s=>s==='#flow-exceptions'?details:['#add-flow-rule','#add-flow-exception'].includes(s)?({addEventListener:(event,fn)=>handlers[s]=fn}):null};
   const previousPrompt=globalThis.prompt,previousAlert=globalThis.alert;let reply=null;
   globalThis.prompt=()=>reply;globalThis.alert=message=>alerts.push(message);
   try{

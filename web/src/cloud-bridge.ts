@@ -6,5 +6,6 @@ export const cloudBridge: {
   active: boolean;
   prepare: () => Promise<boolean>;
   hasEdits: () => boolean;
+  canTransfer: () => boolean;
   refresh: () => void;
-} = {workspace: null, active: true, prepare: async () => false, hasEdits: () => false, refresh: () => {}};
+} = {workspace: null, active: true, prepare: async () => false, hasEdits: () => false, canTransfer: () => false, refresh: () => {}};

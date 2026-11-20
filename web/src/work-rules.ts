@@ -1,7 +1,7 @@
 import {baggageWindowHtml,bindBaggageWindow} from './baggage-window';
 import {html,flowRoles,flowRoleOptions as options,flowRoleNotice, type WorkRules, type SeparationGroup, type State, type Day, type Plan} from './workbench-model';
 import {forbiddenHandoffsHtml,bindForbiddenHandoffs} from './forbidden-handoffs';
-import {ruleScopeSections} from './rule-scope-view';
+import {ruleScopeSections,ruleCardId,revealRule,ruleCategory} from './rule-scope-view';
 const empty = (): WorkRules => ({pairs: [], baggage: []});
 function legacyEditor(state: State, rules: WorkRules): string {
   const roles = flowRoles(state);
@@ -10,9 +10,10 @@ function legacyEditor(state: State, rules: WorkRules): string {
 function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): string {
   const roles = flowRoles(state);
   const groups = rules.separationGroups ?? [];
-  return `<div data-work-editor="${kind}">${baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined)}<section class="separation-settings"><h3>禁止同人集合</h3>${ruleScopeSections(groups,`separation-${kind}`,(g,i) => `
-    <fieldset class="separation-group ${g.flightNo==='*'?'is-common':'is-exception'}" data-separation-group="${i}">
-      <legend>${html(g.name)} · ${html(g.flightNo==='*'?'通用':g.flightNo)} · <span data-group-state>${g.enabled?'已启用':'已停用，不执行分人'}</span></legend>
+  const category=(id:string,title:string,summary:string,body:string)=>ruleCategory(`${id}-${kind}`,title,summary,body,kind==='day');
+  const separation=`<section class="separation-settings"><div class="button-row rule-add-actions"><button type="button" class="btn btn-outline-primary" data-group-add>＋ 新增禁止同人集合</button></div><p class="section-note">同一集合内的岗位不能安排同一人。新增集合后填写名称，再添加至少两个岗位；支持移除岗位、删除集合和航班特例。</p>${ruleScopeSections(groups,`separation-${kind}`,(g,i) => `
+    <details id="${ruleCardId('separation-card',kind,g.id,g.flightNo)}" class="separation-group rule-card ${g.flightNo==='*'?'is-common':'is-exception'}" data-separation-group="${i}">
+      <summary><span class="rule-scope-badge">${html(g.flightNo==='*'?'通用':g.flightNo+' 特例')}</span><strong data-group-name-summary>${html(g.name)}</strong><span data-group-state class="rule-status">${g.enabled?'已启用':'已停用'}</span><span data-rule-path>${g.roles.map(html).join('、')||'尚未添加组内岗位'}</span><span class="chevron" aria-hidden="true">⌄</span></summary><div class="rule-card-body">
       ${flowRoleNotice(roles,g.roles)}
       <div class="separation-fields">
         <label>组名称 <input data-group-name value="${html(g.name)}" /></label>
@@ -25,17 +26,22 @@ function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): s
         ${!g.enabled&&g.roles.length>=2?'<button type="button" class="btn btn-sm btn-primary" data-group-activate>启用此集合</button>':''}
         <button type="button" class="btn btn-sm" data-group-add-role ${roles.every(role=>g.roles.includes(role))?'disabled':''}>＋ 添加岗位</button>
         <button type="button" class="btn btn-sm" data-group-exception ${g.roles.some(role=>!roles.includes(role))?'disabled':''}>＋ 增加航班特例</button>
-        <button type="button" class="btn btn-sm" data-group-delete>${g.flightNo==='*'?'删除通用设置':'删除此特例（恢复继承）'}</button>
+        <button type="button" class="btn btn-sm btn-outline-danger" data-group-delete>${g.flightNo==='*'?'删除此集合':'删除此特例（恢复继承）'}</button>
         ${groups.filter(r=>r.id===g.id).length>1?'<button type="button" class="btn btn-sm" data-group-delete-all>删除整组（含特例）</button>':''}
       </div>
-    </fieldset>`)}
-    <button type="button" class="btn btn-sm" data-group-add>＋ 新增通用分人组</button>
+    </div></details>`)}
     ${kind==='base' && state.groupedWorkRules && rules.pairs.some(r=>r.scope==='same-flight'&&r.mode==='separate')?'<button type="button" class="btn btn-sm" id="convert-work-groups">旧同航班分人规则转为分人组</button><p class="section-note">转换使用已保存配置；有未保存改动时，请先保存。跨航班及兼任许可仍保留在高级区。</p>':''}
-    </section>${forbiddenHandoffsHtml(state,rules,kind)}${legacyEditor(state,rules)}</div>`;
+    </section>`;
+  return `<div data-work-editor="${kind}">
+    ${category('baggage-rules','大件保障',rules.baggageWindow?'按开检与截载计算轮换':'沿用基础轮换设置',baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined))}
+    ${category('separation-rules','禁止同人集合',`${groups.length} 项 · ${groups.filter(g=>g.enabled).length} 项启用`,separation)}
+    ${category('forbidden-rules','禁止衔接',`${rules.forbiddenHandoffs?.length??0} 项 · ${rules.forbiddenHandoffs?.filter(r=>r.enabled).length??0} 项启用`,forbiddenHandoffsHtml(state,rules,kind))}
+    ${category('work-relation-rules','其他岗位关系',`${rules.pairs.length} 项旧关系 · 高级维护`,`${kind==='base'?'<button id="load-confirmed-work-rules" type="button" class="btn btn-sm btn-outline-secondary">载入已确认规则</button>':''}${legacyEditor(state,rules)}`)}
+    </div>`;
 }
 export function workRulesHtml(state: State, day: Day | null, plan: Plan | null): string {
   const current = state.workRules ?? empty();
-  return `<details id="work-relation-rules" class="workspace-section rule-group"><summary><strong>大件保障、禁止同人集合与禁止衔接</strong><span data-rule-summary>集合 ${current.separationGroups?.filter(g=>g.enabled).length??0} 项启用 / ${current.separationGroups?.length??0} 项设置 · 禁止 ${current.forbiddenHandoffs?.filter(g=>g.enabled).length??0} 项启用</span></summary><div class="rule-group-body"><p class="section-note">同组同航班必须不同人，优先级不能绕过；缺人留缺口，手工违规标红。多组共同生效。接续去向与航班范围在本页上方配置。修改后统一保存配置并重新排班；保存规则不会立即改写当前班表。</p>${day?.workRulesOverride?'<p class="inactive-rule-note" role="status">当天独立规则已开启：下方长期集合和禁止衔接不会用于当天排班，请编辑“当天临时例外”或关闭当天独立规则。</p>':''}<button id="load-confirmed-work-rules" class="btn btn-sm btn-outline-secondary">载入已确认规则</button>${editor(state,current,'base',plan)}${day ? `<details id="day-work-relations"><summary>当天临时例外${day.workRulesOverride?' · 已开启，覆盖长期规则':''}</summary><label><input id="day-work-override" type="checkbox" ${day.workRulesOverride?'checked':''} />仅当天使用独立大件、分人及禁止衔接规则</label>${day.workRulesOverride?editor(state,day.workRules??current,'day',plan):''}</details>`:''}</div></details>`;
+  return `${day?.workRulesOverride?'<p class="inactive-rule-note" role="status">当天独立规则已开启：下方长期集合和禁止衔接不会用于当天排班，请编辑“当天临时例外”或关闭当天独立规则。</p>':''}${editor(state,current,'base',plan)}${day ? ruleCategory('day-work-relations','当天临时例外',day.workRulesOverride?'已开启，覆盖长期大件、集合与禁止规则':'未开启 · 沿用长期规则',`<label class="switch-label"><input id="day-work-override" type="checkbox" ${day.workRulesOverride?'checked':''} />仅当天使用独立大件、分人及禁止衔接规则</label>${day.workRulesOverride?editor(state,day.workRules??current,'day',plan):''}`):''}`;
 }
 export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, onRules: (rules: WorkRules) => void, onDay: () => void, render: () => void, savedRules = state.workRules): void {
   let base = structuredClone(state.workRules ?? empty());
@@ -66,14 +72,25 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
   root.querySelectorAll<HTMLElement>('[data-work-editor]').forEach(container => {
     const kind=container.dataset.workEditor!;
     bindBaggageWindow(container,state,(fn,repaint)=>modify(kind,fn,repaint));
-    bindForbiddenHandoffs(container,state,(fn,repaint)=>modify(kind,fn,repaint));
-    const changeGroup=(index:number, fn:(g:SeparationGroup,r:WorkRules)=>void, repaint=false)=>modify(kind,r=>fn(r.separationGroups![index],r),repaint);
-    container.querySelector<HTMLButtonElement>('[data-group-add]')!.onclick=()=>modify(kind,r=>{
-      (r.separationGroups??=[]).push({id:crypto.randomUUID(),name:'新分人组',flightNo:'*',roles:[],enabled:false});
-    },true);
+    bindForbiddenHandoffs(container,{...state,workRules:kind==='day'?day?.workRules:base},(fn,repaint)=>modify(kind,fn,repaint),root);
+    const showGroup=(g:SeparationGroup,focus=false)=>revealRule(root,ruleCardId('separation-card',kind,g.id,g.flightNo),focus);
+    const changeGroup=(index:number, fn:(g:SeparationGroup,r:WorkRules)=>void, repaint=false)=>{
+      let edited:SeparationGroup;
+      modify(kind,r=>{edited=r.separationGroups![index];fn(edited,r);},repaint);
+      if(repaint)showGroup(edited!);
+    };
+    container.querySelector<HTMLButtonElement>('[data-group-add]')!.onclick=()=>{
+      const added={id:crypto.randomUUID(),name:'新禁止同人集合',flightNo:'*',roles:[],enabled:false};
+      modify(kind,r=>{(r.separationGroups??=[]).push(added);},true);
+      showGroup(added,true);
+    };
     container.querySelectorAll<HTMLElement>('[data-separation-group]').forEach(card=>{
       const i=Number(card.dataset.separationGroup);
-      card.querySelector<HTMLInputElement>('[data-group-name]')!.onchange=e=>changeGroup(i,g=>{g.name=(e.target as HTMLInputElement).value.trim();});
+      card.querySelector<HTMLInputElement>('[data-group-name]')!.onchange=e=>{
+        const name=(e.target as HTMLInputElement).value.trim();
+        changeGroup(i,g=>{g.name=name;});
+        card.querySelector<HTMLElement>('[data-group-name-summary]')!.textContent=name;
+      };
       const scopeInput=card.querySelector<HTMLInputElement>('[data-group-scope]');
       if(scopeInput)scopeInput.onchange=e=>changeGroup(i,g=>{const v=(e.target as HTMLInputElement).value.trim().toUpperCase();g.flightNo=v==='通用'?'*':v;},true);
       card.querySelector<HTMLInputElement>('[data-group-enabled]')!.onchange=e=>changeGroup(i,g=>{g.enabled=(e.target as HTMLInputElement).checked;},true);
@@ -94,6 +111,7 @@ export function bindWorkRules(root: HTMLElement, state: State, day: Day | null, 
         if(r.separationGroups!.some(row=>row.id===g.id&&row.flightNo===scope)){alert('同组已存在此航班范围，请直接修改对应设置。');return;}
         const details=container.querySelector<HTMLDetailsElement>(`#separation-${kind}-exceptions`);if(details)details.open=true;
         r.separationGroups!.push({...structuredClone(g),flightNo:scope});
+        queueMicrotask(()=>showGroup({...g,flightNo:scope},true));
       },true);
       card.querySelector<HTMLButtonElement>('[data-group-delete]')!.onclick=()=>modify(kind,r=>{r.separationGroups!.splice(i,1);},true);
       card.querySelector<HTMLButtonElement>('[data-group-delete-all]')?.addEventListener('click',()=>{

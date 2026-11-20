@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "vite",
+    "dev:cloud": "vite --mode cloud",
     "build": "tsc && vite build",
     "build:browser": "python ../scripts/prepare-browser.py && tsc && vite build --mode browser",
     "build:cloud": "python ../scripts/prepare-browser.py && tsc && vite build --mode cloud",

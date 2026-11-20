@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from gate_schedule.workbench import Workbench, WorkspaceError
+from gate_schedule.workbench import Workbench, WorkspaceError, schedule_data
 from gate_schedule.excel_io import import_complete_configuration
-from gate_schedule.workspace_document import validate_document, plan_scenario
+from gate_schedule.group_workspaces import GroupWorkspaces
+from gate_schedule.workspace_document import validate_document, plan_scenario, archive_review
 from tests.test_balance_workflow import small_configuration
 
 
@@ -26,6 +27,56 @@ class ManualOperationsTests(unittest.TestCase):
 
     def counts(self, p):
         return {r['memberName']: (r['count'], r['flightNos']) for r in p['schedule']['memberFlights']}
+
+    def test_edit_reuses_unchanged_history_and_keeps_today_checks_and_undo(self):
+        self.command('edit-cell', {'cellId': 'c0', 'text': '甲'})
+        self.command('adopt')
+        history_id = self.pid
+        current = small_configuration(None)
+        current['day']['serviceDate'] = '2026-08-03'
+        self.command('import-complete-configuration', current)
+        self.pid = self.s['selectedPlanId']
+        groups = GroupWorkspaces(self.path)
+        groups.initialize()
+        self.w = groups.workbench('A')
+        self.s = self.w.snapshot()
+        history = deepcopy(self.s['plans'][history_id])
+        with patch('gate_schedule.workbench.archive_review', wraps=archive_review) as review, \
+                patch('gate_schedule.workbench.schedule_data', wraps=schedule_data) as view:
+            self.command('edit-slot', {'taskId': 'imported-c0', 'slot': 0, 'memberId': self.people['甲']})
+            self.w = groups.workbench('A')
+            today = self.command('move-assignment', {
+                'memberId': self.people['甲'], 'sourceTaskId': 'imported-c0', 'targetTaskId': 'imported-c1',
+            })
+            self.assertTrue(today['editFeedback']['hasWarnings'])
+            self.assertEqual({'甲': (1, ['F1']), '乙': (0, [])}, self.counts(today))
+            self.assertEqual(history['formalSchedule'], self.s['plans'][history_id]['formalSchedule'])
+            self.assertFalse(any(call.args[0].service_date != current['day']['serviceDate'] for call in view.call_args_list))
+            review.assert_not_called()
+        self.assertEqual({'甲': (1, ['F0']), '乙': (0, [])}, self.counts(self.command('undo-edit')))
+        self.assertEqual(GroupWorkspaces(self.path).workbench('A').snapshot(), self.s)
+
+    def test_restoring_changed_history_replaces_the_previous_view_and_rejects_bad_archive(self):
+        self.command('edit-cell', {'cellId': 'c0', 'text': '甲'})
+        self.command('adopt')
+        groups = GroupWorkspaces(self.path)
+        groups.initialize()
+        self.w = groups.workbench('A')
+        self.s = self.w.snapshot()
+        original = groups.backup()
+        self.command('edit-cell', {'cellId': 'c0', 'text': '乙'})
+        changed = self.command('adopt')
+        self.assertEqual(self.people['乙'], changed['formalSchedule']['assignments'][0]['memberId'])
+        modified_backup = deepcopy(original)
+        modified_backup['groups']['A']['plans'][self.pid]['adopted']['issues'] = []
+        before = groups.backup()
+        with self.assertRaisesRegex(WorkspaceError, '归档问题清单'):
+            groups.preview_restore('A', modified_backup)
+        self.assertEqual(before, groups.backup())
+        restored = groups.restore('A', self.s['revision'], original)
+        self.assertEqual(self.people['甲'], restored['plans'][self.pid]['formalSchedule']['assignments'][0]['memberId'])
+        self.assertEqual(before['groups']['B']['plans'], groups.backup()['groups']['B']['plans'])
+        self.assertEqual(GroupWorkspaces(self.path).workbench('A').snapshot(), restored)
 
     def test_move_replace_clear_undo_and_restart_keep_flight_counts_current(self):
         self.command('edit-cell', {'cellId':'c0', 'text':'甲'})

@@ -163,7 +163,7 @@ def sync_roster(plan, people, refresh):
     plan["memberIds"] = {**{name: identity for name, identity in plan.get("memberIds", {}).items() if name in day.get("roster", [])}, **{p["name"]: p["id"] for p in people}}
 
 
-def validate_document(state, *, validate_undo=True):
+def validate_document(state, *, validate_undo=True, review_archive=None):
     if not isinstance(state, dict):
         raise WorkspaceError("工作台数据必须为对象")
     if state.get("stateVersion") != 2 or state.get("timeVersion") != 2:
@@ -217,10 +217,10 @@ def validate_document(state, *, validate_undo=True):
         if not isinstance(person["id"], str) or not person["id"] or not isinstance(person["name"], str) or not person["name"].strip() or type(person["active"]) is not bool or not isinstance(person["eligibleRoleNames"], list) or any(not isinstance(r, str) or not r.strip() for r in person["eligibleRoleNames"]):
             raise WorkspaceError("人员结构无效")
     for plan_id, plan in state["plans"].items():
-        _validate_plan(state, plan_id, plan, ids, validate_undo=validate_undo)
+        _validate_plan(state, plan_id, plan, ids, validate_undo=validate_undo, review_archive=review_archive)
 
 
-def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
+def _validate_plan(state, plan_id, plan, ids, *, validate_undo, review_archive):
     """Validate current and undo inputs once each, using the same full context."""
     statuses = plan.get("personnelStates", {})
     if not isinstance(statuses, dict) or any(not isinstance(k, str) or not k or v not in MEMBER_STATUSES for k, v in statuses.items()):
@@ -241,7 +241,7 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
             raise WorkspaceError("撤销记录无效，原数据保留")
         restored = {k: v for k, v in plan.items() if k != 'lastEdit'}
         restored.update(deepcopy(undo["before"]))
-        _validate_plan(state, plan_id, restored, ids, validate_undo=False)
+        _validate_plan(state, plan_id, restored, ids, validate_undo=False, review_archive=review_archive)
     if plan["id"] != plan_id or type(plan["inputRevision"]) is not int:
         raise WorkspaceError("计划身份或版本无效")
     day = imported_day_from_dict(plan["day"])
@@ -264,7 +264,9 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
     if draft and scenario is None:
         raise WorkspaceError("草稿没有有效任务资料")
     if scenario:
-        if any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in draft):
+        task_ids = {task.id for task in scenario.tasks}
+        member_ids = {member.id for member in scenario.members}
+        if any(a.task_id not in task_ids or a.member_id not in member_ids for a in draft):
             raise WorkspaceError("草稿引用未知任务或人员")
     if plan.get("preview"):
         preview = plan["preview"]
@@ -274,7 +276,7 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
         if preview["inputRevision"] != plan["inputRevision"]:
             raise WorkspaceError("预览与当前输入版本不一致")
         previous = read_assignments(preview["previousDraft"])
-        if not scenario or any(a.task_id not in {t.id for t in scenario.tasks} or a.member_id not in {m.id for m in scenario.members} for a in previous):
+        if not scenario or any(a.task_id not in task_ids or a.member_id not in member_ids for a in previous):
             raise WorkspaceError("预览中的原草稿引用未知任务或人员")
     adopted = plan["adopted"]
     if adopted:
@@ -287,11 +289,14 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
             raise WorkspaceError('归档问题快照版本或问题清单无效')
         formal = scenario_from_dict(adopted["scenario"]) if adopted.get('scenario') else None
         assignments = read_assignments(adopted['assignments'])
-        if assignments and (not formal or any(a.task_id not in {t.id for t in formal.tasks} or a.member_id not in {m.id for m in formal.members} for a in assignments)):
+        formal_tasks = {task.id for task in formal.tasks} if formal else set()
+        formal_members = {member.id for member in formal.members} if formal else set()
+        if any(a.task_id not in formal_tasks or a.member_id not in formal_members for a in assignments):
             raise WorkspaceError('归档引用未知任务或人员')
-        issues = validate_schedule(formal, assignments) if formal else []
-        if not warning_archive and (issues or formal is None):
-            raise WorkspaceError("正式结果无效：" + "；".join(i.message for i in issues))
+        if not warning_archive:
+            issues = validate_schedule(formal, assignments) if formal else []
+            if issues or formal is None:
+                raise WorkspaceError("正式结果无效：" + "；".join(i.message for i in issues))
         if warning_archive or not adopted.get("legacyOriginal"):
             reference = {"day": adopted["day"], "memberIds": adopted["memberIds"], "rotationMinutes": adopted["rotationMinutes"], "rotationEnabled": adopted["rotationEnabled"]}
             _validate_day_structure(imported_day_from_dict(reference['day']))
@@ -309,7 +314,7 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo):
                 for text in reference['cellDrafts'].values():
                     if not typed_names(reference, text):
                         raise WorkspaceError('归档待完善姓名格不能为空')
-                rebuilt, problems = archive_review(reference)
+                rebuilt, problems = (review_archive or archive_review)(reference)
                 if problems != adopted['issues']:
                     raise WorkspaceError('归档问题清单与原安排不一致')
             else:

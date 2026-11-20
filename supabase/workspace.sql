@@ -113,7 +113,14 @@ end;
 $$;
 revoke all on function public.gate_read_workspace() from public, anon;
 revoke all on function public.gate_save_workspace(bigint,jsonb) from public, anon;
-grant execute on function public.gate_read_workspace(), public.gate_save_workspace(bigint,jsonb) to authenticated;
+-- Re-running base setup must not reopen the old paths after session approval.
+do $$ begin
+  if to_regprocedure('public.gate_require_session(text)') is null then
+    grant execute on function public.gate_read_workspace(), public.gate_save_workspace(bigint,jsonb) to authenticated;
+  else
+    revoke all on function public.gate_read_workspace(), public.gate_save_workspace(bigint,jsonb) from authenticated;
+  end if;
+end $$;
 commit;
 
 -- AFTER manually creating the sole administrator in Authentication > Users:

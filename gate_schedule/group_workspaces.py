@@ -82,6 +82,7 @@ class GroupWorkspaces:
     def __init__(self, database_path, *, store=None):
         self.path = database_path
         self.store = store if store is not None else LocalStateStore(database_path)
+        self._workbenches = {group: Workbench(self.path, store=_GroupStore(self, group)) for group in GROUPS}
 
     def initialize(self):
         if self.store.read_document(self.KEY) is not None:
@@ -119,7 +120,7 @@ class GroupWorkspaces:
             raise WorkspaceError('A/B班组数据缺失或版本无效；当前数据保持')
         for group in GROUPS:
             state = root['groups'][group]
-            validate_document(state)
+            self.workbench(group).validate(state)
             if _shared(state) != root['shared']:
                 raise WorkspaceError('班组共享航班数据不一致；当前数据保持')
 
@@ -130,7 +131,7 @@ class GroupWorkspaces:
         self.store.compare_and_save(self.KEY, expected, root)
 
     def workbench(self, group):
-        return Workbench(self.path, store=_GroupStore(self, group))
+        return self._workbenches[check_group(group)]
 
     def info(self):
         root = self._load()

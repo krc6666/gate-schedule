@@ -1,5 +1,26 @@
 import {html} from './workbench-model';
 
+export function ruleCardId(prefix:string,...parts:string[]):string {
+  return `${prefix}-${parts.map(part=>encodeURIComponent(part)).join('/')}`;
+}
+
+/** Reveal an edited item after the caller has redrawn its draft. */
+export function revealRule(root:HTMLElement,id:string,focus=false):void {
+  const card=root.querySelector<HTMLElement>(`[id="${id}"]`);
+  if(!card)return;
+  for(let node:HTMLElement|null=card;node&&root.contains(node);node=node.parentElement){
+    if(node instanceof HTMLDetailsElement)node.open=true;
+  }
+  if(focus){
+    card.scrollIntoView({block:'nearest'});
+    card.querySelector<HTMLElement>('input:not([type=checkbox]),select,button')?.focus({preventScroll:true});
+  }
+}
+
+export function ruleCategory(id:string,title:string,summary:string,body:string,day=false):string {
+  return `<details id="${html(id)}" class="${day?'rule-subgroup':'workspace-section rule-group'} rule-category"><summary><strong>${html(title)}</strong><span data-rule-summary>${html(summary)}</span><span class="chevron" aria-hidden="true">⌄</span></summary><div class="rule-group-body">${body}</div></details>`;
+}
+
 /** Presentation only: retain saved order/indices and never resolve inheritance. */
 export function ruleScopeSections<T extends {flightNo:string}>(rows:T[],prefix:string,card:(row:T,index:number)=>string):string {
   const common=rows.map((row,i)=>row.flightNo==='*'?card(row,i):'').join('');

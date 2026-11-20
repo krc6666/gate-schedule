@@ -393,7 +393,7 @@ print(json.dumps(configuration([preference(targets=['登机核验']),preference(
   await command('B','import-complete-configuration',relationsPreview.payload);await reload();
   relationsPlan=await solveCoverage();checkFlowDraft(relationsPlan);
   await value('#active-group','B');await click('[data-view="rules"]');
-  assert.ok(await evaluate('!!document.querySelector("#work-relation-rules")'));
+  assert.ok(await evaluate('!!document.querySelector("#baggage-rules-base")'));
   const wasmDraft=structuredClone(relationsPlan.draft);
   const bagTaskIds=new Set(relationsPlan.schedule.tasks.filter(t=>t.roleId==='大件行李拦截').map(t=>t.id));
   const bagCells=relationsPlan.day.cells.filter(c=>c.roleName==='大件行李拦截').map(c=>c.id);

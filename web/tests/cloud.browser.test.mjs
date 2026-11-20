@@ -5,29 +5,51 @@ import {spawn,execFileSync} from 'node:child_process';
 import {readFile,mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve,extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createServer as createTcpServer} from 'node:net';
 import {continuationAcceptance,savedDayContinuationAcceptance,partTimeDayAcceptance} from './continuation-acceptance.mjs';
 
 const repo=fileURLToPath(new URL('../../',import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label,ms=90000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await delay(80)}throw Error('等待超时：'+label)}
 test('cloud UI with simulated Supabase: actual save entry, recovery, failures, conflict, auth, exit and responsive layout',{timeout:300000},async t=>{
-  console.log('Preparing cloud mock build');
-  execFileSync(process.platform==='win32'?'npm.cmd':'npm',['run','build:cloud','--','--outDir','../build/cloud-mock'],{cwd:join(repo,'web'),env:{...process.env,VITE_SUPABASE_URL:'https://gate-cloud-test.invalid',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},shell:process.platform==='win32',stdio:'pipe'});
+  const development=process.env.GATE_TEST_CLOUD_DEV==='1';
+  if(!development){
+    console.log('Preparing cloud mock build');
+    execFileSync(process.platform==='win32'?'npm.cmd':'npm',['run','build:cloud','--','--outDir','../build/cloud-mock'],{cwd:join(repo,'web'),env:{...process.env,VITE_SUPABASE_URL:'https://gate-cloud-test.invalid',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},shell:process.platform==='win32',stdio:'pipe'});
+  }
   let stored=null,revision=0,saves=0,mode='',release;
   if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT){const snapshot=JSON.parse(await readFile(process.env.GATE_TEST_CONTINUATION_SNAPSHOT,'utf8'));stored=snapshot.documents;revision=snapshot.revision;}
+  let launcherOutput='';
+  let holder='',request=null; let reads=0;
   const errors=[],dialogs=[];
   const token='e30.'+Buffer.from(JSON.stringify({sub:'11111111-1111-4111-8111-111111111111',role:'authenticated',exp:Math.floor(Date.now()/1000)+3600})).toString('base64url')+'.test';
   const server=createServer(async(req,res)=>{
     try{
       const url=new URL(req.url,'http://localhost');
+      if(development){
+        res.setHeader('Access-Control-Allow-Origin','*');
+        res.setHeader('Access-Control-Allow-Headers',req.headers['access-control-request-headers']??'authorization,apikey,content-type,x-client-info');
+        res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');
+        if(req.method==='OPTIONS'){res.statusCode=204;return res.end()}
+      }
       if(url.pathname.startsWith('/auth/')||url.pathname.startsWith('/rest/')){
         const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString()||'{}');
         res.setHeader('Content-Type','application/json');
+        if(url.pathname.startsWith('/rest/')&&!req.headers.authorization){res.statusCode=403;return res.end(JSON.stringify({code:'42501',message:'permission denied'}))}
         if(url.pathname==='/auth/v1/token')return res.end(JSON.stringify({access_token:token,refresh_token:'test-refresh',expires_in:3600,token_type:'bearer',user:{id:'11111111-1111-4111-8111-111111111111',email:body.email,aud:'authenticated'}}));
         if(url.pathname==='/auth/v1/logout')return res.end('{}');
         if(mode==='permission'){res.statusCode=403;return res.end(JSON.stringify({code:'42501',message:'ADMIN_REQUIRED'}))}
-        if(url.pathname.endsWith('gate_read_workspace'))return res.end(JSON.stringify({revision,documents:mode==='corrupt'?{}:stored}));
-        if(url.pathname.endsWith('gate_save_workspace')){
+        const fail=message=>{res.statusCode=400;res.end(JSON.stringify({message}))};
+        if(url.pathname.endsWith('gate_acquire_session')){if(holder&&holder!==body.p_session)return fail('SESSION_ACTIVE');holder=body.p_session;return res.end('null')}
+        if(url.pathname.endsWith('gate_request_login')){request={id:body.p_request,status:'pending',requester:body.p_session};return res.end(JSON.stringify(request))}
+        if(url.pathname.endsWith('gate_poll_login'))return res.end(JSON.stringify(request));
+        if(url.pathname.endsWith('gate_touch_session'))return holder===body.p_session?res.end('null'):fail('SESSION_EXPIRED');
+        if(url.pathname.endsWith('gate_release_session')){if(holder===body.p_session)holder='';return res.end('null')}
+        if(url.pathname.endsWith('gate_cancel_login')){if(request?.requester===body.p_session&&request.status==='pending')request.status='cancelled';return res.end('null')}
+        if(url.pathname.endsWith('gate_decide_login')){if(holder!==body.p_session)return fail('SESSION_EXPIRED');if(body.p_allow)holder=request.requester;request.status=body.p_allow?'approved':'rejected';return res.end('null')}
+        if(body.p_session!==holder)return fail('SESSION_EXPIRED');
+        if(url.pathname.endsWith('gate_read_workspace_session')){reads++;return res.end(JSON.stringify({revision,documents:mode==='corrupt'?{}:stored}))}
+        if(url.pathname.endsWith('gate_save_workspace_session')){
           saves++;
           if(mode==='delay')await new Promise(r=>{release=r});
           if(mode==='network'){res.statusCode=503;return res.end(JSON.stringify({message:'unavailable'}))}
@@ -47,9 +69,26 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
     }catch(error){res.statusCode=500;res.end(String(error))}
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  let pageUrl=`http://127.0.0.1:${server.address().port}/gate-schedule/`;
+  if(development){
+    const socket=createTcpServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));
+    const port=socket.address().port;await new Promise(r=>socket.close(r));
+    const launcher=spawn(process.env.GATE_TEST_PYTHON??(process.platform==='win32'?join(repo,'.venv-local/Scripts/python.exe'):'python3'),
+      ['-B',join(repo,'dev.py'),'--no-browser','--port',String(port)],
+      {cwd:repo,windowsHide:true,env:{...process.env,PYTHONIOENCODING:'utf-8',TEMP:join(repo,'.tmp'),TMP:join(repo,'.tmp'),VITE_SUPABASE_URL:`http://127.0.0.1:${server.address().port}`,VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},stdio:['ignore','pipe','pipe']});
+    for(const stream of [launcher.stdout,launcher.stderr])stream.on('data',chunk=>{launcherOutput=(launcherOutput+chunk.toString()).slice(-16000)});
+    t.after(()=>{if(launcher.exitCode===null){if(process.platform==='win32')execFileSync('taskkill',['/PID',String(launcher.pid),'/T','/F'],{stdio:'ignore'});else launcher.kill('SIGINT')}});
+    pageUrl=`http://127.0.0.1:${port}/`;
+    await until(async()=>{
+      if(launcher.exitCode!==null)throw Error('dev.py exited: '+launcherOutput);
+      try{return (await fetch(pageUrl)).ok}catch{return false}
+    },'dev.py云端入口');
+    assert.match(launcherOutput,/dev:cloud/);
+    console.log('Testing dev.py cloud entry');
+  }
   await mkdir(join(repo,'.tmp'),{recursive:true});const directory=await mkdtemp(join(repo,'.tmp/cloud-browser-'));
   let browser,ws;let next=0;const pending=new Map();
-  t.after(async()=>{ws?.close();browser?.kill();server.closeAllConnections();await new Promise(r=>server.close(r));await writeFile(join(directory,'result.json'),JSON.stringify({errors,dialogs,saves,revision},null,2))});
+  t.after(async()=>{await writeFile(join(directory,'result.json'),JSON.stringify({errors,dialogs,saves,revision,launcherOutput},null,2));ws?.close();browser?.kill();await new Promise(r=>{server.close(r);server.closeAllConnections()})});
   let browserError='';
   browser=spawn(process.env.GATE_TEST_BROWSER??'C:/Program Files/Google/Chrome/Application/chrome.exe',['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--remote-debugging-port=0','--user-data-dir='+join(directory,'chrome'),'about:blank'],{windowsHide:true,stdio:['ignore','ignore','pipe']});
   browser.stderr.on('data',chunk=>{browserError=(browserError+chunk.toString()).slice(-8000)});
@@ -65,7 +104,7 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>reject(Error('CDP timeout: '+method)),25000);pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});ws.send(JSON.stringify({id,method,params}))});
   const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value};
   await call('Runtime.enable');await call('Page.enable');
-  await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/gate-schedule/`});
+  await call('Page.navigate',{url:pageUrl});
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   const ready=()=>until(()=>evaluate('!!document.querySelector("[data-view=config]")'),'工作台');
@@ -81,9 +120,9 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   const warning=()=>evaluate('(()=>{const e=new Event("beforeunload",{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()');
   const label=()=>evaluate('document.querySelector("#cloud-status").textContent');
   if(process.env.GATE_TEST_CONTINUATION_ONLY==='1'){
-    if(process.env.GATE_TEST_PARTTIME==='1')await partTimeDayAcceptance({evaluate,click,value,until,save,ready,login,released:()=>true});
+    if(process.env.GATE_TEST_PARTTIME==='1')await partTimeDayAcceptance({evaluate,click,value,until,save,ready,login,released:()=>holder===''});
     else if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT)await savedDayContinuationAcceptance({evaluate,click,value,until,save});
-    else await continuationAcceptance({evaluate,click,value,until,ready,save,login,released:()=>true});
+    else await continuationAcceptance({evaluate,click,value,until,ready,save,login,released:()=>holder===''});
     await writeFile(join(directory,'acceptance.json'),JSON.stringify({errors,dialogs,saves,revision},null,2));
     assert.equal(errors.length,0,JSON.stringify(errors));
     console.log('Continuation browser evidence: '+directory);return;
@@ -110,9 +149,49 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
     const shot=await call('Page.captureScreenshot',{format:'png'});await writeFile(join(directory,`cloud-${width}.png`),Buffer.from(shot.data,'base64'));
     await click('.cloud-more summary');assert.equal(await evaluate('getComputedStyle(document.querySelector("#cloud-logout")).display')!=='none',true);await click('.cloud-more summary');
   }
+  // A second actual page requests access. Refusal preserves the original input,
+  // and approval cannot run through an unfinished modal or failed upload.
+  await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+  const target=await(await fetch(`http://127.0.0.1:${port}/json/new?about:blank`,{method:'PUT'})).json();
+  const peerSocket=new WebSocket(target.webSocketDebuggerUrl);await new Promise(r=>peerSocket.addEventListener('open',r,{once:true}));
+  t.after(()=>peerSocket.close());let peerNext=0;const peerPending=new Map();
+  peerSocket.addEventListener('message',event=>{const m=JSON.parse(event.data);if(m.method==='Runtime.exceptionThrown')errors.push(m.params);const p=peerPending.get(m.id);if(p){peerPending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}});
+  const peerCall=(method,params={})=>new Promise((resolve,reject)=>{const id=++peerNext;const timer=setTimeout(()=>reject(Error('Peer CDP timeout: '+method)),25000);peerPending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v)},reject:e=>{clearTimeout(timer);reject(e)}});peerSocket.send(JSON.stringify({id,method,params}))});
+  const peer=async expression=>{const result=await peerCall('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(result.exceptionDetails)throw Error(JSON.stringify(result.exceptionDetails));return result.result.value};
+  await peerCall('Runtime.enable');await peerCall('Page.enable');await peerCall('Page.navigate',{url:pageUrl});
+  await until(()=>peer('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'第二页面登录');
+  await click('[data-view=config]');await click('#add-person');await value('#person-name','审批拒绝后输入保留');await evaluate('window.originalPersonInput=document.querySelector("#person-name")');
+  const readsBefore=reads,saveBefore=saves;
+  await peer(`document.querySelector('#cloud-email').value='admin@example.test';document.querySelector('#cloud-password').value='test-only';document.querySelector('#cloud-login-form button').click()`);
+  await until(()=>peer('document.body.textContent.includes("等待原设备确认")'),'申请等待');
+  assert.equal(reads,readsBefore);assert.equal(await peer('!!document.querySelector("[data-view=config]")'),false);
+  await until(()=>evaluate('!!document.querySelector("#cloud-deny-login")'),'原设备申请通知');
+  assert.equal(await evaluate(`(()=>{const b=document.querySelector('#cloud-deny-login');b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===b})()`),true,'refusal remains reachable above the existing modal');
+  await click('#cloud-deny-login');await until(()=>peer('document.body.textContent.includes("原设备已拒绝")'),'新设备拒绝提示');
+  assert.equal(saves,saveBefore);assert.equal(await evaluate('window.originalPersonInput===document.querySelector("#person-name")'),true);assert.equal(await evaluate('document.querySelector("#person-name").value'),'审批拒绝后输入保留');
+  await peer(`[...document.querySelectorAll('button')].find(b=>b.textContent==='重新申请登录').click()`);
+  await until(()=>evaluate('!!document.querySelector("#cloud-allow-login")'),'再次申请');await click('#cloud-allow-login');
+  await until(()=>evaluate('document.querySelector(".cloud-session-notice").textContent.includes("未交接")'),'未完成表单禁止交接');assert.equal(saves,saveBefore);
+  await click('#save-person');await until(()=>evaluate('!document.querySelector("#person-form")'),'完成原输入');
+  mode='network';await click('#cloud-allow-login');await until(()=>evaluate('window.alerts.at(-1)?.includes("网络或云端服务异常")'),'保存失败保留');assert.equal(await peer('!!document.querySelector("#cloud-save")'),false);assert.equal(await evaluate('!!document.querySelector("#cloud-save")'),true);
+  mode='';await click('#cloud-allow-login');await until(()=>evaluate('document.body.textContent.includes("本设备已结束编辑")'),'原设备结束');
+  await until(()=>peer('!!document.querySelector("[data-view=config]")'),'新设备读取最新资料');
+  assert.equal(stored['group-workspaces-v1'].groups.A.people.at(-1).name,'审批拒绝后输入保留');assert.equal(await peer('document.querySelector("#cloud-status").textContent.includes("已读取")'),true);
+  // Heartbeat/poll failures keep the same editor and inputs, then revalidate.
+  await peer(`document.querySelector('[data-view=config]').click();document.querySelector('#add-person').click();document.querySelector('#person-name').value='断线输入';window.keptInput=document.querySelector('#person-name')`);
+  const activeHolder=holder;holder='different-device-123456';request=null;
+  await until(()=>peer('!!document.querySelector("#cloud-resume-session")'),'会话中断保留');assert.equal(await peer('window.keptInput===document.querySelector("#person-name") && window.keptInput.value==="断线输入"'),true);
+  holder=activeHolder;await peer('document.querySelector("#cloud-resume-session").click()');await until(()=>peer('!document.querySelector("#app").inert'),'验证恢复');
+  await peer(`document.querySelector('#app-dialog [data-close-dialog]').click();window.confirm=()=>true;document.querySelector('#cloud-logout').click()`);await until(()=>peer('document.body.textContent.includes("会话已结束")'),'第二页面退出');
+  // Cross-origin development requests can still be completing their preflight.
+  // Finish releasing the mock lease before injecting a separate permission error.
+  await until(()=>holder==='','第二页面释放使用权');
   // A read permission error and malformed remote data must not create a working default workspace.
   mode='permission';await evaluate('location.reload();true');await login();await until(()=>evaluate('document.body.textContent.includes("权限不足")'),'权限拒绝');assert.equal(await evaluate('!!document.querySelector("#cloud-save")'),false);
-  mode='corrupt';await click('button');await until(()=>evaluate('document.body.textContent.includes("数据校验")'),'损坏拒绝');assert.equal(await evaluate('!!document.querySelector("[data-view=config]")'),false);
+  mode='corrupt';await click('button');
+  try{await until(()=>evaluate('document.body.textContent.includes("数据校验")'),'损坏拒绝')}
+  catch(error){await writeFile(join(directory,'corrupt-failure.json'),JSON.stringify({page:await evaluate('document.body.innerText'),reads,holder,request},null,2));throw error}
+  assert.equal(await evaluate('!!document.querySelector("[data-view=config]")'),false);
   assert.equal(errors.length,0,JSON.stringify(errors));
   console.log('Cloud browser evidence: '+directory);
 });
