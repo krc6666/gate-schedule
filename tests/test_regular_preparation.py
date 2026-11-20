@@ -4,7 +4,7 @@ from io import BytesIO
 import unittest
 from openpyxl import load_workbook
 
-import test_workspace as fixtures
+from tests import test_workspace as fixtures
 from gate_schedule.domain import Assignment
 from gate_schedule.excel_io import export_complete_configuration, import_complete_configuration
 from gate_schedule.day_document import imported_day_from_dict, imported_day_to_dict
