@@ -74,7 +74,7 @@ class ExclusiveRoleTests(unittest.TestCase):
         no_route=replace(scene,flow_preferences=())
         self.assertEqual('overlap',task_pair_conflict(no_route,*no_route.tasks)[0])
 
-    def test_dedicated_cross_flight_preference_does_not_override_leave_empty(self):
+    def test_dedicated_cross_flight_part_time_does_not_take_another_person(self):
         value=self.example()
         source=replace(value.tasks[1],task_kind='mobile',locked_member_ids=('甲',))
         target=replace(value.tasks[0],id='later',flight_id='B',task_kind='mobile',start=660,end=735)
@@ -85,7 +85,8 @@ class ExclusiveRoleTests(unittest.TestCase):
                       coverage_priorities=((target.role_id,'leave-empty'),))
         result=solve(scene,allow_partial=True)
         self.assertIn(result.status,{'OPTIMAL','FEASIBLE'})
-        self.assertFalse(any(a.task_id==target.id for a in result.assignments))
+        self.assertIn(Assignment(target.id,'甲'),result.assignments)
+        self.assertEqual({'coverage_shortfall'},{i.code for i in validate_schedule(scene,result.assignments)})
         # With no competing shortage the valid dedicated continuation is used.
         enough=replace(scene,tasks=(source,target))
         result=solve(enough)

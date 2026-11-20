@@ -135,7 +135,7 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
   await evaluate('window.__phase2Reload=true');await call('Page.reload');await until(()=>evaluate('!window.__phase2Reload && !!document.querySelector("[data-view=rules]")'),'新页面规则入口');
   await click('[data-view="rules"]');
   assert.equal(await evaluate('document.querySelector("#relative-time-rules")'),null);
-  assert.match(await evaluate('document.querySelector("#handoff-preference-rules > summary").textContent'),/流动岗位管理/);
+  assert.match(await evaluate('document.querySelector("#handoff-preference-rules > summary").textContent'),/接续兼职/);
   await click('#add-flow-exception');
   await value('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-source]','大件行李拦截');
   while(await evaluate('!!document.querySelector("#flow-exceptions [data-flow-rule]:last-of-type [data-flow-remove-target]")'))await click('#flow-exceptions [data-flow-rule]:last-of-type [data-flow-remove-target]');
@@ -496,6 +496,28 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     await call('Page.navigate',{url:baseUrl});
     await until(()=>evaluate('!!document.querySelector("[data-view=rules]")'),'跨班接续重启后页面');
     await click('[data-view="rules"]');
+  });
+  await t.test('接续兼职：缺人时同人跨班继续，重排、归档与迁移重启保留',async()=>{
+    const input=dedicatedCrossConfiguration(),source='入境申报',target='登机人证核对/队伍秩序维护',missing='接机2';
+    input.day.roleNames=[...input.day.roleNames,missing];
+    input.day.roleConfigs.push({roleName:missing,requiredCount:0,workMode:'arrival',exclusiveSameFlight:true,concurrent:false});
+    input.day.cells.push(...input.day.flights.map(f=>({id:f.id+missing,flightId:f.id,flightNo:f.flightNo,roleName:missing,rawValue:'',internalNames:[],externalLabels:[],semantics:'empty',requiredCountOverride:Number(f.id==='B')})));
+    input.balanceSettings={flightCountGap:null,priorityEnabled:false,priorityRoleNames:[],priorityAdjustments:[],coveragePriorities:[{roleName:target,priority:'leave-empty'}]};
+    const imported=await command('import-complete-configuration',input);
+    for(const role of imported.configuration.roleConfigs)if(!input.day.roleNames.includes(role.roleName))await command('save-role',{...role,requiredCount:0});
+    await reloadPage();await click('[data-view=schedule]');await click('#solve-draft');
+    await click('#prepare-no-people');await value('[data-prepare-person="跨班验证员"][data-field=participating]',true,true);await mutate(()=>click('#confirm-prepare'));
+    const check=async()=>{
+      const s=await state(),p=s.plans[s.selectedPlanId],person=s.people.find(m=>m.name==='跨班验证员').id;
+      for(const role of [source,target]){const task=p.schedule.tasks.find(t=>t.roleId===role);assert.ok(p.draft.some(a=>a.taskId===task.id&&a.memberId===person),'同一人员承担'+role);}
+      assert.ok(p.issues.some(i=>i.code==='coverage_shortfall'));
+      assert.ok(p.issues.every(i=>i.code==='coverage_shortfall'));
+    };
+    await check();await click('#archive-next');await value('#prepare-date','2058-08-26');await click('#prepare-no-people');await value('[data-prepare-person="跨班验证员"][data-field=participating]',true,true);await mutate(()=>click('#confirm-prepare'));await check();
+    const content=await fetch(`${baseUrl}/api/workspace/configuration/export/${(await current()).id}`).then(r=>r.arrayBuffer());
+    const preview=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:content}).then(r=>r.json());
+    assert.deepEqual(preview.payload.handoffPreferences,input.handoffPreferences);
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view=rules]');await check();await click('[data-view=rules]');
   });
   await evaluate('document.querySelector("#handoff-preference-rules").open=true');
   for(const width of [1440,390]){

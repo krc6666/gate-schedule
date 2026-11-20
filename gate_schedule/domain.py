@@ -1697,6 +1697,22 @@ def preferred_mobile_handoffs(scenario):
     return tuple(result)
 
 
+def staffing_continuation_links(scenario):
+    """Configured legal links inside one staffing window may share its staff.
+
+    The solver anchors a part-time route at an occupied non-leave-empty task.
+    Earlier independent work and legacy implicit preferences do not supply
+    staff to the current window. This is a coverage cost, never a permission.
+    """
+    if scenario.flow_preferences is None:
+        return ()
+    windows = {task.id: index
+               for index, (ordinary, leave_empty) in enumerate(coverage_shortage_windows(scenario))
+               if ordinary and leave_empty for task in ordinary + leave_empty}
+    return tuple((source, target) for source, target in preferred_mobile_handoffs(scenario)
+                 if source.id in windows and windows.get(target.id) == windows[source.id])
+
+
 def flow_continuation_direction(scenario, source, target):
     """Task direction only; permission and hard conflicts are checked separately."""
     shared = set(task_flight_ids(source)) & set(task_flight_ids(target))

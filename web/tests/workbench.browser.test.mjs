@@ -1163,7 +1163,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await evaluate('window.__handoffReloadMarker=true');await call('Page.reload');
     await until(()=>evaluate('!window.__handoffReloadMarker && !!document.querySelector("#import-complete-configuration")'),'空库配置页面加载');
     await uploadCompleteExcel(bytes);await waitElement('#confirm-complete-configuration');
-    assert.match(await evaluate('document.querySelector("#app-dialog").textContent'),/接续偏好：按Excel更新/);
+    assert.match(await evaluate('document.querySelector("#app-dialog").textContent'),/接续兼职：按Excel更新/);
     await mutate(()=>click('#confirm-complete-configuration'));
     assert.deepEqual((await state()).handoffPreferences,prefs);
     assert.equal((await current()).rotationEnabled,daily.rotationEnabled);

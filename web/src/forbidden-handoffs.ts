@@ -6,7 +6,7 @@ const scopes={'same-flight':'本航班','later-overlap':'重叠且晚结束的�
 export function forbiddenHandoffsHtml(state:State,rules:WorkRules,kind='base'):string {
   const roles=flowRoles(state);
   return `<section class="forbidden-handoffs"><h3>禁止衔接</h3>
-    <p class="section-note">明确指定哪些岗位不能由同一人接续承担。禁止优先于上方优先接续，即使绕经其他岗位也不能规避；本航班和晚结束重叠航班分别设置。修改后保存配置并重新排班。</p>
+    <p class="section-note">明确指定哪些岗位不能由同一人接续承担。禁止优先于接续兼职，即使绕经其他岗位也不能规避；本航班和晚结束重叠航班分别设置。修改后保存配置并重新排班。</p>
     ${ruleScopeSections(rules.forbiddenHandoffs??[],`forbidden-${kind}`, (row,i)=>`<fieldset class="flow-rule ${row.flightNo==='*'?'is-common':'is-exception'}" data-forbidden-rule="${i}">
       <legend><span class="rule-scope-badge">${row.flightNo==='*'?'通用':html(row.flightNo)+' 特例'}</span> ${html(row.sourceRole)} · ${row.enabled?'已启用':'已停用，不执行禁止'}</legend>
       ${flowRoleNotice(roles,[row.sourceRole,...row.targets.map(target=>target.role)])}

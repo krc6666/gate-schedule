@@ -10,6 +10,7 @@
     "preview:browser": "vite preview --mode browser --host 127.0.0.1 --port 8787 --strictPort",
     "preview:cloud": "vite preview --mode cloud --outDir ../build/cloud --host 127.0.0.1 --port 8788 --strictPort",
     "test:browser": "node --test tests/browser-local.browser.test.mjs",
+    "test:continuation": "node -e \"process.env.GATE_TEST_CONTINUATION_ONLY='1';import('./tests/cloud.browser.test.mjs')\"",
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {

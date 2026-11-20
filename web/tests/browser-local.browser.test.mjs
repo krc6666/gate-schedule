@@ -360,7 +360,11 @@ print(json.dumps(configuration([preference(targets=['登机核验']),preference(
   for(const role of withholdingState.configuration.roleConfigs)if(!withholdingFixture.day.roleNames.includes(role.roleName))await command('B','save-role',{...role,requiredCount:0});
   const assertWithheld=plan=>{
     assert.ok(plan.draft.length>0,'接机仍正常安排');
-    assert.ok(plan.draft.every(a=>plan.schedule.tasks.find(t=>t.id===a.taskId).roleId!=='登机查验'),'缺人时留空岗不能因接续而填回');
+    const jobs=plan.schedule.tasks;
+    const source=jobs.find(t=>t.roleId==='接机1'&&t.flightId==='A');
+    const target=jobs.find(t=>t.roleId==='登机查验'&&t.flightId==='A');
+    const owner=plan.draft.find(a=>a.taskId===source.id)?.memberId;
+    assert.ok(owner&&plan.draft.some(a=>a.taskId===target.id&&a.memberId===owner),'缺人时合法接续兼职仍保留');
     assert.ok(plan.issues.some(i=>i.code==='coverage_shortfall'),'所有实际缺口仍显示');
   };
   let withheld=await solveCoverage();assertWithheld(withheld);

@@ -5,6 +5,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {readFile,mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve,extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {continuationAcceptance,savedDayContinuationAcceptance,partTimeDayAcceptance} from './continuation-acceptance.mjs';
 
 const repo=fileURLToPath(new URL('../../',import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -13,6 +14,7 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   console.log('Preparing cloud mock build');
   execFileSync(process.platform==='win32'?'npm.cmd':'npm',['run','build:cloud','--','--outDir','../build/cloud-mock'],{cwd:join(repo,'web'),env:{...process.env,VITE_SUPABASE_URL:'https://gate-cloud-test.invalid',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},shell:process.platform==='win32',stdio:'pipe'});
   let stored=null,revision=0,saves=0,mode='',release;
+  if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT){const snapshot=JSON.parse(await readFile(process.env.GATE_TEST_CONTINUATION_SNAPSHOT,'utf8'));stored=snapshot.documents;revision=snapshot.revision;}
   const errors=[],dialogs=[];
   const token='e30.'+Buffer.from(JSON.stringify({sub:'11111111-1111-4111-8111-111111111111',role:'authenticated',exp:Math.floor(Date.now()/1000)+3600})).toString('base64url')+'.test';
   const server=createServer(async(req,res)=>{
@@ -73,11 +75,19 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   // replacement before interacting with the form or installing dialog hooks.
   await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录表单');
   await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
-  await login();await until(()=>evaluate('!!document.querySelector("#cloud-empty")'),'首次选择');await click('#cloud-empty');await ready();
+  await login();if(!stored){await until(()=>evaluate('!!document.querySelector("#cloud-empty")'),'首次选择');await click('#cloud-empty');}await ready();
   const addPerson=async name=>{await click('[data-view=config]');await click('#add-person');await value('#person-name',name);await click('#save-person');await until(()=>evaluate('!document.querySelector("#person-form")'),'保存人员')};
   const save=async()=>{await click('#cloud-save');await until(()=>evaluate('!document.querySelector("#cloud-save").disabled'),'云端回执')};
   const warning=()=>evaluate('(()=>{const e=new Event("beforeunload",{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()');
   const label=()=>evaluate('document.querySelector("#cloud-status").textContent');
+  if(process.env.GATE_TEST_CONTINUATION_ONLY==='1'){
+    if(process.env.GATE_TEST_PARTTIME==='1')await partTimeDayAcceptance({evaluate,click,value,until,save,ready,login,released:()=>true});
+    else if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT)await savedDayContinuationAcceptance({evaluate,click,value,until,save});
+    else await continuationAcceptance({evaluate,click,value,until,ready,save,login,released:()=>true});
+    await writeFile(join(directory,'acceptance.json'),JSON.stringify({errors,dialogs,saves,revision},null,2));
+    assert.equal(errors.length,0,JSON.stringify(errors));
+    console.log('Continuation browser evidence: '+directory);return;
+  }
   await addPerson('云端甲');assert.match(await label(),/有修改未上传/);assert.equal(await warning(),true);
   mode='delay';await click('#cloud-save');await until(()=>!!release,'保存请求');assert.match(await label(),/正在保存到云端/);assert.equal(await warning(),true);const count=saves;await click('#cloud-save');assert.equal(saves,count);release();mode='';await until(async()=>!(await evaluate('document.querySelector("#cloud-save").disabled')),'保存完成');
   assert.match(await label(),/已保存 \d{2}:\d{2}:\d{2}/);assert.equal(await warning(),false);assert.equal(stored['group-workspaces-v1'].groups.A.people[0].name,'云端甲');
