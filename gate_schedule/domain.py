@@ -402,6 +402,16 @@ def imported_member_names(day: ImportedDay) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def template_required_count(template: dict | None, role_name: str) -> int | None:
+    """Initial demand for a new day cell; existing day exceptions are separate."""
+    if template is None:
+        return None
+    if 'roleNames' in template and role_name not in template['roleNames']:
+        return 0
+    return next((r.get('requiredCount') for r in template.get('roles', [])
+                 if r['roleName'] == role_name), None)
+
+
 def imported_required_count(day: ImportedDay, cell: ImportedCell) -> int | None:
     if cell.required_count_override is not None:
         return cell.required_count_override

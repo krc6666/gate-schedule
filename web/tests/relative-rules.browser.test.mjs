@@ -652,6 +652,38 @@ print(json.dumps(baggage_day()))`],{cwd:repo,encoding:'utf8'}));
     await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view=schedule]');await click('[data-view=schedule]');
     assert.equal((await current()).day.cells.find(c=>c.roleName===role).requiredCountOverride,0);
   });
+  await t.test('新增岗位按航班补需求：载入基础配置、Excel、重启与缺口可见',async()=>{
+    const input=dedicatedCrossConfiguration(), role='专项补格验证岗';
+    input.day.serviceDate='2060-08-24';
+    let saved=await command('import-complete-configuration',input), id=saved.selectedPlanId;
+    await command('solve',{},id);await command('archive-only',{},id);
+    const formal=(await current()).adopted;
+    const [included,excluded]=(await current()).day.flights.map(f=>f.flightNo);
+    await command('add-template-role',{flightNo:included,roleName:role});
+    await command('save-role',{roleName:role,requiredCount:1,workMode:'boarding'});
+    const template=(await state()).flightLibrary.find(f=>f.flightNo===included);
+    template.roles.push({roleName:role,requiredCount:2});
+    await command('save-flight-template',template);
+    // Export before loading: this used to create a demand in both flights.
+    const file=await fetch(`${baseUrl}/api/workspace/configuration/export/${id}`).then(r=>r.arrayBuffer());
+    const preview=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:file}).then(r=>r.json());
+    const counts=Object.fromEntries(preview.payload.day.cells.filter(c=>c.roleName===role).map(c=>[c.flightNo,c.requiredCountOverride]));
+    assert.equal(counts[included],2);assert.equal(counts[excluded],0);
+    await reloadPage();await click('[data-view=config]');
+    await mutate(()=>click('#apply-config'));
+    const check=async()=>{
+      const p=await current(),tasks=p.schedule.tasks.filter(t=>t.roleId===role);
+      assert.equal(tasks.length,1);assert.equal(tasks[0].requiredCount,2);
+      const flight=p.schedule.flights.find(f=>f.id===tasks[0].flightId);
+      assert.equal(flight.flightNo,included);
+      assert.ok(p.issues.some(i=>i.code==='coverage_shortfall'&&i.taskId===tasks[0].id));
+      assert.deepEqual(p.adopted,formal);
+      await click('[data-view=schedule]');
+      const vacancy=`[data-position-label="${included} ${role}"]`;
+      assert.ok(await evaluate(`document.querySelector(${JSON.stringify(vacancy)}).classList.contains('schedule-cell-vacancy')`));
+    };
+    await check();await reloadPage();await check();
+  });
   if(process.env.GATE_TEST_CONFIGURATION_FILE)await t.test('现场配置原样：最新查验1进入普通重排且安排或明确报警',async()=>{
     const bytes=await readFile(process.env.GATE_TEST_CONFIGURATION_FILE);
     const response=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:bytes});

@@ -1,7 +1,7 @@
 """Persistent flight templates; personnel and past assignments never live here."""
 from copy import deepcopy
 from uuid import uuid4
-from .domain import ImportedRoleConfig, WORK_MODES, validate_weekly_flights, parse_minutes
+from .domain import ImportedRoleConfig, WORK_MODES, validate_weekly_flights, parse_minutes, template_required_count
 
 
 def validate_library(library):
@@ -102,4 +102,4 @@ def fill_day(state, day, flight_numbers):
             rule = roles.get(role_name, {})
             day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": number, "roleName": role_name,
                                  "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [],
-                                 "requiredCountOverride": rule.get("requiredCount") if role_name in template["roleNames"] else 0, "workModeOverride": rule.get("workModeOverride") if role_name in template["roleNames"] else None, "workStart": rule.get("workStart") if role_name in template["roleNames"] else None, "workEnd": rule.get("workEnd") if role_name in template["roleNames"] else None})
+                                 "requiredCountOverride": template_required_count(template, role_name), "workModeOverride": rule.get("workModeOverride") if role_name in template["roleNames"] else None, "workStart": rule.get("workStart") if role_name in template["roleNames"] else None, "workEnd": rule.get("workEnd") if role_name in template["roleNames"] else None})

@@ -12,6 +12,7 @@ from .domain import validate_balance_settings
 from .domain import validate_duty_roster
 from .domain import personnel_status
 from .domain import imported_required_count
+from .domain import template_required_count
 from .configuration_history import merge_history
 from .domain import task_flight_ids
 from dataclasses import dataclass
@@ -282,10 +283,11 @@ def prepare_export(state, plan_id=None, service_date=None):
     day["extraOccupancies"] = [entry for entry in day["extraOccupancies"] if entry["memberNames"]]
     for entry in day["remarks"]:
         entry["people"] = [n for n in entry.get("people", []) if n in live_names]
+    templates = {f['flightNo']: f for f in state['flightLibrary']}
     for flight in day["flights"]:
         for role in day["roleNames"]:
             if not any(c["flightId"] == flight["id"] and c["roleName"] == role for c in day["cells"]):
-                day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role, "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [], "requiredCountOverride": None, "workStart": None, "workEnd": None})
+                day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role, "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [], "requiredCountOverride": template_required_count(templates.get(flight['flightNo']), role), "workStart": None, "workEnd": None})
     day["transitionMinutes"] = config["transitionMinutes"]
     saved_roles = {r["roleName"]: role_configuration(r) for r in saved_day["roleConfigs"]}
     for name, role in saved_roles.items():

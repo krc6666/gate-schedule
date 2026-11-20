@@ -1,3 +1,16 @@
+# 2026-11-20 新岗位补格初始化的航班范围与人数（既有配置合同修复）
+
+| 环节 | 事实与消费/证据 |
+| --- | --- |
+| 输入/唯一owner | flightLibrary.roleNames及roles.requiredCount；domain.template_required_count解释未选0、显式人数、空白/缺模板继承；无新字段 |
+| 新日/载入基础配置/完整导出 | fill_day、Workbench.apply-config、prepare_export均消费同一函数，只初始化缺失新格；已有当天格与例外保留；导出不修改源状态 |
+| 准备/计算/候选 | 前端普通重排人数/载入最新原路径已读取模板；准备后domain.imported_required_count，求解与候选消费实际任务，不加硬限制 |
+| 手调/最终校验 | 新格人数进入任务；无资格时coverage_shortfall，人工清空仍报警；整个格缺失由validate_imported_day报missing_imported_cell；独立测试明确检查期望任务集合 |
+| 归档/输出 | 正式快照保持；Chrome确认新增格缺口标红；Excel空库导入、重启及备份恢复人数与实际任务保持 |
+| 回归 | 两条失败回归2 != None；六种模板语义、只给一航班新增、显式2/基础1、当天显式3保留、源状态保持及整格删除检出；真实Chrome/成品复验见plan |
+
+---
+
 # 2026-11-20 大件显示按航班共同重叠分组（展示规则）
 
 | 环节 | 唯一事实与消费 |

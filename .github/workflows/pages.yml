@@ -35,7 +35,7 @@ jobs:
       - run: python -m pip install -e '.[test]'
       - run: mkdir -p .tmp
       - run: npm ci --prefix web
-      - run: python -m unittest tests.test_browser_runtime tests.test_cloud_documents -v
+      - run: python -m unittest tests.test_browser_runtime tests.test_cloud_documents tests.test_configuration_scope -v
       # Headless Chrome still needs a working session bus on Linux runners.
       - run: dbus-run-session -- node --test web/tests/cloud-*.test.mjs web/tests/cloud.browser.test.mjs
         env:

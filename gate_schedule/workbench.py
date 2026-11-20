@@ -41,6 +41,7 @@ from .workspace_document import (
 from .configuration_transfer import prepare_import, prepare_export
 from .workspace_workflow import plan_for_date, history_plan_ids, carry_flights, carry_attendance, clear_history, prepare_replacement
 from .domain import COVERAGE_PRIORITIES, task_coverage_priority, single_switch_role_settings
+from .domain import template_required_count
 from .domain import validate_work_rules, suggested_work_rules, grouped_work_rules, task_handoff_options, empty_work_rules
 
 
@@ -543,11 +544,12 @@ class Workbench:
         elif action == "apply-config":
             config = state["configuration"]
             day = plan["day"]
+            templates = {f['flightNo']: f for f in state['flightLibrary']}
             for role in config["roleConfigs"]:
                 if role["roleName"] not in day["roleNames"]:
                     day["roleNames"].append(role["roleName"])
                     for flight in day["flights"]:
-                        day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role["roleName"], "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "workStart": None, "workEnd": None, "fixedMemberNames": [], "requiredCountOverride": None})
+                        day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role["roleName"], "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "workStart": None, "workEnd": None, "fixedMemberNames": [], "requiredCountOverride": template_required_count(templates.get(flight['flightNo']), role['roleName'])})
             current = {r["roleName"]: r for r in day["roleConfigs"]}
             current.update({r["roleName"]: role_configuration(r) if day.get("releasePolicy") == "task" else deepcopy(r) for r in config["roleConfigs"]})
             day["roleConfigs"] = list(current.values())
