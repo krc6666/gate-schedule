@@ -118,6 +118,8 @@ def _apply_configuration(state, payload):
                         incoming[field] = deepcopy(state['workRules'][field])
                 window = incoming.get('baggageWindow')
                 previous_window = state.get('workRules', {}).get('baggageWindow')
+                if window is not None and 'timeBasis' not in window:
+                    window['timeBasis'] = (previous_window or {}).get('timeBasis', 'flight-window')
                 if (window is not None and previous_window is not None
                         and 'remainderToleranceMinutes' not in window
                         and 'remainderToleranceMinutes' in previous_window):

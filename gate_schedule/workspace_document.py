@@ -57,6 +57,11 @@ def with_configuration(state):
 
 
 def _with_preferences(state):
+    # Current maintained rules adopt the clarified window basis. Saved day and
+    # formal snapshots retain their absent field's legacy offset semantics.
+    window = (state.get('workRules') or {}).get('baggageWindow')
+    if isinstance(window, dict):
+        window.setdefault('timeBasis', 'flight-window')
     if "handoffPreferences" not in state:
         state["handoffPreferences"] = general_handoff_preferences(default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]]))
     # Saved flight rules outlive daily plans (including after clearing history).
@@ -222,6 +227,9 @@ def validate_document(state, *, validate_undo=True, review_archive=None):
 
 def _validate_plan(state, plan_id, plan, ids, *, validate_undo, review_archive):
     """Validate current and undo inputs once each, using the same full context."""
+    if 'configurationBaseline' in plan:
+        from .configuration_status import validate_generation_baseline
+        validate_generation_baseline(plan['configurationBaseline'])
     statuses = plan.get("personnelStates", {})
     if not isinstance(statuses, dict) or any(not isinstance(k, str) or not k or v not in MEMBER_STATUSES for k, v in statuses.items()):
         raise WorkspaceError("当天人员状态快照无效")
@@ -270,6 +278,9 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo, review_archive):
             raise WorkspaceError("草稿引用未知任务或人员")
     if plan.get("preview"):
         preview = plan["preview"]
+        if preview.get('previousConfigurationBaseline') is not None:
+            from .configuration_status import validate_generation_baseline
+            validate_generation_baseline(preview['previousConfigurationBaseline'])
         return_id = preview.get("returnPlanId")
         if return_id is not None and (not isinstance(return_id, str) or return_id == plan_id or return_id not in state["plans"] or state["plans"][return_id]["day"]["serviceDate"] != day.service_date):
             raise WorkspaceError("预览返回方案无效")
@@ -280,6 +291,9 @@ def _validate_plan(state, plan_id, plan, ids, *, validate_undo, review_archive):
             raise WorkspaceError("预览中的原草稿引用未知任务或人员")
     adopted = plan["adopted"]
     if adopted:
+        if 'configurationBaseline' in adopted:
+            from .configuration_status import validate_generation_baseline
+            validate_generation_baseline(adopted['configurationBaseline'])
         if 'dutyMemberId' in adopted and adopted['dutyMemberId'] is not None and adopted['dutyMemberId'] not in ids:
             raise WorkspaceError('正式结果值班身份无效')
         if "savedRevision" in adopted and (type(adopted["savedRevision"]) is not int or adopted["savedRevision"] < 0):

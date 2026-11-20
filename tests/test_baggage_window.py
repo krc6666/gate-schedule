@@ -19,7 +19,7 @@ from tests.test_relative_scheduling import shared_pool_day
 
 
 def window_rule():
-    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60)
+    return dict(timeBasis='departure-offsets',startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60)
 
 
 def baggage_day(flights=None):
@@ -108,7 +108,7 @@ class BaggageWindowTests(unittest.TestCase):
             state=edited.execute(state['revision'],'solve',{},state['selectedPlanId'])
             self.assertEqual(2,state['plans'][state['selectedPlanId']]['baggageCoverage']['requiredPeople'])
             # Old five-column Excel preserves an existing tolerance; empty targets keep the old algorithm.
-            book=load_workbook(BytesIO(content));book['大件保障规则'].delete_cols(6)
+            book=load_workbook(BytesIO(content));book['大件保障规则'].delete_cols(6,2)
             out=BytesIO();book.save(out);book.close();legacy=import_complete_configuration(out.getvalue())
             self.assertNotIn('remainderToleranceMinutes',legacy['workRules']['baggageWindow'])
             state=target.snapshot();state=target.execute(state['revision'],'import-complete-configuration',legacy)
@@ -116,6 +116,7 @@ class BaggageWindowTests(unittest.TestCase):
             empty=Workbench(Path(folder)/'legacy.db');state=empty.execute(0,'import-complete-configuration',legacy)
             self.assertNotIn('remainderToleranceMinutes',state['workRules']['baggageWindow'])
             state=empty.execute(state['revision'],'solve',{},state['selectedPlanId'])
+            self.assertEqual('flight-window',state['workRules']['baggageWindow']['timeBasis'])
             self.assertEqual(2,state['plans'][state['selectedPlanId']]['baggageCoverage']['requiredPeople'])
             before=target.backup()
             book=load_workbook(BytesIO(content));book['大件保障规则']['F2']=-1

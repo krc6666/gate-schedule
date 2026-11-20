@@ -12,7 +12,9 @@ FORBIDDEN_SHEET = '禁止衔接'
 FORBIDDEN_HEADER = ['设置范围','来源航班','来源岗位','目标岗位','目标航班','启用']
 BAGGAGE_WINDOW_SHEET = '大件保障规则'
 BAGGAGE_WINDOW_LEGACY_HEADER = ['设置范围','启用','模板结束前开检分钟','起飞前截载分钟','每人轮值分钟']
-BAGGAGE_WINDOW_HEADER = [*BAGGAGE_WINDOW_LEGACY_HEADER,'尾段宽限分钟']
+BAGGAGE_WINDOW_TOLERANCE_HEADER = [*BAGGAGE_WINDOW_LEGACY_HEADER,'尾段宽限分钟']
+BAGGAGE_WINDOW_HEADER = [*BAGGAGE_WINDOW_TOLERANCE_HEADER,'时间依据']
+TIME_BASES = {'flight-window':'航班保障窗口','departure-offsets':'提前量计算'}
 SHEETS = LEGACY_SHEETS | {GROUP_SHEET,FORBIDDEN_SHEET,BAGGAGE_WINDOW_SHEET}
 SCOPES = {'same-flight':'同航班','later-flight':'晚结束航班','after-baggage':'大件完成后'}
 MODES = {'separate':'必须分人','sequence':'先后接续','concurrent':'同时兼做'}
@@ -80,7 +82,8 @@ def write_work_rules(book, settings, day, rotation_minutes, rotation_enabled):
                 window['startBeforeMinutes'] if window is not None else None,
                 window['endBeforeMinutes'] if window is not None else None,
                 window['rotationMinutes'] if window is not None else None,
-                window.get('remainderToleranceMinutes') if window is not None else None])
+                window.get('remainderToleranceMinutes') if window is not None else None,
+                TIME_BASES.get(window.get('timeBasis')) if window is not None else None])
         for r in rules['pairs']:
             pairs.append([label,'通用' if r['flightNo']=='*' else r['flightNo'],r['firstRole'],r['secondRole'],SCOPES[r['scope']],MODES[r['mode']]])
         for r in rules['baggage']:
@@ -133,21 +136,26 @@ def read_work_rules(book, data):
         for rules in by_scope.values():rules['baggageWindow']=None
         seen=set()
         header=list(next(book[BAGGAGE_WINDOW_SHEET].values))
-        if header not in (BAGGAGE_WINDOW_HEADER,BAGGAGE_WINDOW_LEGACY_HEADER):
+        if header not in (BAGGAGE_WINDOW_HEADER,BAGGAGE_WINDOW_TOLERANCE_HEADER,BAGGAGE_WINDOW_LEGACY_HEADER):
             raise ValueError('大件保障规则表头无效')
         for row in rows(BAGGAGE_WINDOW_SHEET,header):
             label,enabled,start,end,minutes,*extra=row
             tolerance=extra[0] if extra else None
+            basis=extra[1] if len(extra)>1 else None
             if label not in by_scope or label in seen or enabled not in {'是','否'}:
                 raise ValueError('大件保障规则设置范围、启用或重复行无效')
             seen.add(label)
             if enabled=='否':
-                if any(v is not None and v!='' for v in (start,end,minutes,tolerance)):
+                if any(v is not None and v!='' for v in (start,end,minutes,tolerance,basis)):
                     raise ValueError('关闭的大件保障规则请清空分钟列，避免误解')
             else:
                 by_scope[label]['baggageWindow']=dict(startBeforeMinutes=start,endBeforeMinutes=end,rotationMinutes=minutes)
                 if tolerance is not None and tolerance!='':
                     by_scope[label]['baggageWindow']['remainderToleranceMinutes']=tolerance
+                if basis is not None and basis!='':
+                    if basis not in TIME_BASES.values():
+                        raise ValueError('大件保障规则时间依据无效')
+                    by_scope[label]['baggageWindow']['timeBasis']=next(k for k,v in TIME_BASES.items() if v==basis)
     if FORBIDDEN_SHEET in found:
         entries={};scopes={v:k for k,v in FLOW_SCOPES.items()}
         for rules in by_scope.values():rules['forbiddenHandoffs']=[]

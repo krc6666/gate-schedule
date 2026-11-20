@@ -431,6 +431,8 @@ def imported_task_timing(day: ImportedDay, cell: ImportedCell):
         return None, ValidationIssue('unknown_flight', f'{cell.flight_no} 引用未知航班', cell.id)
     window = (day.work_rules or {}).get('baggageWindow')
     if cell.role_name == '大件行李拦截' and window is not None:
+        if window.get('timeBasis') == 'flight-window':
+            return (parse_minutes(flight.window_start), parse_minutes(flight.window_end), 'exact'), None
         start = parse_minutes(flight.window_end) - window['startBeforeMinutes']
         end = parse_minutes(flight.departure_time or flight.window_end) - window['endBeforeMinutes']
         if end <= start:
@@ -1068,7 +1070,7 @@ def empty_work_rules():
 
 
 def default_baggage_window():
-    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60,remainderToleranceMinutes=15)
+    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60,remainderToleranceMinutes=15,timeBasis='flight-window')
 
 
 def unchanged_task_ids(before: Scenario | None, after: Scenario | None) -> set[str]:
@@ -1132,11 +1134,13 @@ def validate_baggage_window(value):
     if value is None:
         return None
     required = {'startBeforeMinutes','endBeforeMinutes','rotationMinutes'}
-    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'remainderToleranceMinutes'}
-            or any(type(n) is not int for n in value.values())
+    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'remainderToleranceMinutes','timeBasis'}
+            or any(type(n) is not int for k,n in value.items() if k != 'timeBasis')
             or not 0 <= value['endBeforeMinutes'] < value['startBeforeMinutes'] <= 1440
             or not 1 <= value['rotationMinutes'] <= 1440):
         raise ValueError('大件保障规则需0至1440分钟提前量，开检提前大于截载提前，轮值1至1440分钟')
+    if 'timeBasis' in value and value['timeBasis'] not in {'flight-window','departure-offsets'}:
+        raise ValueError('请选择大件按航班保障窗口或按提前量计算')
     if 'remainderToleranceMinutes' in value and not 0 <= value['remainderToleranceMinutes'] <= 1440:
         raise ValueError('大件尾段宽限须为0至1440分钟的整数')
     return value

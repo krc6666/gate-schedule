@@ -1,6 +1,7 @@
 import type { Cell, Day, Flight, State } from "./workbench-model";
 
-export type Preparation = { mode: "archive" | "reschedule"; day: Day; selected: Set<string>; requiredCounts?: "latest" | "day" };
+type BaseRotation = Pick<State["configuration"], "rotationEnabled" | "rotationMinutes">;
+export type Preparation = { mode: "archive" | "reschedule"; day: Day; selected: Set<string>; rotation?: BaseRotation; requiredCounts?: "latest" | "day"; configurationSource?: "latest" | "day" };
 
 export const weekdayOf = (date: string) => String(new Date(`${date}T12:00:00Z`).getUTCDay());
 
@@ -24,6 +25,7 @@ function templateRequiredCount(template: State["flightLibrary"][number], roleNam
 
 // 这里只准备可编辑输入；领域归一化和最终校验仍由Python负责。
 function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest"): void {
+  const previousCounts = new Map(day.roleConfigs.map(r => [r.roleName, r.requiredCount]));
   for (const person of state.people.filter(p => p.active)) {
     if (!day.roster.includes(person.name)) day.roster.push(person.name);
     let member = day.memberConfigs.find(m => m.memberName === person.name);
@@ -47,7 +49,11 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
   day.transitionMinutes = state.configuration.transitionMinutes;
   for (const flight of day.flights) {
     const template = state.flightLibrary.find(f => f.flightNo === flight.flightNo);
-    if (!template) continue;
+    if (!template) {
+      for (const cell of day.cells.filter(c => c.flightId === flight.id && c.requiredCountOverride === null))
+        cell.requiredCountOverride = previousCounts.get(cell.roleName) ?? null;
+      continue;
+    }
     flight.windowStart = template.windowStart; flight.windowEnd = template.windowEnd;
     for (const cell of day.cells.filter(c => c.flightId === flight.id)) {
       const role = template.roles?.find(r => r.roleName === cell.roleName);
@@ -77,9 +83,13 @@ export function startPreparation(source: Day, state: State, mode: Preparation["m
   }
   const selected = new Set(day.flights.map(f => f.id));
   addTemplates(day, state.flightTemplates);
-  applyConfiguration(day, state, mode === "archive" ? "latest" : "keep-day");
   const preparation: Preparation = { mode, day, selected };
-  if (mode === "reschedule") setPreparationRequiredCounts(preparation, state, source, "latest");
+  if (mode === "archive") loadPreparationConfiguration(preparation, state);
+  else {
+    applyConfiguration(day, state, "keep-day");
+    setPreparationRequiredCounts(preparation, state, source, "latest");
+    loadPreparationConfiguration(preparation, state);
+  }
   return preparation;
 }
 
@@ -109,8 +119,37 @@ export function setPreparationRequiredCounts(preparation: Preparation, state: St
   preparation.requiredCounts = policy;
 }
 
-export function loadPreparationConfiguration(day: Day, state: State): void {
-  applyConfiguration(day, state, "latest");
+export function loadPreparationConfiguration(preparation: Preparation, state: State): void {
+  applyConfiguration(preparation.day, state, "latest");
+  preparation.requiredCounts = "latest";
+  const { rotationEnabled, rotationMinutes } = state.configuration;
+  preparation.rotation = { rotationEnabled, rotationMinutes };
+  preparation.configurationSource = 'latest';
+}
+
+export function useDayPreparationConfiguration(preparation: Preparation, state: State, source: Day): void {
+  const day = preparation.day;
+  day.roleConfigs = [...structuredClone(source.roleConfigs),
+    ...day.roleConfigs.filter(r=>!source.roleConfigs.some(old=>old.roleName===r.roleName))];
+  day.transitionMinutes = source.transitionMinutes;
+  for (const member of day.memberConfigs) {
+    const original = source.memberConfigs.find(m => m.memberName === member.memberName);
+    if (original) member.eligibleRoleNames = [...original.eligibleRoleNames];
+  }
+  for (const flight of day.flights) {
+    const original = source.flights.find(f => f.id === flight.id);
+    if (original) { flight.windowStart = original.windowStart; flight.windowEnd = original.windowEnd; }
+  }
+  for (const cell of day.cells) {
+    const original = source.cells.find(c => c.flightId === cell.flightId && c.roleName === cell.roleName);
+    if (original) {
+      cell.workModeOverride = original.workModeOverride;
+      cell.workStart = original.workStart; cell.workEnd = original.workEnd;
+    }
+  }
+  preparation.rotation = undefined;
+  preparation.configurationSource = 'day';
+  setPreparationRequiredCounts(preparation, state, source, preparation.requiredCounts ?? 'latest');
 }
 
 function retainFlights(day: Day, selected: Set<string>): void {
@@ -129,7 +168,7 @@ export function applyWeeklyFlights(day: Day, state: State, templates: State["fli
   // 沿用周计划填入当天时补齐空衔接列表的行为。
   day.phaseHandoffs ??= [];
   retainHandoffs(day);
-  loadPreparationConfiguration(day, state);
+  applyConfiguration(day, state, "latest");
 }
 
 export function copyPreparationAttendance(preparation: Preparation, source: Day): void {

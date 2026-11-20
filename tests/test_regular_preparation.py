@@ -12,6 +12,7 @@ from gate_schedule.imported_schedule import imported_day_to_scenario
 from gate_schedule.solver import solve
 from gate_schedule.validator import validate_schedule
 from gate_schedule.workbench import Workbench, WorkspaceError
+from gate_schedule.workspace_document import plan_scenario
 
 
 class RegularPreparationTests(unittest.TestCase):
@@ -19,6 +20,106 @@ class RegularPreparationTests(unittest.TestCase):
     tearDown = fixtures.WorkspaceTests.tearDown
     command = fixtures.WorkspaceTests.command
     complete_plan = fixtures.WorkspaceTests.complete_plan
+
+    def baggage_plan(self):
+        role = '大件行李拦截'
+        for name in ('甲', '乙', '丙'):
+            self.command('save-person', {'name': name, 'eligibleRoleNames': [role]})
+        state = self.command('new-plan', {'serviceDate': '2026-08-02', 'roleNames': [role]})
+        plan_id = state['selectedPlanId']
+        day = state['plans'][plan_id]['day']
+        day['roleConfigs'] = [{'roleName': role, 'requiredCount': 1, 'workMode': 'continuous'}]
+        day['flights'] = [{'id': 'f1', 'flightNo': 'AK151', 'windowStart': '08:00', 'windowEnd': '10:00'}]
+        day['cells'] = [{'id': 'c1', 'flightId': 'f1', 'flightNo': 'AK151', 'roleName': role,
+                         'rawValue': '', 'internalNames': [], 'externalLabels': [], 'semantics': 'empty',
+                         'workStart': '08:00', 'workEnd': '10:00', 'fixedMemberNames': [], 'requiredCountOverride': None}]
+        return plan_id, self.command('save-input', {'day': day}, plan_id)['plans'][plan_id]
+
+    def assert_baggage_tasks(self, plan, lengths, rotating):
+        self.assertTrue(plan['valid'], plan['issues'])
+        scenario, issues = plan_scenario(plan)
+        self.assertEqual([], issues)
+        self.assertEqual(lengths, [task.end - task.start for task in scenario.tasks])
+        self.assertEqual(['rotation' if rotating else 'mobile'] * len(lengths), [task.task_kind for task in scenario.tasks])
+        self.assertEqual(len(lengths) if rotating else 0, len(scenario.rotations))
+        self.assertEqual({task.id for task in scenario.tasks}, {entry['taskId'] for entry in plan['draft']})
+
+    def test_preparation_applies_only_explicit_rotation_values_to_actual_tasks(self):
+        plan_id, plan = self.baggage_plan()
+        self.command('solve', {}, plan_id)
+        formal = self.command('adopt', {}, plan_id)['plans'][plan_id]['adopted']
+        latest = {'rotationEnabled': False, 'rotationMinutes': 30}
+        self.command('save-config', {**latest, 'transitionMinutes': 0})
+        old = self.command('prepare-solve', {'day': plan['day']}, plan_id)['plans'][plan_id]
+        self.assert_baggage_tasks(old, [60, 60], rotating=True)
+
+        updated = self.command('prepare-solve', {'day': old['day'], **latest}, plan_id)['plans'][plan_id]
+        self.assert_baggage_tasks(updated, [120], rotating=False)
+        self.assertGreater(updated['inputRevision'], old['inputRevision'])
+        self.assertEqual(formal, updated['adopted'])
+
+        reenabled = self.command('prepare-solve', {'day': updated['day'], 'rotationEnabled': True}, plan_id)['plans'][plan_id]
+        self.assert_baggage_tasks(reenabled, [30, 30, 30, 30], rotating=True)
+        self.assertEqual(formal, reenabled['adopted'])
+
+    def test_invalid_or_unsolvable_rotation_preparation_preserves_saved_state(self):
+        plan_id, _ = self.baggage_plan()
+        self.command('solve', {}, plan_id)
+        plan = self.command('adopt', {}, plan_id)['plans'][plan_id]
+        before = self.workspace.backup()
+        for invalid, message in [({'rotationEnabled': 'false'}, '布尔值'), ({'rotationMinutes': 0}, '1440'),
+                                 ({'rotationMinutes': True}, '1440'), ({'rotationMinutes': None}, '1440')]:
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.command('prepare-solve', {'day': plan['day'], **invalid}, plan_id)
+                self.assertEqual(before, self.workspace.backup())
+        prepared = {'day': deepcopy(plan['day']), 'rotationEnabled': False, 'rotationMinutes': 30}
+        for entry in prepared['day']['memberAvailability']:
+            entry['participating'] = False
+        with self.assertRaisesRegex(WorkspaceError, '请选择当天参加人员'):
+            self.command('prepare-solve', prepared, plan_id)
+        self.assertEqual(before, self.workspace.backup())
+        prepared['day']['memberAvailability'][0]['participating'] = True
+        self.assert_baggage_tasks(self.command('prepare-solve', prepared, plan_id)['plans'][plan_id], [120], rotating=False)
+
+    def test_excel_and_backup_keep_base_rotation_and_independent_daily_turns(self):
+        plan_id, plan = self.baggage_plan()
+        daily_rules = {'pairs': [], 'baggage': [], 'baggageWindow': {'startBeforeMinutes': 180,
+                       'endBeforeMinutes': 60, 'rotationMinutes': 45, 'remainderToleranceMinutes': 0}}
+        day = {**plan['day'], 'workRulesOverride': True, 'workRules': daily_rules}
+        latest = {'rotationEnabled': False, 'rotationMinutes': 30}
+        state = self.workspace.snapshot()
+        self.command('save-rules', {'configuration': {**state['configuration'], **latest},
+                     'balanceSettings': state['balanceSettings'], 'preferences': state['handoffPreferences'],
+                     'workRules': {**daily_rules, 'baggageWindow': {**daily_rules['baggageWindow'], 'rotationMinutes': 60}}})
+        prepared = self.command('prepare-solve', {'day': day, **latest}, plan_id)['plans'][plan_id]
+        self.assert_baggage_tasks(prepared, [45, 45, 30], rotating=True)
+        formal = self.command('adopt', {}, plan_id)['plans'][plan_id]['adopted']
+
+        for role in self.workspace.snapshot()['configuration']['roleConfigs']:
+            if role['roleName'] not in day['roleNames']:
+                self.command('save-role', {'roleName': role['roleName'], 'requiredCount': 0})
+        excel = import_complete_configuration(self.workspace.export_complete_configuration(plan_id))
+        for medium in ('excel', 'backup'):
+            with self.subTest(medium=medium):
+                target_path = self.path.parent / f'{medium}.sqlite3'
+                target = Workbench(target_path)
+                if medium == 'excel':
+                    target.execute(0, 'import-complete-configuration', excel)
+                else:
+                    target.restore(0, self.workspace.backup())
+                target = Workbench(target_path)
+                state = target.snapshot()
+                restored_id = state['selectedPlanId']
+                restored = state['plans'][restored_id]
+                self.assertTrue(restored['day']['workRulesOverride'])
+                self.assertEqual(daily_rules, restored['day']['workRules'])
+                self.assertEqual(formal, state['plans'][plan_id]['adopted'])
+                for key, value in latest.items():
+                    self.assertEqual(value, state['configuration'][key])
+                    self.assertEqual(value, restored[key])
+                result = target.execute(state['revision'], 'prepare-solve', {'day': restored['day']}, restored_id)
+                self.assert_baggage_tasks(result['plans'][restored_id], [45, 45, 30], rotating=True)
 
     def legacy_day(self):
         plan_id, _ = self.complete_plan()

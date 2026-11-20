@@ -47,7 +47,7 @@ class PersonnelManagementTests(unittest.TestCase):
         state=self.command('solve',{},pid);state=self.command('adopt',{},pid)
         old=deepcopy(state['plans']);person=self.person()
         state=self.command('save-person',{**person,'status':'休假','remark':'年休假'})
-        self.assertEqual('休假',self.person()['status']);self.assertEqual(old,state['plans'])
+        self.assertEqual('休假',self.person()['status']);self.assertEqual(without_notice(old),without_notice(state['plans']));self.assertTrue(state['plans'][pid]['configurationStatus']['stale'])
         state=self.command('solve',{},pid);newid=state['selectedPlanId'];self.assertEqual(pid,newid)
         self.assertEqual(old[pid]['adopted'],state['plans'][pid]['adopted'])
         self.assertTrue(state['plans'][newid]['valid'],state['plans'][newid]['issues'])
@@ -72,7 +72,7 @@ class PersonnelManagementTests(unittest.TestCase):
         self.assertTrue(counts_before)
         state=self.command('delete-person',{'id':person['id']})
         self.assertNotIn(person['id'],{p['id'] for p in state['people']})
-        self.assertEqual(before,state['plans'])
+        self.assertEqual(without_notice(before),without_notice(state['plans']));self.assertTrue(state['plans'][pid]['configurationStatus']['stale'])
         self.assertEqual(counts_before,actual_counts(state))
         self.command('adjust-priority-count',{'month':'2026-08','memberId':person['id'],'flightNo':next(iter(counts_before)),'roleName':'接机1','delta':1})
         # Retired history may still be corrected; current configuration contains
@@ -125,3 +125,9 @@ class PersonnelManagementTests(unittest.TestCase):
         self.assertEqual([],incoming['day']['extraOccupancies'])
         self.command('save-person',{'name':'甲'})
         self.assertNotEqual(person['id'],self.person()['id'])
+
+
+def without_notice(plans):
+    # Configuration comparison is a live projection; all saved plan facts stay frozen.
+    return {pid:{k:v for k,v in plan.items() if k not in {'configurationStatus','formalConfigurationStatus'}}
+            for pid,plan in plans.items()}

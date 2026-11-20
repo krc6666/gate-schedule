@@ -4,7 +4,32 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
 const bundle = await build({entryPoints:[fileURLToPath(new URL('../src/day-preparation.ts', import.meta.url))], bundle:true, write:false, format:'esm', target:'es2022'});
-const { startPreparation, loadPreparationConfiguration, setPreparationRequiredCounts, applyWeeklyFlights, copyPreparationAttendance, confirmPreparation } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { startPreparation, loadPreparationConfiguration, useDayPreparationConfiguration, setPreparationRequiredCounts, applyWeeklyFlights, copyPreparationAttendance, confirmPreparation } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+
+test('修改长期航班时间后普通重排默认联动；取消不改当天或归档',()=>{
+  const {day,state}=fixture();
+  state.flightLibrary[0].windowStart='17:25';state.flightLibrary[0].windowEnd='18:25';
+  const before=structuredClone({day,state});
+  const p=startPreparation(day,state,'reschedule');
+  const result=confirmPreparation(p,day.serviceDate,false);
+  assert.equal(result.flights[0].windowStart,'17:25');
+  assert.equal(result.flights[0].windowEnd,'18:25');
+  assert.deepEqual({day,state},before);
+});
+
+test('沿用当天配置仍为新增岗位保留完整设置，出勤固定和实际起降不丢失',()=>{
+  const {day,state}=fixture();
+  day.flights[0].arrivalTime='09:50';day.flights[0].departureTime='11:20';
+  state.configuration.roleConfigs.push({roleName:'新岗',requiredCount:1,workMode:'boarding',concurrent:true});
+  const p=startPreparation(day,state,'reschedule');
+  useDayPreparationConfiguration(p,state,day);
+  assert.ok(p.day.roleNames.every(name=>p.day.roleConfigs.some(r=>r.roleName===name)));
+  assert.deepEqual(p.day.memberAvailability,day.memberAvailability);
+  assert.deepEqual(p.day.cells[0].fixedMemberNames,['甲']);
+  assert.equal(p.day.flights[0].arrivalTime,'09:50');
+  assert.equal(p.day.flights[0].departureTime,'11:20');
+  assert.equal(p.day.transitionMinutes,5);
+});
 
 test('配置页人数由0改1后普通重排必须生成需求；只有明确选择才沿用当天0',()=>{
   const {day,state}=fixture();
@@ -14,8 +39,8 @@ test('配置页人数由0改1后普通重排必须生成需求；只有明确选
   const p=startPreparation(day,state,'reschedule');
   assert.equal(confirmPreparation(p,day.serviceDate,false).cells[0].requiredCountOverride,1);
   assert.equal(p.requiredCounts,'latest');
-  assert.equal(p.day.cells[0].workStart,'10:10','人数同步不能改变当天环节');
-  assert.deepEqual(p.day.memberConfigs,day.memberConfigs,'不能恢复当天已取消资格');
+  assert.equal(p.day.cells[0].workStart,'10:15','默认使用最新模板环节');
+  assert.deepEqual(p.day.memberConfigs[0].eligibleRoleNames,['接机']);
   setPreparationRequiredCounts(p,state,day,'day');
   assert.equal(confirmPreparation(p,day.serviceDate,false).cells[0].requiredCountOverride,0);
   assert.equal(p.requiredCounts,'day');
@@ -53,33 +78,44 @@ function fixture() {
   };
   const state = {
     people:[{id:'a',name:'甲',active:true,eligibleRoleNames:['接机']}],
-    configuration:{roleConfigs:[{roleName:'接机',requiredCount:2,workMode:'arrival',concurrent:false}],transitionMinutes:0},
+    configuration:{roleConfigs:[{roleName:'接机',requiredCount:2,workMode:'arrival',concurrent:false}],transitionMinutes:0,rotationEnabled:false,rotationMinutes:30},
     newRoleDefaults:{},flightTemplates:[{flightNo:'CX937',windowStart:'10:10',windowEnd:'11:30'},{flightNo:'A100',windowStart:'12:00',windowEnd:'13:00'}],
     flightLibrary:[{flightNo:'CX937',windowStart:'10:10',windowEnd:'11:30',roleNames:['接机'],roles:[{roleName:'接机',requiredCount:3,workModeOverride:'timed',workStart:'10:15',workEnd:'10:35'}]}],weeklyFlightPresets:{},
   };
   return {day,state};
 }
 
-test('普通重排同步最新人数，在副本保留当天资格/环节/出勤及默认选中',()=>{
+test('明确沿用当天配置，在副本保留当天资格/环节/出勤及默认选中，人数独立',()=>{
   const {day,state}=fixture(),saved=structuredClone({day,state});
   const p=startPreparation(day,state,'reschedule');
+  useDayPreparationConfiguration(p,state,day);
   assert.deepEqual([...p.selected],['f']);
   assert.equal(p.day.flights.length,2);
   assert.deepEqual(p.day.cells[0],{...day.cells[0],requiredCountOverride:3});
   assert.deepEqual(p.day.roleConfigs,[{...day.roleConfigs[0],requiredCount:2}]);
   assert.deepEqual(p.day.memberConfigs,day.memberConfigs);
   assert.deepEqual(p.day.memberAvailability,day.memberAvailability);
+  assert.equal(p.rotation,undefined);
   assert.equal(p.day.serviceDate,day.serviceDate);
   assert.deepEqual({day,state},saved,'取消准备不改已存资料或配置');
 });
 
 test('明确载入配置只更新准备副本；未移除的固定人与当天事实留到新日确认清理',()=>{
-  const {day,state}=fixture(),saved=structuredClone(day),p=startPreparation(day,state,'reschedule');
-  loadPreparationConfiguration(p.day,state);
+  const {day,state}=fixture();
+  day.workRulesOverride=true;
+  day.workRules={baggageWindow:{startBeforeMinutes:120,endBeforeMinutes:60,rotationMinutes:45}};
+  const saved=structuredClone(day),p=startPreparation(day,state,'reschedule');
+  loadPreparationConfiguration(p,state);
   assert.equal(p.day.cells[0].requiredCountOverride,3);
   assert.equal(p.day.cells[0].workStart,'10:15');
   assert.deepEqual(p.day.memberConfigs[0].eligibleRoleNames,['接机']);
   assert.deepEqual(p.day.cells[0].fixedMemberNames,['甲']);
+  assert.equal(p.day.workRulesOverride,true);
+  assert.deepEqual(p.day.workRules,day.workRules);
+  state.configuration.rotationMinutes=90;
+  assert.deepEqual(p.rotation,{rotationEnabled:false,rotationMinutes:30});
+  assert.equal(confirmPreparation(p,day.serviceDate,false).workRulesOverride,true);
+  assert.deepEqual(p.rotation,{rotationEnabled:false,rotationMinutes:30});
   assert.deepEqual(day,saved);
 });
 
@@ -90,6 +126,7 @@ test('新日默认加两天、跨月保留航班选择；星期预设不自动�
   assert.deepEqual(p.day.flights.filter(f=>p.selected.has(f.id)).map(f=>f.flightNo),['CX937']);
   assert.deepEqual(p.day.memberAvailability,[{memberName:'甲',participating:true,availableFrom:null,availableUntil:null,halfRest:null}]);
   assert.equal(p.day.cells[0].requiredCountOverride,3);
+  assert.deepEqual(p.rotation,{rotationEnabled:false,rotationMinutes:30});
   state.weeklyFlightPresets['6']=[];
   assert.equal(startPreparation(day,state,'archive').selected.size,1,'预设只有主动应用才改变航班');
   assert.equal(startPreparation({...day,serviceDate:'2026-12-31'},state,'archive').day.serviceDate,'2027-01-02');

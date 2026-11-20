@@ -83,7 +83,8 @@ class CompleteExcelTests(unittest.TestCase):
         self.assertEqual(1, preview["removedQualificationCount"])
         self.assertEqual(before, self.workspace.snapshot(), "预览/取消不能写库")
         new = self.workspace.execute(state["revision"], "import-complete-configuration", preview["payload"])
-        self.assertEqual(formal, new["plans"][plan_id], "原草稿/正式快照均保留")
+        self.assertEqual(without_notice({plan_id:formal}), without_notice({plan_id:new["plans"][plan_id]}), "原草稿/正式快照均保留")
+        self.assertTrue(new["plans"][plan_id]["configurationStatus"]["stale"])
         self.assertNotEqual(plan_id, new["selectedPlanId"])
         self.assertEqual(ids, {p["name"]: p["id"] for p in new["people"]})
         self.assertNotIn(role, next(p["eligibleRoleNames"] for p in new["people"] if p["name"] == person))
@@ -163,6 +164,12 @@ class CompleteExcelTests(unittest.TestCase):
         saved = self.workspace.execute(state["revision"], "adopt", {}, plan_id)
         self.assertEqual(state['plans'][plan_id]['day'], saved['plans'][plan_id]['adopted']['day'])
         self.assertTrue(saved['plans'][plan_id]['adopted']['issues'])
+
+
+def without_notice(plans):
+    # Configuration comparison is a live projection; all saved plan facts stay frozen.
+    return {pid:{k:v for k,v in plan.items() if k not in {'configurationStatus','formalConfigurationStatus'}}
+            for pid,plan in plans.items()}
 
 
 if __name__ == "__main__":

@@ -72,7 +72,8 @@ class QualificationImportTests(unittest.TestCase):
         data["people"].append("新人员")
         data["roles"].append({"roleName": "新岗位", "memberNames": ["新人员"]})
         after = helper.command("import-qualifications", data)
-        self.assertEqual(before["plans"], after["plans"])
+        self.assertEqual(without_notice(before["plans"]), without_notice(after["plans"]))
+        self.assertTrue(after["plans"][plan_id]["configurationStatus"]["stale"])
         self.assertEqual(before["configuration"]["roleConfigs"], after["configuration"]["roleConfigs"][:-1])
         self.assertIsNone(after["configuration"]["roleConfigs"][-1]["requiredCount"])
         self.assertTrue(helper.workspace.export(plan_id).startswith(b"PK"))
@@ -115,6 +116,12 @@ class QualificationImportTests(unittest.TestCase):
         merged = analyze_history(text, name_aliases={"李扬": "李杨"})
         self.assertEqual([], merged["pendingNames"])
         self.assertEqual(2, next(e for e in merged["evidence"] if e["memberName"] == "李杨")["flightCount"])
+
+
+def without_notice(plans):
+    # Configuration comparison is a live projection; all saved plan facts stay frozen.
+    return {pid:{k:v for k,v in plan.items() if k not in {'configurationStatus','formalConfigurationStatus'}}
+            for pid,plan in plans.items()}
 
 
 if __name__ == "__main__":

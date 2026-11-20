@@ -39,6 +39,7 @@ from .workspace_document import (
     typed_names, sync_roster, read_assignments, role_configuration,
 )
 from .configuration_transfer import prepare_import, prepare_export
+from .configuration_status import generation_context, configuration_status
 from .workspace_workflow import plan_for_date, history_plan_ids, carry_flights, carry_attendance, clear_history, prepare_replacement
 from .domain import COVERAGE_PRIORITIES, task_coverage_priority, single_switch_role_settings
 from .domain import template_required_count
@@ -58,6 +59,12 @@ def _prepare_day(raw):
     natures = tuple(r["roleName"] for r in raw.get("roleConfigs", []) if "concurrent" in r)
     day = prepare_regular_day(imported_day_from_dict(raw), tuple(r for r in raw["roleNames"] if r not in explicit), natures)
     return imported_day_to_dict(day)
+
+
+def _plan_rotation(payload, plan):
+    settings = BaggageRotationSettings(payload.get('rotationEnabled', plan['rotationEnabled']),
+                                       payload.get('rotationMinutes', plan['rotationMinutes']))
+    return {'rotationEnabled': settings.enabled, 'rotationMinutes': settings.interval_minutes}
 
 
 def _input_summary(issues):
@@ -184,6 +191,12 @@ class Workbench:
         flow_scenarios = []
         rule_payload = json.dumps(state['workRules'], ensure_ascii=False)
         for plan in state['plans'].values():
+            plan['configurationStatus'] = configuration_status(state, plan)
+            if plan.get('adopted'):
+                formal = plan['adopted']
+                plan['formalConfigurationStatus'] = configuration_status(state, {
+                    **plan, **formal, 'draft': formal['assignments'], 'adopted': None,
+                    'configurationBaseline': formal.get('configurationBaseline')})
             view, scenarios = self._plan_projection(json.dumps(plan, ensure_ascii=False),
                 None if plan['day'].get('workRulesOverride') else rule_payload)
             plan.update(deepcopy(view))
@@ -267,10 +280,7 @@ class Workbench:
             raise WorkspaceError("修改日期请新建计划，避免覆盖原工作")
         day['roleConfigs'] = [single_switch_role_settings(r) for r in day['roleConfigs']]
         plan["day"] = day
-        interval = payload.get("rotationMinutes", plan["rotationMinutes"])
-        enabled = payload.get("rotationEnabled", plan["rotationEnabled"])
-        BaggageRotationSettings(enabled, interval)
-        plan["rotationMinutes"], plan["rotationEnabled"] = interval, enabled
+        plan.update(_plan_rotation(payload, plan))
         sync_roster(plan, state["people"], refresh=False)
         # Parsing is structural; incomplete business input is retained and shown as draft issues.
         imported_day_from_dict(plan["day"])
@@ -308,7 +318,11 @@ class Workbench:
                 state["teamLeaderSettings"] = validate_team_leader_settings(payload["teamLeaderSettings"])
             self._save_preferences(state, payload)
             if 'workRules' in payload:
-                state['workRules'] = deepcopy(validate_work_rules(payload['workRules'], [r['roleName'] for r in state['configuration']['roleConfigs']]))
+                rules = deepcopy(payload['workRules'])
+                window = rules.get('baggageWindow')
+                if isinstance(window, dict):
+                    window.setdefault('timeBasis', (state.get('workRules', {}).get('baggageWindow') or {}).get('timeBasis', 'flight-window'))
+                state['workRules'] = deepcopy(validate_work_rules(rules, [r['roleName'] for r in state['configuration']['roleConfigs']]))
             if "input" in payload:
                 if plan is None:
                     raise WorkspaceError("请先打开当天计划，原规则未改变")
@@ -622,11 +636,21 @@ class Workbench:
             day = _prepare_day(payload["day"])
             if day["serviceDate"] != plan["day"]["serviceDate"]:
                 raise WorkspaceError("重新排班不能更改日期，请使用归档并排后天")
-            if day != imported_day_to_dict(imported_day_from_dict(plan["day"])) or plan.get("balanceSettings", default_balance_settings()) != state["balanceSettings"] or self._personnel_policy_changed(plan, state):
+            rotation = _plan_rotation(payload, plan)
+            if (any(plan[key] != value for key, value in rotation.items())
+                    or day != imported_day_to_dict(imported_day_from_dict(plan["day"]))
+                    or plan.get("balanceSettings", default_balance_settings()) != state["balanceSettings"]
+                    or self._personnel_policy_changed(plan, state)):
                 prepare_replacement(plan, day, state)
+                plan.update(rotation)
             self._solve(plan, state, control)
         elif action == "cancel-preview":
             if plan["preview"]:
+                baseline = plan['preview'].get('previousConfigurationBaseline')
+                if baseline is None:
+                    plan.pop('configurationBaseline', None)
+                else:
+                    plan['configurationBaseline'] = baseline
                 return_id = plan["preview"].get("returnPlanId")
                 plan["draft"] = plan["preview"]["previousDraft"]
                 if return_id in state["plans"]:
@@ -645,15 +669,15 @@ class Workbench:
             day.pop('workRules', None)
             # Validate structure before adopting; all changes commit together.
             imported_day_from_dict(day)
+            rotation = _plan_rotation(payload, plan)
             self._adopt(plan, next_formal_revision(state), state)
             existing = plan_for_date(state, day['serviceDate'])
             next_id = existing['id'] if existing else str(uuid4())
-            next_plan = {"id": next_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, "rotationMinutes": payload.get("rotationMinutes", plan["rotationMinutes"]), "rotationEnabled": payload.get("rotationEnabled", plan["rotationEnabled"]), "memberIds": deepcopy(plan["memberIds"]), "preview": None, "message": "已归档原班表并创建下一班草稿，请确认航班、岗位设置和当天出勤"}
+            next_plan = {"id": next_id, "day": day, "inputRevision": 0, "draft": [], "adopted": None, **rotation, "memberIds": deepcopy(plan["memberIds"]), "preview": None, "message": "已归档原班表并创建下一班草稿，请确认航班、岗位设置和当天出勤"}
             next_plan["balanceSettings"] = deepcopy(state["balanceSettings"])
             if existing:
                 next_plan['adopted'] = deepcopy(existing.get('adopted'))
             apply_personnel_policy(next_plan, state)
-            BaggageRotationSettings(next_plan["rotationEnabled"], next_plan["rotationMinutes"])
             sync_roster(next_plan, state["people"], refresh=False)
             try:
                 self._solve(next_plan, state, control)
@@ -763,8 +787,11 @@ class Workbench:
             # valid; equal IDs alone do not prove a changed turn is the same job.
             plan['draft'] = [a for a in plan['draft'] if a['taskId'] in unchanged and a['memberId'] in members]
         if plan["preview"] is None:
-            plan["preview"] = {"previousDraft": deepcopy(plan["draft"]), "inputRevision": plan["inputRevision"]}
+            plan["preview"] = {"previousDraft": deepcopy(plan["draft"]), "inputRevision": plan["inputRevision"],
+                               'previousConfigurationBaseline': deepcopy(plan.get('configurationBaseline'))}
         plan["draft"] = _assignment_data(values)
+        if state is not None:
+            plan['configurationBaseline'] = generation_context(state, plan)
         plan["historyReferenceDate"] = previous_date
         plan["message"] = ("已生成未完成草稿：" + _input_summary(issue_data(scenario, final_issues)) + "。可保留问题归档或导出。") if final_issues else "排班已生成并保存，可以调整或继续归档排后天。"
         dedicated = {t.id for t in scenario.tasks if t.exclusive_same_flight}
@@ -797,6 +824,8 @@ class Workbench:
         for key in ("teamLeaderSettings", "teamLeaderIds", "personnelStates", "halfRestSettings"):
             if key in plan:
                 plan["adopted"][key] = deepcopy(plan[key])
+        if 'configurationBaseline' in plan:
+            plan['adopted']['configurationBaseline'] = deepcopy(plan['configurationBaseline'])
         if saved_revision is not None:
             plan["adopted"]["savedRevision"] = saved_revision
         plan["preview"] = None
