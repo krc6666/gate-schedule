@@ -62,7 +62,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     catch(error) { throw new Error(`${error.message}; ${await evaluate("document.querySelector('.run-error')?.textContent || document.querySelector('.dialog-error')?.textContent || document.querySelector('.app-message')?.textContent || document.body.textContent.slice(-2000)")}`); }
     await until(() => evaluate(`!document.querySelector('.schedule-progress[data-run-status="running"]') && ![...document.querySelectorAll('#app button')].every(b=>b.disabled)`), "页面完成更新");
   };
-  const rerun = async () => { await until(()=>evaluate("!!document.querySelector('#solve-draft') && !document.querySelector('#solve-draft').disabled"),'排班入口就绪'); await click('#solve-draft'); await waitElement('#confirm-prepare'); await mutate(() => click('#confirm-prepare')); };
+  const rerun = async ({keepDayCounts=false}={}) => { await until(()=>evaluate("!!document.querySelector('#solve-draft') && !document.querySelector('#solve-draft').disabled"),'排班入口就绪'); await click('#solve-draft'); await waitElement('#confirm-prepare'); if(keepDayCounts)await click('#prepare-keep-day-counts'); await mutate(() => click('#confirm-prepare')); };
   const reloadPage = async () => { await evaluate('window.__reloadMarker=true'); await call('Page.reload'); await until(()=>evaluate('!window.__reloadMarker && !!document.querySelector(".wb-matrix")'),'新页面矩阵加载'); };
   const typeCell = (selector,text) => evaluate(`(() => {const el=document.querySelector(${JSON.stringify(selector)});el.focus();el.textContent=${JSON.stringify(text)};el.dispatchEvent(new InputEvent('input',{bubbles:true}));el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   const drag = (source,target) => evaluate(`(() => {const from=document.querySelector(${JSON.stringify(source)}),to=document.querySelector(${JSON.stringify(target)});if(!from||!to)throw Error('拖动元素不存在');const dt=new DataTransfer();from.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:dt}));to.dispatchEvent(new DragEvent('dragover',{bubbles:true,dataTransfer:dt,cancelable:true}));to.dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:dt,cancelable:true}));from.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:dt}));})()`);
@@ -1742,8 +1742,12 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     plan=await current();assert.equal(plan.valid,true,JSON.stringify(plan.issues));assert.equal(plan.draft.length,4,'取消专岗允许同航班兼任');
     await click('[data-view="config"]');
     await value('[data-role-exclusive="登机主验"][data-scope="day"]',true,true);
-    await value('[data-demand="登机主验"]','2');await mutate(()=>click('#save-preparation'));
-    await click('[data-view="schedule"]');await rerun();
+    await value('[data-demand="登机主验"]','2');
+    // 之前默认重排已从航班模板带入逐格1，临时2必须明确改航班格，不能只改被覆盖的基础人数。
+    for(const cell of (await current()).day.cells.filter(c=>c.roleName==='登机主验'))await value(`[data-cell="${cell.id}"][data-field="requiredCountOverride"]`,'2');
+    await mutate(()=>click('#save-preparation'));
+    // 本例主动设置了当天临时人数2，明确沿用以验证专岗缺口。
+    await click('[data-view="schedule"]');await rerun({keepDayCounts:true});
     plan=await current();assert.equal(plan.draft.length,3);assert.equal(plan.valid,false);assert.match(plan.message,/专岗未配齐/);
     assert.ok(await evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-conflict").length>=1'),'专岗缺口标红');
     assert.ok(await evaluate('document.querySelectorAll(".wb-matrix .schedule-cell-vacancy").length>=1'),'普通缺口保留原提示');
@@ -1760,7 +1764,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     const preview=await(await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:raw})).json();
     await command('import-complete-configuration',preview.payload);
     await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('#service-date');
-    await click('[data-view="schedule"]');await rerun();
+    await click('[data-view="schedule"]');await rerun({keepDayCounts:true});
     plan=await current();assert.match(plan.message,/专岗未配齐/);assert.equal(plan.draft.length,3);
   });
   await t.test('岗位分人规则：当天覆盖、保存及无逐轮接岗确认',async()=>{

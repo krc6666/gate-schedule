@@ -1,6 +1,6 @@
 import type { Cell, Day, Flight, State } from "./workbench-model";
 
-export type Preparation = { mode: "archive" | "reschedule"; day: Day; selected: Set<string> };
+export type Preparation = { mode: "archive" | "reschedule"; day: Day; selected: Set<string>; requiredCounts?: "latest" | "day" };
 
 export const weekdayOf = (date: string) => String(new Date(`${date}T12:00:00Z`).getUTCDay());
 
@@ -15,6 +15,11 @@ function addTemplates(day: Day, templates: State["flightTemplates"]): void {
     day.flights.push(flight);
     day.cells.push(...day.roleNames.map(role => newCell(flight, role)));
   }
+}
+
+function templateRequiredCount(template: State["flightLibrary"][number], roleName: string): number | null {
+  if (template.roleNames && !template.roleNames.includes(roleName)) return 0;
+  return template.roles?.find(r => r.roleName === roleName)?.requiredCount ?? null;
 }
 
 // 这里只准备可编辑输入；领域归一化和最终校验仍由Python负责。
@@ -47,7 +52,7 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
     for (const cell of day.cells.filter(c => c.flightId === flight.id)) {
       const role = template.roles?.find(r => r.roleName === cell.roleName);
       const included = !template.roleNames || template.roleNames.includes(cell.roleName);
-      cell.requiredCountOverride = included ? role?.requiredCount ?? null : 0;
+      cell.requiredCountOverride = templateRequiredCount(template, cell.roleName);
       cell.workModeOverride = included ? role?.workModeOverride ?? null : null;
       cell.workStart = included ? role?.workStart ?? null : null; cell.workEnd = included ? role?.workEnd ?? null : null;
     }
@@ -73,7 +78,35 @@ export function startPreparation(source: Day, state: State, mode: Preparation["m
   const selected = new Set(day.flights.map(f => f.id));
   addTemplates(day, state.flightTemplates);
   applyConfiguration(day, state, mode === "archive" ? "latest" : "keep-day");
-  return { mode, day, selected };
+  const preparation: Preparation = { mode, day, selected };
+  if (mode === "reschedule") setPreparationRequiredCounts(preparation, state, source, "latest");
+  return preparation;
+}
+
+// 只选择人数来源；不重载当天资质、环节、时间或出勤。
+export function setPreparationRequiredCounts(preparation: Preparation, state: State, source: Day, policy: "latest" | "day"): void {
+  const day = preparation.day;
+  const previousCounts = new Map(day.roleConfigs.map(r => [r.roleName, r.requiredCount]));
+  const roles = policy === "latest" ? state.configuration.roleConfigs : source.roleConfigs;
+  for (const role of day.roleConfigs) {
+    const configured = roles.find(r => r.roleName === role.roleName);
+    if (configured) role.requiredCount = configured.requiredCount;
+  }
+  for (const cell of day.cells) {
+    if (policy === "day") {
+      const original = source.cells.find(c => c.flightId === cell.flightId && c.roleName === cell.roleName);
+      if (original) cell.requiredCountOverride = original.requiredCountOverride;
+      continue;
+    }
+    const template = state.flightLibrary.find(f => f.flightNo === cell.flightNo);
+    if (!template) {
+      // 仅当天存在的航班无长期来源，不让基础人数变化改写其原需求。
+      if (cell.requiredCountOverride === null) cell.requiredCountOverride = previousCounts.get(cell.roleName) ?? null;
+      continue;
+    }
+    cell.requiredCountOverride = templateRequiredCount(template, cell.roleName);
+  }
+  preparation.requiredCounts = policy;
 }
 
 export function loadPreparationConfiguration(day: Day, state: State): void {

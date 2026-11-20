@@ -4,7 +4,42 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
 const bundle = await build({entryPoints:[fileURLToPath(new URL('../src/day-preparation.ts', import.meta.url))], bundle:true, write:false, format:'esm', target:'es2022'});
-const { startPreparation, loadPreparationConfiguration, applyWeeklyFlights, copyPreparationAttendance, confirmPreparation } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { startPreparation, loadPreparationConfiguration, setPreparationRequiredCounts, applyWeeklyFlights, copyPreparationAttendance, confirmPreparation } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+
+test('配置页人数由0改1后普通重排必须生成需求；只有明确选择才沿用当天0',()=>{
+  const {day,state}=fixture();
+  day.cells[0].requiredCountOverride=0;
+  state.flightLibrary[0].roles[0].requiredCount=1;
+  const before=structuredClone({day,state});
+  const p=startPreparation(day,state,'reschedule');
+  assert.equal(confirmPreparation(p,day.serviceDate,false).cells[0].requiredCountOverride,1);
+  assert.equal(p.requiredCounts,'latest');
+  assert.equal(p.day.cells[0].workStart,'10:10','人数同步不能改变当天环节');
+  assert.deepEqual(p.day.memberConfigs,day.memberConfigs,'不能恢复当天已取消资格');
+  setPreparationRequiredCounts(p,state,day,'day');
+  assert.equal(confirmPreparation(p,day.serviceDate,false).cells[0].requiredCountOverride,0);
+  assert.equal(p.requiredCounts,'day');
+  setPreparationRequiredCounts(p,state,day,'latest');
+  assert.equal(p.day.cells[0].requiredCountOverride,1);
+  assert.deepEqual({day,state},before,'反复切换或取消不写原数据');
+});
+
+test('人数0、空白继承基础人数、增减人数及无长期模板的当天航班分别处理',()=>{
+  for (const count of [0,1,4,null]) {
+    const {day,state}=fixture();
+    state.flightLibrary[0].roles[0].requiredCount=count;
+    const p=startPreparation(day,state,'reschedule');
+    assert.equal(p.day.cells[0].requiredCountOverride,count);
+    assert.equal(p.day.roleConfigs[0].requiredCount,2);
+  }
+  const {day,state}=fixture();
+  state.flightLibrary=[];day.cells[0].requiredCountOverride=null;
+  const p=startPreparation(day,state,'reschedule');
+  assert.equal(p.day.cells[0].requiredCountOverride,1,'临时航班原来继承当天1，不能被新基础2改写');
+  setPreparationRequiredCounts(p,state,day,'day');
+  assert.equal(p.day.cells[0].requiredCountOverride,null);
+  assert.equal(p.day.roleConfigs[0].requiredCount,1);
+});
 
 function fixture() {
   const day = {
@@ -25,12 +60,13 @@ function fixture() {
   return {day,state};
 }
 
-test('普通重排在副本补齐可选航班，保留当天资格/人数/环节/出勤及默认选中',()=>{
+test('普通重排同步最新人数，在副本保留当天资格/环节/出勤及默认选中',()=>{
   const {day,state}=fixture(),saved=structuredClone({day,state});
   const p=startPreparation(day,state,'reschedule');
   assert.deepEqual([...p.selected],['f']);
   assert.equal(p.day.flights.length,2);
-  assert.deepEqual(p.day.cells[0],day.cells[0]);
+  assert.deepEqual(p.day.cells[0],{...day.cells[0],requiredCountOverride:3});
+  assert.deepEqual(p.day.roleConfigs,[{...day.roleConfigs[0],requiredCount:2}]);
   assert.deepEqual(p.day.memberConfigs,day.memberConfigs);
   assert.deepEqual(p.day.memberAvailability,day.memberAvailability);
   assert.equal(p.day.serviceDate,day.serviceDate);
