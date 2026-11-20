@@ -527,5 +527,69 @@ print(json.dumps(day))`],{cwd:repo,encoding:'utf8'}));
     assert.ok(await evaluate('[...document.querySelectorAll("[data-flow-rule]:last-child select,[data-flow-rule]:last-child button")].every(el=>{const r=el.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth+1})'));
     await writeFile(join(temporaryRoot,`flow-rules-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
   }
+  await t.test('大件通用显示：不重叠分格、跨日重叠合并、共享编辑清空、归档重启与导出',async()=>{
+    const day=JSON.parse(execFileSync(python,['-c',`import json
+from tests.test_baggage_window import baggage_day
+print(json.dumps(baggage_day()))`],{cwd:repo,encoding:'utf8'}));
+    day.serviceDate='2059-08-28';
+    day.flights=[
+      ['CX937','10:10','11:30'],['KE0166','11:00','12:15'],
+      ['MF8683','15:40','16:40'],['FD573','17:25','18:25'],
+      ['AK151','23:05','次日00:05'],['TR121','23:30','次日00:55'],
+    ].map(([flightNo,windowStart,windowEnd])=>({id:flightNo,flightNo,windowStart,windowEnd}));
+    const role='大件行李拦截';
+    day.cells=day.flights.map(f=>({id:f.id+'bag',flightId:f.id,flightNo:f.flightNo,roleName:role,rawValue:'',internalNames:[],externalLabels:[],semantics:'empty',fixedMemberNames:[]}));
+    day.roster=Array.from({length:8},(_,i)=>'大件验证员'+i);
+    day.memberConfigs=day.roster.map(memberName=>({memberName,eligibleRoleNames:[role]}));
+    day.memberAvailability=day.roster.map(memberName=>({memberName,participating:true}));
+    day.workRules.baggageWindow.remainderToleranceMinutes=15;
+    let s=await command('import-complete-configuration',{day,workRules:day.workRules,handoffPreferences:[],rotationEnabled:true,rotationMinutes:60});
+    for(const r of s.configuration.roleConfigs)if(r.roleName!==role)await command('save-role',{...r,requiredCount:0});
+    const pid=s.selectedPlanId;
+    s=await command('solve',{},pid);const original=s.plans[pid];
+    assert.equal(original.valid,true,JSON.stringify(original.issues));
+    const cells=original.schedule.matrix[role];
+    const sharedId=cells.MF8683.find(a=>cells.FD573.some(b=>a.task_id===b.task_id)).task_id;
+    assert.ok(sharedId,'真实开检窗口生成跨MF/FD的共享轮换，分格不拆业务任务');
+    await reloadPage();await click('[data-view=schedule]');
+    const check=async()=>{
+      const groups=await evaluate(`(() => {const row=[...document.querySelectorAll('.wb-matrix tbody tr')].find(r=>r.querySelector('th')?.textContent===${JSON.stringify(role)});return [...row.querySelectorAll('td')].map(c=>({span:c.colSpan,columns:c.dataset.sharedBaggage?JSON.parse(c.dataset.sharedBaggage):[c.querySelector('[data-column]')?.dataset.column]}));})()`);
+      assert.deepEqual(groups.map(g=>g.columns),[['CX937','KE0166'],['MF8683'],['FD573'],['AK151','TR121']]);
+      const layout=(await state()).displayPreferences.layout;
+      assert.deepEqual(groups.map(g=>g.span),layout==='flights'?[3,1,1,3]:[2,1,1,2]);
+    };
+    await check();await mutate(()=>click('#toggle-schedule-layout'));await check();
+    const mf=`[data-position-label="MF8683 ${role}"]`,fd=`[data-position-label="FD573 ${role}"]`;
+    assert.match(await evaluate(`document.querySelector(${JSON.stringify(mf+' [data-clear-position]')}).title`),/共享轮换会同步影响FD573/);
+    await click(`${mf} [data-cell-detail]`);
+    await mutate(()=>value(`[data-assignment-task="${sharedId}"][data-slot="0"]`,''));
+    await click('[data-close-dialog]');
+    for(const selector of [mf,fd])assert.ok(await evaluate(`document.querySelector(${JSON.stringify(selector)}).classList.contains('schedule-cell-vacancy')`),'共享任务缺口同步显示在两个独立格');
+    await mutate(()=>click('#undo-move'));await check();
+    await mutate(()=>click(`${mf} [data-clear-position]`));
+    assert.ok(!(await current()).draft.some(a=>a.taskId===sharedId),'清空分格仍清空真实共享轮换');
+    await mutate(()=>click('#undo-move'));
+    assert.deepEqual((await current()).draft,original.draft);
+    await mutate(()=>click('#archive-only'));await check();
+    await click('[data-view=history]');
+    assert.match(await evaluate('document.querySelector(".history-plan").textContent'),/MF8683/);
+    assert.match(await evaluate('document.querySelector(".history-plan").textContent'),/FD573/);
+    await click('[data-view=schedule]');await check();
+    await mkdir(join(directory,'downloads'),{recursive:true});
+    await click('#share-html');
+    const htmlName=await until(async()=>{const names=await readdir(join(directory,'downloads'));return names.find(n=>n.endsWith('.html'));},'班表HTML');
+    const exported=await readFile(join(directory,'downloads',htmlName),'utf8');
+    assert.ok(!exported.includes('data-shared-baggage="[&quot;MF8683&quot;'));
+    assert.match(exported,/data-shared-baggage="\[&quot;AK151&quot;/);
+    assert.deepEqual(await evaluate(`(() => {const d=new DOMParser().parseFromString(${JSON.stringify(exported)},'text/html');const row=[...d.querySelectorAll('tbody tr')].find(r=>r.querySelector('th')?.textContent===${JSON.stringify(role)});return [...row.querySelectorAll('td')].map(c=>c.colSpan);})()`),[2,1,1,2],'正式快照导出也使用通用分组');
+    await click('#share-png');
+    const pngName=await until(async()=>{const names=await readdir(join(directory,'downloads'));return names.find(n=>n.endsWith('.png'));},'班表图片');
+    assert.ok((await readFile(join(directory,'downloads',pngName))).length>1000);
+    await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view=schedule]');await click('[data-view=schedule]');
+    await check();assert.deepEqual((await current()).draft,original.draft);
+    await mutate(()=>click('#toggle-schedule-layout'));await check();
+    await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await writeFile(join(temporaryRoot,'baggage-window-groups.png'),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  });
   assert.deepEqual(runtimeErrors, []);
 });

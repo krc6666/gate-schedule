@@ -6,18 +6,40 @@ export function flightHeader(column: string, flights: Flight[]): string {
   return `<div class="schedule-flight-head"><strong class="flight-number">${html(column)}</strong>${time}</div>`;
 }
 
-/** Merge adjacent columns only when the matrix says they share actual tasks. */
-export function sharedBaggageGroups(columns: string[], matrix: Record<string, Segment[]>): { columns: string[]; segments: Segment[] }[] {
+// Decode the explicit service-date offset printed in the flight header. This
+// is a display comparison, not a calculation of baggage working/rotation time.
+function headerMinutes(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const match = /^(?:(前日)|前第(\d+)日|(次日)|第(\d+)日)?\s*(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const [, previous, previousDays, tomorrow, days, hours, minutes] = match;
+  if (+hours > 23 || +minutes > 59) return null;
+  const offset = previous || previousDays ? -(previous ? 1 : +previousDays) : tomorrow ? 1 : +(days ?? 0);
+  const result = offset * 1440 + +hours * 60 + +minutes;
+  return Number.isSafeInteger(result) ? result : null;
+}
+
+/** Shared tasks may span columns only within a common flight-header window. */
+export function sharedBaggageGroups(columns: string[], matrix: Record<string, Segment[]>, flights: Flight[]): { columns: string[]; segments: Segment[] }[] {
   const groups: { columns: string[]; segments: Segment[] }[] = [];
+  const windows = new Map(flights.map(f => [f.flightNo, [headerMinutes(f.windowStart), headerMinutes(f.windowEnd)] as const]));
+  let commonWindow: [number, number] | null = null;
   for (const column of columns) {
     const segments = matrix[column] ?? [];
     const previous = groups.at(-1);
-    if (previous && segments.some(s => previous.segments.some(p => p.task_id === s.task_id))) {
+    const bounds = windows.get(column);
+    const window: [number, number] | null = bounds && bounds[0] !== null && bounds[1] !== null && bounds[0] < bounds[1] ? [bounds[0], bounds[1]] : null;
+    const overlap: [number, number] | null = commonWindow && window ? [Math.max(commonWindow[0], window[0]), Math.min(commonWindow[1], window[1])] : null;
+    if (previous && overlap && overlap[0] < overlap[1] && segments.some(s => previous.segments.some(p => p.task_id === s.task_id))) {
+      commonWindow = overlap;
       previous.columns.push(column);
       const ids = new Set(previous.segments.map(s => s.task_id));
       previous.segments.push(...segments.filter(s => !ids.has(s.task_id)));
       previous.segments.sort((a,b) => a.start - b.start || a.end - b.end);
-    } else groups.push({ columns: [column], segments: [...segments].sort((a,b) => a.start - b.start || a.end - b.end) });
+    } else {
+      commonWindow = window;
+      groups.push({ columns: [column], segments: [...segments].sort((a,b) => a.start - b.start || a.end - b.end) });
+    }
   }
   return groups;
 }
