@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'gate_schedule/**'
+      - 'tests/**'
       - 'web/**'
       - 'supabase/**'
       - 'scripts/prepare-browser.py'
