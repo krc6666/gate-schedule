@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
-import {renameSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {existsSync, readFileSync, renameSync} from "node:fs";
 import {resolve} from "node:path";
 import {cloudConfiguration} from "./src/cloud-config";
 
@@ -7,10 +8,17 @@ export default defineConfig(({mode}) => {
   const browser = mode === "browser" || mode === "cloud";
   const env = loadEnv(mode, process.cwd(), "VITE_");
   cloudConfiguration(env); // Reject private keys before they can enter an artifact.
+  const runtimeArchive = resolve(process.cwd(), "../.tmp/browser-public/runtime/gate_schedule.zip");
+  const runtimeVersion = existsSync(runtimeArchive)
+    ? createHash("sha256").update(readFileSync(runtimeArchive)).digest("hex").slice(0, 12)
+    : "development";
   let outputDirectory = "";
   if (mode === "cloud" && (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_PUBLISHABLE_KEY)) throw new Error("Cloud build requires the Supabase URL and public key");
   return {
-  define: {"import.meta.env.VITE_CLOUD_REQUIRED": JSON.stringify(mode === "cloud")},
+  define: {
+    "import.meta.env.VITE_CLOUD_REQUIRED": JSON.stringify(mode === "cloud"),
+    "import.meta.env.VITE_GATE_RUNTIME_VERSION": JSON.stringify(runtimeVersion),
+  },
   base: browser ? "./" : "/",
   publicDir: browser ? "../.tmp/browser-public" : false,
   optimizeDeps: {include: ["protobufjs", ...(browser ? ["pyodide", "@supabase/supabase-js"] : [])], exclude: ["cp-sat-wasm"]},

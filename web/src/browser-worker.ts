@@ -15,7 +15,7 @@ async function initialize(): Promise<void> {
     if (!response.ok) throw new Error("网页运行文件缺失：" + name);
     py.unpackArchive(await response.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});
   }
-  const source = await fetch(runtime + "gate_schedule.zip");
+  const source = await fetch(runtime + "gate_schedule.zip?v=" + import.meta.env.VITE_GATE_RUNTIME_VERSION);
   if (!source.ok) throw new Error("排班规则文件缺失");
   py.unpackArchive(await source.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});
   py.registerJsModule("gate_browser_js", {

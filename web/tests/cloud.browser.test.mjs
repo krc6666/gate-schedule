@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {createHash} from 'node:crypto';
 import {createServer} from 'node:http';
 import {spawn,execFileSync} from 'node:child_process';
 import {readFile,mkdir,mkdtemp,writeFile} from 'node:fs/promises';
@@ -17,7 +18,8 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
     console.log('Preparing cloud mock build');
     execFileSync(process.platform==='win32'?'npm.cmd':'npm',['run','build:cloud','--','--outDir','../build/cloud-mock'],{cwd:join(repo,'web'),env:{...process.env,VITE_SUPABASE_URL:'https://gate-cloud-test.invalid',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},shell:process.platform==='win32',stdio:'pipe'});
   }
-  let stored=null,revision=0,saves=0,mode='',release;
+  const runtimeVersion=createHash('sha256').update(await readFile(join(repo,'.tmp/browser-public/runtime/gate_schedule.zip'))).digest('hex').slice(0,12);
+  let stored=null,revision=0,saves=0,mode='',release;const runtimeVersions=[];
   if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT){const snapshot=JSON.parse(await readFile(process.env.GATE_TEST_CONTINUATION_SNAPSHOT,'utf8'));stored=snapshot.documents;revision=snapshot.revision;}
   let launcherOutput='';
   let holder='',request=null; let reads=0;
@@ -59,6 +61,7 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
         res.statusCode=404;return res.end('{}');
       }
       assert.ok(url.pathname.startsWith('/gate-schedule/'));
+      if(url.pathname.endsWith('/runtime/gate_schedule.zip'))runtimeVersions.push(url.searchParams.get('v')??'');
       const name=decodeURIComponent(url.pathname.slice('/gate-schedule/'.length))||'index.html';
       const path=resolve(repo,'build/cloud-mock',name);
       assert.ok(path.startsWith(resolve(repo,'build/cloud-mock')+ (process.platform==='win32'?'\\':'/')));
@@ -115,6 +118,7 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录表单');
   await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
   await login();if(!stored){await until(()=>evaluate('!!document.querySelector("#cloud-empty")'),'首次选择');await click('#cloud-empty');}await ready();
+  assert.equal(runtimeVersions.at(-1),runtimeVersion,'runtime archive requests must match the built content version');
   const addPerson=async name=>{await click('[data-view=config]');await click('#add-person');await value('#person-name',name);await click('#save-person');await until(()=>evaluate('!document.querySelector("#person-form")'),'保存人员')};
   const save=async()=>{await click('#cloud-save');await until(()=>evaluate('!document.querySelector("#cloud-save").disabled'),'云端回执')};
   const warning=()=>evaluate('(()=>{const e=new Event("beforeunload",{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()');
