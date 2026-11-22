@@ -40,7 +40,7 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
         if(url.pathname==='/auth/v1/logout')return res.end('{}');
         if(mode==='permission'){res.statusCode=403;return res.end(JSON.stringify({code:'42501',message:'ADMIN_REQUIRED'}))}
         const fail=message=>{res.statusCode=400;res.end(JSON.stringify({message}))};
-        if(url.pathname.endsWith('gate_acquire_session')){if(holder&&holder!==body.p_session)return fail('SESSION_ACTIVE');holder=body.p_session;return res.end('null')}
+        if(url.pathname.endsWith('gate_acquire_session')){if(holder&&holder!==body.p_session)return fail('SESSION_ACTIVE');holder=body.p_session;res.statusCode=204;return res.end()}
         if(url.pathname.endsWith('gate_request_login')){request={id:body.p_request,status:'pending',requester:body.p_session};return res.end(JSON.stringify(request))}
         if(url.pathname.endsWith('gate_poll_login'))return res.end(JSON.stringify(request));
         if(url.pathname.endsWith('gate_touch_session'))return holder===body.p_session?res.end('null'):fail('SESSION_EXPIRED');

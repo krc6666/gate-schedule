@@ -1,3 +1,17 @@
+<a id="lesson-e15"></a>
+
+# 2026-11-22 云端登录被隔离 Service Worker 拦截
+
+新网页登录部署并安装登录审批 SQL 后，登录仍显示“网络或云端服务异常”。浏览器控制台确认 `gate_acquire_session` 的 Supabase 请求因 `coi-serviceworker.js` 构造 Response 失败；管理员登记和九个登录 RPC 的执行权限均已核对正常。
+
+根因是 Supabase 对 `returns void` RPC 返回 HTTP 204，无响应体；`coi-serviceworker` 0.1.7 仍用 `new Response(response.body, {status: 204})` 重建响应，浏览器禁止该状态带响应体，Service Worker 因而让请求失败。数据库 SQL 不是修复点。
+
+构建准备步骤现在对 204/205/304 以及 opaque status 0 原样透传；上游代码形状不匹配时停止构建。Chrome 云端流程模拟 `gate_acquire_session` 返回真实 204，覆盖登录、工作区操作、冲突与退出，回归通过。源码修复和云构建已验证；需重新部署包含修复的新网页后再做真实账号验收。
+
+防再犯：浏览器 mock 对 void RPC 必须返回空的 204 响应，不得用 200 JSON 代替；验证实际 Service Worker 控制页面的跨域登录流程。源码/数据库检查不能替代公网部署后的真实入口确认。
+
+---
+
 <a id="lesson-e13"></a>
 
 # 2026-11-20 设置变更无提示、旧日时间未联动与大件窗口重复倒推

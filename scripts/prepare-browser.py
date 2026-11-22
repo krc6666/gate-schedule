@@ -13,6 +13,18 @@ PYODIDE = RUNTIME / 'pyodide'
 CACHE = ROOT / '.tmp' / 'browser-wheel-cache'
 
 
+def patch_coi_serviceworker(source):
+    needle = '''                    if (response.status === 0) {
+                        return response;
+                    }'''
+    replacement = '''                    if ([0, 204, 205, 304].includes(response.status)) {
+                        return response;
+                    }'''
+    if source.count(needle) != 1:
+        raise ValueError('Unsupported coi-serviceworker response handler.')
+    return source.replace(needle, replacement)
+
+
 def main():
     PYODIDE.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -31,7 +43,9 @@ def main():
         if hashlib.sha256(cached.read_bytes()).hexdigest() != item['sha256']:
             raise ValueError(f"缓存校验失败：{item['file']}")
         shutil.copyfile(cached, PYODIDE / item['file'])
-    shutil.copyfile(ROOT / 'web' / 'node_modules' / 'coi-serviceworker' / 'coi-serviceworker.js', PUBLIC / 'coi-serviceworker.js')
+    service_worker = ROOT / 'web' / 'node_modules' / 'coi-serviceworker' / 'coi-serviceworker.js'
+    patched_service_worker = patch_coi_serviceworker(service_worker.read_text(encoding='utf-8'))
+    (PUBLIC / 'coi-serviceworker.js').write_text(patched_service_worker, encoding='utf-8')
     (PUBLIC / '.nojekyll').write_bytes(b'')
     excluded = {'server.py', 'web.py', 'cli.py', 'portable.py', '__main__.py'}
     with ZipFile(RUNTIME / 'gate_schedule.zip', 'w', ZIP_DEFLATED) as archive:
