@@ -43,10 +43,10 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
         if(url.pathname.endsWith('gate_acquire_session')){if(holder&&holder!==body.p_session)return fail('SESSION_ACTIVE');holder=body.p_session;res.statusCode=204;return res.end()}
         if(url.pathname.endsWith('gate_request_login')){request={id:body.p_request,status:'pending',requester:body.p_session};return res.end(JSON.stringify(request))}
         if(url.pathname.endsWith('gate_poll_login'))return res.end(JSON.stringify(request));
-        if(url.pathname.endsWith('gate_touch_session'))return holder===body.p_session?res.end('null'):fail('SESSION_EXPIRED');
-        if(url.pathname.endsWith('gate_release_session')){if(holder===body.p_session)holder='';return res.end('null')}
-        if(url.pathname.endsWith('gate_cancel_login')){if(request?.requester===body.p_session&&request.status==='pending')request.status='cancelled';return res.end('null')}
-        if(url.pathname.endsWith('gate_decide_login')){if(holder!==body.p_session)return fail('SESSION_EXPIRED');if(body.p_allow)holder=request.requester;request.status=body.p_allow?'approved':'rejected';return res.end('null')}
+        if(url.pathname.endsWith('gate_touch_session')){if(holder!==body.p_session)return fail('SESSION_EXPIRED');res.statusCode=204;return res.end()}
+        if(url.pathname.endsWith('gate_release_session')){if(holder===body.p_session)holder='';res.statusCode=204;return res.end()}
+        if(url.pathname.endsWith('gate_cancel_login')){if(request?.requester===body.p_session&&request.status==='pending')request.status='cancelled';res.statusCode=204;return res.end()}
+        if(url.pathname.endsWith('gate_decide_login')){if(holder!==body.p_session)return fail('SESSION_EXPIRED');if(body.p_allow)holder=request.requester;request.status=body.p_allow?'approved':'rejected';res.statusCode=204;return res.end()}
         if(body.p_session!==holder)return fail('SESSION_EXPIRED');
         if(url.pathname.endsWith('gate_read_workspace_session')){reads++;return res.end(JSON.stringify({revision,documents:mode==='corrupt'?{}:stored}))}
         if(url.pathname.endsWith('gate_save_workspace_session')){
@@ -136,6 +136,23 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   // A failed request cannot alter the server revision and must produce an obvious alert.
   mode='network';const before=revision;await save();assert.equal(revision,before);assert.match(await label(),/保存失败，点击重试/);assert.match(await evaluate('window.alerts.at(-1)'),/网络或云端服务异常/);
   mode='';await click('#cloud-status');await until(()=>evaluate('!document.querySelector("#cloud-save").disabled'),'重试');assert.equal(await warning(),false);
+  // Older saved workspaces omit the now-optional baggage time basis.
+  const legacy=structuredClone(stored);
+  for(const group of ['A','B'])legacy['group-workspaces-v1'].groups[group].workRules={pairs:[],baggage:[],baggageWindow:{startBeforeMinutes:180,endBeforeMinutes:60,rotationMinutes:60,remainderToleranceMinutes:15}};
+  stored=legacy;
+  const legacyRevision=revision,legacySaves=saves;
+  await click('.cloud-more summary');await click('#cloud-logout');await until(()=>evaluate('document.body.textContent.includes("会话已结束")'),'旧云快照验收退出');
+  await until(()=>holder==='','旧云快照验收释放会话');
+  await evaluate('location.reload();true');await login();await ready();
+  assert.deepEqual(stored,legacy);assert.equal(revision,legacyRevision);assert.equal(saves,legacySaves);
+  const loadedLegacy=await evaluate('fetch("/api/groups/A/workspace").then(r=>r.json())');
+  assert.equal(loadedLegacy.workRules.baggageWindow.timeBasis,'flight-window');
+  assert.equal(loadedLegacy.people.length,2);
+  await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+  await save();
+  assert.equal(revision,legacyRevision+1);
+  assert.deepEqual(stored['group-workspaces-v1'].groups.A.people,legacy['group-workspaces-v1'].groups.A.people);
+  assert.deepEqual(stored['group-workspaces-v1'].groups.A.plans,legacy['group-workspaces-v1'].groups.A.plans);
   // A second page/device saved first: the stale UI must never silently overwrite.
   await addPerson('冲突保留');revision++;await save();assert.match(await evaluate('window.alerts.at(-1)'),/版本冲突/);assert.equal(stored['group-workspaces-v1'].groups.A.people.length,2);
   await evaluate('window.confirm=()=>false');await click('.cloud-more summary');await click('#cloud-logout');assert.ok(await evaluate('!!document.querySelector("#cloud-save")'));assert.equal((await evaluate('fetch("/api/groups/A/workspace").then(r=>r.json())')).people.length,3);

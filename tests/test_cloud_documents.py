@@ -39,6 +39,19 @@ class CloudDocumentsTests(unittest.TestCase):
         validate_cloud_documents(self.documents)
         self.assertEqual(self.documents, before)
 
+    def test_old_cloud_snapshot_without_time_basis_opens_without_server_mutation(self):
+        from tests.test_baggage_window import baggage_day
+
+        rules = baggage_day()['workRules']
+        rules['baggageWindow'].pop('timeBasis', None)
+        for state in self.documents[GroupWorkspaces.KEY]['groups'].values():
+            state['workRules'] = deepcopy(rules)
+        before = deepcopy(self.documents)
+
+        validate_cloud_documents(self.documents)
+
+        self.assertEqual(before, self.documents)
+
     def test_missing_group_or_configuration_never_seeds_defaults(self):
         for remove in ('groups', 'shared'):
             bad = deepcopy(self.documents)

@@ -18,6 +18,7 @@ from starlette.responses import Response
 from starlette.routing import Match, Route
 
 from .group_workspaces import GroupWorkspaces
+from .domain import default_baggage_window
 from .schedule_runs import RunControl
 from .workspace_api import attach_workspace
 
@@ -43,10 +44,17 @@ def validate_cloud_documents(documents):
         state = root['groups'].get(group)
         if not isinstance(state, dict) or not required <= state.keys():
             raise ValueError('云端班组资料不完整；未使用默认配置补盖')
+    # Only this known optional-field upgrade is compatible. Keep the received
+    # document untouched; unrelated normalization still requires explicit repair.
+    compatible = deepcopy(root)
+    for state in compatible['groups'].values():
+        window = (state.get('workRules') or {}).get('baggageWindow')
+        if isinstance(window, dict):
+            window.setdefault('timeBasis', default_baggage_window()['timeBasis'])
     candidate = deepcopy(root)
     groups = GroupWorkspaces(Path('/browser-unused'), store=BrowserStore({key: candidate}))
     groups._validate(candidate)
-    if candidate != root:
+    if candidate != compatible:
         raise ValueError('云端资料需要显式迁移；未自动补齐或改写')
 
 
