@@ -6,7 +6,7 @@ export type Preparation = { mode: "archive" | "reschedule"; day: Day; selected: 
 export const weekdayOf = (date: string) => String(new Date(`${date}T12:00:00Z`).getUTCDay());
 
 export function newCell(flight: Flight, roleName: string): Cell {
-  return { id: crypto.randomUUID(), flightId: flight.id, flightNo: flight.flightNo, roleName, rawValue: "", internalNames: [], externalLabels: [], semantics: "empty", workStart: null, workEnd: null, fixedMemberNames: [], requiredCountOverride: null };
+  return { id: crypto.randomUUID(), flightId: flight.id, flightNo: flight.flightNo, roleName, rawValue: "", internalNames: [], externalLabels: [], semantics: "empty", workStart: null, workEnd: null, fixedMemberNames: [], requiredCountOverride: null, exclusiveSameFlightOverride: false };
 }
 
 function addTemplates(day: Day, templates: State["flightTemplates"]): void {
@@ -26,6 +26,7 @@ function templateRequiredCount(template: State["flightLibrary"][number], roleNam
 // 这里只准备可编辑输入；领域归一化和最终校验仍由Python负责。
 function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest"): void {
   const previousCounts = new Map(day.roleConfigs.map(r => [r.roleName, r.requiredCount]));
+  const previousExclusive = new Map(day.roleConfigs.map(r => [r.roleName, r.exclusiveSameFlight ?? false]));
   for (const person of state.people.filter(p => p.active)) {
     if (!day.roster.includes(person.name)) day.roster.push(person.name);
     let member = day.memberConfigs.find(m => m.memberName === person.name);
@@ -50,8 +51,10 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
   for (const flight of day.flights) {
     const template = state.flightLibrary.find(f => f.flightNo === flight.flightNo);
     if (!template) {
-      for (const cell of day.cells.filter(c => c.flightId === flight.id && c.requiredCountOverride === null))
-        cell.requiredCountOverride = previousCounts.get(cell.roleName) ?? null;
+      for (const cell of day.cells.filter(c => c.flightId === flight.id)) {
+        if (cell.requiredCountOverride === null) cell.requiredCountOverride = previousCounts.get(cell.roleName) ?? null;
+        cell.exclusiveSameFlightOverride ??= previousExclusive.get(cell.roleName) ?? false;
+      }
       continue;
     }
     flight.windowStart = template.windowStart; flight.windowEnd = template.windowEnd;
@@ -61,6 +64,7 @@ function applyConfiguration(day: Day, state: State, policy: "keep-day" | "latest
       cell.requiredCountOverride = templateRequiredCount(template, cell.roleName);
       cell.workModeOverride = included ? role?.workModeOverride ?? null : null;
       cell.workStart = included ? role?.workStart ?? null : null; cell.workEnd = included ? role?.workEnd ?? null : null;
+      cell.exclusiveSameFlightOverride = included ? role?.exclusiveSameFlight ?? false : false;
     }
   }
 }
@@ -145,6 +149,8 @@ export function useDayPreparationConfiguration(preparation: Preparation, state: 
     if (original) {
       cell.workModeOverride = original.workModeOverride;
       cell.workStart = original.workStart; cell.workEnd = original.workEnd;
+      if (original.exclusiveSameFlightOverride == null) delete cell.exclusiveSameFlightOverride;
+      else cell.exclusiveSameFlightOverride = original.exclusiveSameFlightOverride;
     }
   }
   preparation.rotation = undefined;

@@ -63,6 +63,7 @@ def imported_day_to_dict(day: ImportedDay) -> dict:
                 "workStart": cell.work_start,
                 "workEnd": cell.work_end,
                 **({"workModeOverride": cell.work_mode_override} if cell.work_mode_override is not None else {}),
+                **({"exclusiveSameFlightOverride": cell.exclusive_same_flight_override} if cell.exclusive_same_flight_override is not None else {}),
                 "requiredCountOverride": cell.required_count_override,
                 "fixedMemberNames": list(cell.fixed_member_names),
                 "effectiveRequiredCount": imported_required_count(day, cell),
@@ -127,6 +128,7 @@ def imported_day_from_dict(data: dict) -> ImportedDay:
                 work_start=item.get("workStart"),
                 work_end=item.get("workEnd"),
                 work_mode_override=item.get("workModeOverride"),
+                exclusive_same_flight_override=item.get("exclusiveSameFlightOverride"),
                 required_count_override=item.get("requiredCountOverride"),
                 fixed_member_names=tuple(item.get("fixedMemberNames", ())),
             )

@@ -45,6 +45,7 @@ class ImportedCellInput(BaseModel):
     workStart: str | None = None
     workEnd: str | None = None
     workModeOverride: str | None = None
+    exclusiveSameFlightOverride: StrictBool | None = None
     requiredCountOverride: StrictInt | None = Field(default=None, ge=0)
     fixedMemberNames: list[StrictStr] | None = None
 

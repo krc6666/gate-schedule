@@ -143,8 +143,8 @@ class DedicatedShortageWorkflowTests(unittest.TestCase):
             target.execute(target.snapshot()['revision'], 'import-complete-configuration', incoming)
             target = Workbench(Path(directory) / 'target.db')
             state = target.snapshot()
-            role = next(r for r in state['configuration']['roleConfigs'] if r['roleName'] == '登机主验')
-            self.assertTrue(role['exclusiveSameFlight'])
+            self.assertTrue(all(next(r for r in flight['roles'] if r['roleName'] == '登机主验')['exclusiveSameFlight']
+                                for flight in state['flightLibrary']))
             state = target.execute(state['revision'], 'solve', {}, state['selectedPlanId'])
             plan = state['plans'][state['selectedPlanId']]
             self.assertEqual(1, len(plan['draft']))
@@ -180,13 +180,16 @@ class DedicatedShortageWorkflowTests(unittest.TestCase):
             state = work.execute(state['revision'], 'adopt', {}, pid)
             from copy import deepcopy
             original = deepcopy(work.backup()['state']['plans'][pid]['adopted'])
-            state = work.execute(state['revision'], 'save-role', {'roleName': '登机主验', 'exclusiveSameFlight': False})
-            role = next(r for r in state['configuration']['roleConfigs'] if r['roleName'] == '登机主验')
-            self.assertTrue(role['concurrent'])
+            template = deepcopy(state['flightLibrary'][0])
+            next(role for role in template['roles'] if role['roleName'] == '登机主验')['exclusiveSameFlight'] = False
+            state = work.execute(state['revision'], 'save-flight-template', template)
             state = work.execute(state['revision'], 'apply-config', {}, pid)
             state = work.execute(state['revision'], 'solve', {}, pid)
             self.assertTrue(state['plans'][pid]['valid'], state['plans'][pid]['issues'])
             self.assertEqual(2, len(state['plans'][pid]['draft']))
+            main = next(task for task in state['plans'][pid]['schedule']['tasks'] if task['roleId'] == '登机主验')
+            self.assertTrue(main['concurrent'])
+            self.assertFalse(main['exclusiveSameFlight'])
             self.assertEqual(original, work.backup()['state']['plans'][pid]['adopted'])
             restored = Workbench(Path(directory) / 'restore.db')
             restored.restore(0, work.backup())

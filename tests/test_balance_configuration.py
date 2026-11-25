@@ -76,7 +76,7 @@ class BalanceConfigurationTests(unittest.TestCase):
         content = export_complete_configuration(data)
         book = load_workbook(BytesIO(content))
         self.assertTrue({'排班平衡', '重点次数修正', '人员身份'} <= set(book.sheetnames))
-        retired={'相对岗位时间','当天相对时间例外','岗位时间','航班衔接','支援释放规则','岗位方式例外'}
+        retired={'岗位性质','当天岗位例外','相对岗位时间','当天相对时间例外','岗位时间','航班衔接','支援释放规则','岗位方式例外'}
         self.assertTrue(all(sheet.sheet_state == ('hidden' if sheet.title in retired else 'visible') for sheet in book))
         self.assertEqual(['月份', '人员ID', '姓名', '岗位', '修正次数'], [cell.value for cell in book['重点次数修正'][1]])
         self.assertEqual(['2026-08', 'stable-a', '甲', '登机主验', 3], [cell.value for cell in book['重点次数修正'][2]])

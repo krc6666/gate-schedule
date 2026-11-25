@@ -15,6 +15,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendUpgradeTests(unittest.TestCase):
+    def test_two_scope_page_cannot_overwrite_a_saved_earlier_scope(self):
+        from tests.test_earlier_overlap import earlier_configuration
+        state=self.client.post('/api/workspace/command',json={'expectedRevision':0,
+            'action':'import-complete-configuration','payload':earlier_configuration()}).json()
+        before=self.client.get('/api/workspace/backup').json()
+        incoming=deepcopy(state['handoffPreferences'])
+        for row in incoming:row['targetFlightScopes']=dict.fromkeys(row['boardingRoles'],'same-flight')
+        response=self.client.post('/api/workspace/command',headers={'X-Gate-Rule-Schema':'flight-role-v1'},json={
+            'expectedRevision':state['revision'],'action':'save-rules','payload':{
+                'configuration':state['configuration'],'balanceSettings':state['balanceSettings'],
+                'preferences':incoming,'workRules':state['workRules']}})
+        self.assertEqual(409,response.status_code)
+        self.assertIn('Ctrl+F5',response.json()['detail'])
+        self.assertEqual(before,self.client.get('/api/workspace/backup').json())
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(dir=ROOT/'.tmp', prefix='frontend-upgrade-')
         self.addCleanup(self.directory.cleanup)
@@ -70,7 +85,7 @@ class FrontendUpgradeTests(unittest.TestCase):
                     self.assertEqual(before, self.client.get('/api/workspace/backup').json())
             with self.subTest(action=action, current_schema_missing_scope=True):
                 configuration = deepcopy(state['configuration'])
-                response = self.client.post('/api/workspace/command', headers={'X-Gate-Rule-Schema': 'flight-role-v1'}, json={'expectedRevision': state['revision'],
+                response = self.client.post('/api/workspace/command', headers={'X-Gate-Rule-Schema': 'flight-role-v2'}, json={'expectedRevision': state['revision'],
                     'action': action, 'payload': {'configuration': configuration, 'balanceSettings': legacy,
                         'preferences': state['handoffPreferences']}})
                 self.assertEqual(409, response.status_code, response.text[:300])
@@ -78,7 +93,7 @@ class FrontendUpgradeTests(unittest.TestCase):
                 self.assertEqual(before, self.client.get('/api/workspace/backup').json())
         settings = deepcopy(state['balanceSettings'])
         settings.update(priorityEnabled=True, priorityFlightRoles=[{'flightNo': 'F0', 'roleName': '接机1'}])
-        response = self.client.post('/api/workspace/command', headers={'X-Gate-Rule-Schema': 'flight-role-v1'}, json={'expectedRevision': state['revision'],
+        response = self.client.post('/api/workspace/command', headers={'X-Gate-Rule-Schema': 'flight-role-v2'}, json={'expectedRevision': state['revision'],
             'action': 'save-rules', 'payload': {'configuration': state['configuration'], 'balanceSettings': settings,
                 'preferences': state['handoffPreferences']}})
         self.assertEqual(200, response.status_code, response.text[:300])

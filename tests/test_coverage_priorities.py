@@ -75,7 +75,7 @@ def shortage_handoff_configuration():
 
 
 class CoveragePriorityTests(unittest.TestCase):
-    def test_configured_part_time_remains_when_other_arrival_is_short(self):
+    def test_configured_part_time_yields_when_other_arrival_is_short(self):
         roles = frozenset({'接机1', '登机查验'})
         scene = Scenario('2026-08-20',
             (Flight('A', 'CX937', '2026-08-20', 610, 690),
@@ -93,11 +93,11 @@ class CoveragePriorityTests(unittest.TestCase):
                 'boardingRoles': ['登机查验'], 'enabled': True, 'ordered': True},))
         result = solve(scene, allow_partial=True)
         self.assertEqual('OPTIMAL', result.status)
-        self.assertEqual({Assignment('early', 'm'), Assignment('low', 'm')}, set(result.assignments))
-        self.assertEqual({('coverage_shortfall', 'late')},
+        self.assertEqual({Assignment('early', 'm')}, set(result.assignments))
+        self.assertEqual({('coverage_shortfall', 'late'), ('coverage_shortfall', 'low')},
             {(i.code, i.task_id) for i in validate_schedule(scene, result.assignments)})
         manual = result.assignments
-        self.assertEqual({('coverage_shortfall', 'late')},
+        self.assertEqual({('coverage_shortfall', 'late'), ('coverage_shortfall', 'low')},
             {(i.code, i.task_id) for i in validate_schedule(scene, manual)})
 
         without_low = replace(scene, tasks=tuple(t for t in scene.tasks if t.id != 'low'))
@@ -115,7 +115,7 @@ class CoveragePriorityTests(unittest.TestCase):
             tasks=scene.tasks + (Task('separate', 'C', '登机查验', 735, 800, 1, 'mobile',
                                      timing_mode='phase', service_stage='boarding'),))
         values = solve(separate, allow_partial=True).assignments
-        self.assertEqual({'early', 'low', 'separate'}, {a.task_id for a in values})
+        self.assertEqual({'early', 'separate'}, {a.task_id for a in values})
 
         enough = replace(scene, members=scene.members + (replace(scene.members[0], id='n', name='乙'),))
         full = solve(enough, allow_partial=True)
@@ -160,7 +160,7 @@ class CoveragePriorityTests(unittest.TestCase):
         partial = solve(limited, allow_partial=True)
         self.assertFalse(any(a.task_id == '2' for a in partial.assignments))
         source_member = next(a.member_id for a in partial.assignments if a.task_id == '0')
-        self.assertIn(Assignment('3', source_member), partial.assignments)
+        self.assertNotIn(Assignment('3', source_member), partial.assignments)
         self.assertFalse(any(a.task_id == '4' for a in partial.assignments))
         broken = partial.assignments + (Assignment('2', limited.members[0].id),)
         self.assertIn('ineligible', {i.code for i in validate_schedule(limited, broken)})
@@ -242,7 +242,7 @@ class CoverageMigrationTests(unittest.TestCase):
                 if role['roleName'] not in data['day']['roleNames']:
                     state = work.execute(state['revision'], 'save-role', {**role, 'requiredCount': 0})
             state = work.execute(state['revision'], 'solve', {}, state['selectedPlanId'])
-            self.assertEqual({'imported-early', 'imported-low'}, {a['taskId'] for a in state['plans'][state['selectedPlanId']]['draft']})
+            self.assertEqual({'imported-early'}, {a['taskId'] for a in state['plans'][state['selectedPlanId']]['draft']})
             payload = import_complete_configuration(work.export_complete_configuration())
             target_path = Path(directory) / 'target.db'
             target = Workbench(target_path)
@@ -259,7 +259,7 @@ class CoverageMigrationTests(unittest.TestCase):
             self.assertEqual(data['balanceSettings']['coveragePriorities'], current['balanceSettings']['coveragePriorities'])
             tasks = {t['id']: t for t in current['schedule']['tasks']}
             flights = {f['id']: f['flightNo'] for f in current['schedule']['flights']}
-            self.assertEqual({('A100', '接机1'), ('A100', '登机查验')}, {(flights[tasks[a['taskId']]['flightId']], tasks[a['taskId']]['roleId']) for a in current['draft']})
+            self.assertEqual({('A100', '接机1')}, {(flights[tasks[a['taskId']]['flightId']], tasks[a['taskId']]['roleId']) for a in current['draft']})
             self.assertTrue(all(i['code'] == 'coverage_shortfall' for i in current['issues']))
             restored = Workbench(Path(directory) / 'restored.db')
             restored.restore(0, target.backup())
@@ -268,7 +268,7 @@ class CoverageMigrationTests(unittest.TestCase):
             current = state['plans'][state['selectedPlanId']]
             tasks = {t['id']: t for t in current['schedule']['tasks']}
             flights = {f['id']: f['flightNo'] for f in current['schedule']['flights']}
-            self.assertEqual({('A100', '接机1'), ('A100', '登机查验')}, {(flights[tasks[a['taskId']]['flightId']], tasks[a['taskId']]['roleId']) for a in current['draft']})
+            self.assertEqual({('A100', '接机1')}, {(flights[tasks[a['taskId']]['flightId']], tasks[a['taskId']]['roleId']) for a in current['draft']})
 
     def test_protected_shortfall_warns_and_old_page_omission_keeps_selection(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.tmp', prefix='coverage-warning-') as directory:

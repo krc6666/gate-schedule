@@ -11,6 +11,94 @@ class ScheduleEditingTests(unittest.TestCase):
     tearDown = fixtures.WorkspaceTests.tearDown
     command = fixtures.WorkspaceTests.command
     complete_plan = fixtures.WorkspaceTests.complete_plan
+
+    def test_drag_to_zero_demand_cell_is_atomic_and_keeps_partners_and_formal(self):
+        # G03/D01/V04: zero demand and unconfigured cells are manual destinations,
+        # even though conversion deliberately creates no scheduling task for them.
+        pid, people = self.complete_plan()
+        initial_day = deepcopy(self.workspace.snapshot()['plans'][pid]['day'])
+        for count in (0, None):
+            with self.subTest(count=count):
+                day = deepcopy(initial_day)
+                day['roleNames'].append('特服')
+                day['roleConfigs'].append({'roleName': '特服', 'requiredCount': count})
+                day['cells'].append({**deepcopy(day['cells'][0]), 'id': 'temp', 'roleName': '特服',
+                                     'requiredCountOverride': None, 'workStart': None, 'workEnd': None})
+                self.command('save-input', {'day': day}, pid)
+                self.command('edit-cell', {'cellId': 'c1', 'text': '甲/乙'}, pid)
+                formal = self.command('adopt', {}, pid)['plans'][pid]['adopted']
+                before = self.workspace.backup()
+                p = self.command('move-assignment', {'memberId': people[0]['id'],
+                    'sourceTaskId': 'imported-c1', 'targetCellId': 'temp'}, pid)['plans'][pid]
+                self.assertEqual([{'taskId': 'imported-c1', 'memberId': people[1]['id']}], p['draft'])
+                self.assertEqual('甲', p['cellDrafts']['temp'])
+                self.assertEqual(before['state']['plans'][pid]['day'], p['day'], '手动放人不能暗改配置人数和工作方式')
+                self.assertFalse(p['valid'], '待完善岗位不能冒充已通过检查')
+                self.assertEqual(formal, p['adopted'])
+                self.assertEqual('甲', Workbench(self.path).snapshot()['plans'][pid]['cellDrafts']['temp'])
+                restored = Workbench(self.path.parent / f'drag-{count}.sqlite3')
+                restored.restore(0, self.workspace.backup())
+                self.assertEqual(p['cellDrafts'], restored.snapshot()['plans'][pid]['cellDrafts'])
+                undone = self.command('undo-edit', {}, pid)['plans'][pid]
+                self.assertEqual(before['state']['plans'][pid]['draft'], undone['draft'])
+                self.assertFalse(undone.get('cellDrafts'))
+
+    def test_drag_pending_people_append_swap_and_move_back_without_losing_names(self):
+        pid, people = self.complete_plan()
+        day = deepcopy(self.workspace.snapshot()['plans'][pid]['day'])
+        day['roleNames'].append('特服')
+        day['roleConfigs'].append({'roleName': '特服', 'requiredCount': 0})
+        day['cells'].append({**deepcopy(day['cells'][0]), 'id': 'temp', 'roleName': '特服',
+                             'requiredCountOverride': None, 'workStart': None, 'workEnd': None})
+        day['roleNames'].append('临时岗')
+        day['roleConfigs'].append({'roleName': '临时岗', 'requiredCount': 0})
+        day['cells'].append({**deepcopy(day['cells'][-1]), 'id': 'temp2', 'roleName': '临时岗'})
+        self.command('save-input', {'day': day}, pid)
+        solved = self.command('solve', {}, pid)['plans'][pid]
+        self.assertFalse(any(t['roleId'] == '特服' for t in solved['schedule']['tasks']),
+                         '自动排班仍忽略0需求岗位，手动拖放不改变自动范围')
+        self.command('edit-cell', {'cellId': 'c1', 'text': '甲/乙'}, pid)
+        self.command('move-assignment', {'memberId': people[2]['id'], 'targetCellId': 'temp'}, pid)
+        p = self.command('move-assignment', {'memberId': people[0]['id'],
+            'sourceTaskId': 'imported-c1', 'targetCellId': 'temp'}, pid)['plans'][pid]
+        self.assertEqual(['丙', '甲'], p['cellDrafts']['temp'].split(' / '))
+        self.command('move-assignment', {'memberId': people[0]['id'],
+            'sourceCellId': 'temp', 'targetCellId': 'temp2'}, pid)
+        p = self.command('move-assignment', {'memberId': people[0]['id'],
+            'sourceCellId': 'temp2', 'targetCellId': 'temp', 'targetMemberId': people[2]['id']}, pid)['plans'][pid]
+        self.assertEqual('甲', p['cellDrafts']['temp'])
+        self.assertEqual('丙', p['cellDrafts']['temp2'])
+        self.command('move-assignment', {'memberId': people[2]['id'],
+            'sourceCellId': 'temp2', 'targetCellId': 'temp'}, pid)
+        # Return to the same partner order used by the following swap checks.
+        self.command('edit-cell', {'cellId': 'temp', 'text': '丙 / 甲'}, pid)
+        before = self.workspace.backup()
+        for payload in (
+            {'memberId': people[0]['id'], 'targetCellId': 'temp'},
+            {'memberId': people[1]['id'], 'sourceCellId': 'temp', 'targetTaskId': 'imported-c1'},
+            {'memberId': people[0]['id'], 'sourceCellId': 'temp', 'targetCellId': 'missing'},
+        ):
+            with self.assertRaises(WorkspaceError):
+                self.command('move-assignment', payload, pid)
+            self.assertEqual(before, self.workspace.backup())
+        p = self.command('move-assignment', {'memberId': people[2]['id'], 'sourceCellId': 'temp',
+            'targetTaskId': 'imported-c1', 'targetMemberId': people[1]['id']}, pid)['plans'][pid]
+        self.assertEqual('乙 / 甲', p['cellDrafts']['temp'])
+        self.assertEqual([{'taskId': 'imported-c1', 'memberId': people[2]['id']}], p['draft'])
+        p = self.command('move-assignment', {'memberId': people[0]['id'],
+            'sourceCellId': 'temp', 'targetTaskId': 'imported-c1'}, pid)['plans'][pid]
+        self.assertEqual('乙', p['cellDrafts']['temp'])
+        self.assertEqual(2, len(p['draft']))
+        from io import BytesIO
+        from openpyxl import load_workbook
+        saved = self.command('archive-only', {}, pid)['plans'][pid]['adopted']
+        self.assertEqual('乙', saved['cellDrafts']['temp'])
+        self.assertIn('pending_cell', {i['code'] for i in saved['issues']})
+        workbook = load_workbook(BytesIO(self.workspace.export(pid)))
+        rows = [row for sheet in workbook for row in sheet.iter_rows(values_only=True)
+                if any('特服' in str(value) for value in row)]
+        self.assertTrue(any('乙' in str(row) for row in rows), '正式导出不能遗漏临时岗位姓名')
+        workbook.close()
     def test_legacy_draft_can_add_ordinary_role_without_task_minutes(self):
         plan_id, people=self.complete_plan()
         day=deepcopy(self.workspace.snapshot()['plans'][plan_id]['day'])

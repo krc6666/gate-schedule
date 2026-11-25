@@ -48,6 +48,7 @@ def prepare_import(state, payload):
 
 def _apply_configuration(state, payload):
     data = validate_complete_configuration(payload)
+    retained_chain_count=0
     original_people = {p['id'] for p in state['people']}
     history_summary = {key: 0 for key in ('historyDayCount', 'historyPlanCount', 'newHistoryPlanCount', 'retainedHistoryPlanCount')}
     if 'history' in data:
@@ -107,11 +108,21 @@ def _apply_configuration(state, payload):
         if key in data:
             incoming = deepcopy(data[key])
             if key == 'handoffPreferences':
-                previous={(r['flightNo'],r['arrivalRole']):r for r in state['handoffPreferences']}
+                rule_key=lambda r:(r['flightNo'],r.get('mode','priority'),r.get('id',r['arrivalRole']))
+                previous={rule_key(r):r for r in state['handoffPreferences']}
                 for row in incoming:
-                    old=previous.get((row['flightNo'],row['arrivalRole']),{})
+                    old=previous.get(rule_key(row),{})
                     if 'targetFlightScopes' not in row and 'targetFlightScopes' in old:
                         row['targetFlightScopes']={r:s for r,s in old['targetFlightScopes'].items() if r in row['boardingRoles']}
+                    if 'targetFlightScopeList' not in row and 'targetFlightScopeList' in old:
+                        row['targetFlightScopeList']=deepcopy(old['targetFlightScopeList'])
+                # A nonempty old candidate-only sheet cannot describe or
+                # delete independently identified multi-role groups. Empty
+                # remains an explicit clear; a mode-bearing list is complete.
+                if incoming and not any('mode' in r for r in incoming):
+                    retained=[deepcopy(r) for r in state['handoffPreferences'] if r.get('mode')=='chain']
+                    retained_chain_count=len(retained)
+                    incoming.extend(retained)
             if key == 'workRules':
                 for field in ('separationGroups','forbiddenHandoffs','baggageWindow'):
                     if field not in incoming and field in state.get('workRules', {}):
@@ -120,6 +131,8 @@ def _apply_configuration(state, payload):
                 previous_window = state.get('workRules', {}).get('baggageWindow')
                 if window is not None and 'timeBasis' not in window:
                     window['timeBasis'] = (previous_window or {}).get('timeBasis', 'flight-window')
+                if window is not None and 'handoffMode' not in window:
+                    window['handoffMode'] = (previous_window or {}).get('handoffMode', 'flexible')
                 if (window is not None and previous_window is not None
                         and 'remainderToleranceMinutes' not in window
                         and 'remainderToleranceMinutes' in previous_window):
@@ -171,6 +184,11 @@ def _apply_configuration(state, payload):
         for flight in state["flightLibrary"]:
             if "roleNames" not in flight and flight["flightNo"] in previous_templates:
                 flight["roleNames"] = deepcopy(previous_templates[flight["flightNo"]]["roleNames"])
+            previous_roles = {role['roleName']: role for role in previous_templates.get(flight['flightNo'], {}).get('roles', [])}
+            for role in flight.get('roles', []):
+                previous = previous_roles.get(role['roleName'], {})
+                if 'exclusiveSameFlight' not in role and 'exclusiveSameFlight' in previous:
+                    role['exclusiveSameFlight'] = previous['exclusiveSameFlight']
     else:
         remember_day(state, day)
     with_role_membership(state)
@@ -198,7 +216,7 @@ def _apply_configuration(state, payload):
             plan['lastEdit'] = {'taskIds': [], 'cellIds': []}
     state["plans"][plan_id] = plan
     state["selectedPlanId"] = plan_id
-    return {"payload": data, **history_summary, "newPeopleCount": new_people, "newQualificationCount": added, "removedQualificationCount": removed, "peopleCount": len(day["roster"]), "flightCount": len(day["flights"]), "serviceDate": day["serviceDate"], "handoffPreferenceCount": len(state["handoffPreferences"])}
+    return {"payload": data, **history_summary, "newPeopleCount": new_people, "newQualificationCount": added, "removedQualificationCount": removed, "peopleCount": len(day["roster"]), "flightCount": len(day["flights"]), "serviceDate": day["serviceDate"], "handoffPreferenceCount": len(state["handoffPreferences"]),**({'retainedChainCount':retained_chain_count} if retained_chain_count else {})}
 
 
 def _history_views(state):
@@ -289,7 +307,9 @@ def prepare_export(state, plan_id=None, service_date=None):
     for flight in day["flights"]:
         for role in day["roleNames"]:
             if not any(c["flightId"] == flight["id"] and c["roleName"] == role for c in day["cells"]):
-                day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role, "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [], "requiredCountOverride": template_required_count(templates.get(flight['flightNo']), role), "workStart": None, "workEnd": None})
+                template = templates.get(flight['flightNo'], {})
+                template_role = next((item for item in template.get('roles', []) if item['roleName'] == role), {})
+                day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role, "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [], "requiredCountOverride": template_required_count(template, role), "workStart": None, "workEnd": None, "exclusiveSameFlightOverride": template_role.get('exclusiveSameFlight', False), "workModeOverride": template_role.get('workModeOverride')})
     day["transitionMinutes"] = config["transitionMinutes"]
     saved_roles = {r["roleName"]: role_configuration(r) for r in saved_day["roleConfigs"]}
     for name, role in saved_roles.items():

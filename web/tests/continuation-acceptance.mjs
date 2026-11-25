@@ -55,7 +55,7 @@ export async function continuationAcceptance({evaluate,click,value,until,ready,s
   const state=()=>evaluate("fetch('/api/groups/A/workspace').then(r=>r.json())");
   const command=async(action,payload={},planId)=>{
     const s=await state();
-    const response=await evaluate(`fetch('/api/groups/A/workspace/command',{method:'POST',headers:{'Content-Type':'application/json','X-Gate-Rule-Schema':'flight-role-v1'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action,payload,planId})})}).then(async r=>({status:r.status,value:await r.json()}))`);
+    const response=await evaluate(`fetch('/api/groups/A/workspace/command',{method:'POST',headers:{'Content-Type':'application/json','X-Gate-Rule-Schema':'flight-role-v2'},body:JSON.stringify(${JSON.stringify({expectedRevision:s.revision,action,payload,planId})})}).then(async r=>({status:r.status,value:await r.json()}))`);
     assert.equal(response.status,200,JSON.stringify(response.value));return response.value;
   };
   const reload=async()=>{await save();await evaluate('window.confirm=()=>true');await click('#cloud-logout');await until(()=>evaluate('document.body.textContent.includes("会话已结束")'),'模拟页面退出');await until(released,'释放模拟会话');await evaluate('location.reload();true');await login();await ready();await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true')};

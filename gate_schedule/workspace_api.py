@@ -141,8 +141,8 @@ def _attach_scoped_workspace(app, database_path, groups, group_id, recovery_erro
             raise HTTPException(503, "请先保留原始文件并在独立目录恢复备份")
         try:
             data = await request.json()
-            if data["action"] in {"save-rules", "update-balance-settings"} and request.headers.get("X-Gate-Rule-Schema") != "flight-role-v1":
-                return JSONResponse(status_code=409, content={"detail": "页面版本已更新，请按 Ctrl+F5 刷新，选择航班后重新勾选重点岗位；本次未保存，原配置和班表保留"})
+            if data["action"] in {"save-rules", "update-balance-settings"} and request.headers.get("X-Gate-Rule-Schema") != "flight-role-v2":
+                return JSONResponse(status_code=409, content={"detail": "页面版本已更新，请先保留未保存内容，再按 Ctrl+F5 刷新，核对航班范围和重点岗位后保存；本次未保存，原配置和班表保留"})
             if data['action'] == 'import-complete-configuration' and data.get('payload', {}).get('groupTransfer') is not None:
                 return await execute_task(groups.import_configuration, group_id, data['expectedRevision'], data['payload'])
             return await execute_task(workspace.execute, data["expectedRevision"], data["action"], data.get("payload", {}), data.get("planId"))

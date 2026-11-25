@@ -96,6 +96,7 @@ def schedule_data(scenario, assignments):
     }
 
 
+@lru_cache(maxsize=128)
 def _plan_projection(plan_payload, rule_payload):
     plan = json.loads(plan_payload)
     day = plan['day']
@@ -147,6 +148,7 @@ def _plan_projection(plan_payload, rule_payload):
     return view, (scenario, work_scene)
 
 
+@lru_cache(maxsize=128)
 def _archive_projection(payload):
     return archive_review(json.loads(payload))
 
@@ -159,8 +161,11 @@ class Workbench:
     def __init__(self, database_path: Path, *, store=None):
         self.store = store if store is not None else LocalStateStore(database_path)
         self._default_group = store is None
-        self._plan_projection = lru_cache(maxsize=128)(_plan_projection)
-        self._archive_projection = lru_cache(maxsize=128)(_archive_projection)
+        # Browser requests create fresh Workbenches in the same worker. Keep
+        # bounded pure projections across requests, keyed by all input facts.
+        # snapshot() copies the cached view before exposing it to its caller.
+        self._plan_projection = _plan_projection
+        self._archive_projection = _archive_projection
 
     def validate(self, state):
         validate_document(state, review_archive=lambda reference: self._archive_projection(json.dumps(reference, ensure_ascii=False)))
@@ -172,7 +177,16 @@ class Workbench:
         return normalize_document(self.store.read_document(self.KEY))
 
     def snapshot(self):
-        state = deepcopy(self._load())
+        # Every store read already returns an owned, isolated document.
+        state = self._load()
+        if any(r.get('mode')=='chain' for r in state['handoffPreferences']):
+            from .domain import simplify_handoff_preferences
+            preview={'original':deepcopy(state['handoffPreferences'])}
+            try:
+                preview['preferences']=simplify_handoff_preferences(state['handoffPreferences'])
+            except ValueError as error:
+                preview['error']=str(error)
+            state['handoffSimplification']=preview
         state["workModes"] = WORK_MODES
         state.setdefault('workRules',empty_work_rules())
         state['suggestedWorkRules'] = grouped_work_rules(suggested_work_rules([r['roleName'] for r in state['configuration']['roleConfigs']]))
@@ -292,7 +306,7 @@ class Workbench:
         plan["message"] = "准备资料已保存；输入改变，旧预览已失效。正式班表保留"
 
     def execute(self, expected, action, payload, plan_id=None, *, control=None):
-        state = deepcopy(self._load())
+        state = self._load()
         if type(expected) is not int or state["revision"] != expected:
             raise WorkspaceError("数据版本已更新，请重新读取；当前输入未被覆盖")
         plan = state["plans"].get(plan_id) if plan_id else None
@@ -322,6 +336,7 @@ class Workbench:
                 window = rules.get('baggageWindow')
                 if isinstance(window, dict):
                     window.setdefault('timeBasis', (state.get('workRules', {}).get('baggageWindow') or {}).get('timeBasis', 'flight-window'))
+                    window.setdefault('handoffMode', (state.get('workRules', {}).get('baggageWindow') or {}).get('handoffMode', 'flexible'))
                 state['workRules'] = deepcopy(validate_work_rules(rules, [r['roleName'] for r in state['configuration']['roleConfigs']]))
             if "input" in payload:
                 if plan is None:
@@ -563,10 +578,18 @@ class Workbench:
                 if role["roleName"] not in day["roleNames"]:
                     day["roleNames"].append(role["roleName"])
                     for flight in day["flights"]:
-                        day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role["roleName"], "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "workStart": None, "workEnd": None, "fixedMemberNames": [], "requiredCountOverride": template_required_count(templates.get(flight['flightNo']), role['roleName'])})
+                        template = templates.get(flight['flightNo'], {})
+                        template_role = next((item for item in template.get('roles', []) if item['roleName'] == role['roleName']), {})
+                        day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": flight["flightNo"], "roleName": role["roleName"], "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "workStart": None, "workEnd": None, "fixedMemberNames": [], "requiredCountOverride": template_required_count(template, role['roleName']), "exclusiveSameFlightOverride": template_role.get('exclusiveSameFlight', False)})
             current = {r["roleName"]: r for r in day["roleConfigs"]}
             current.update({r["roleName"]: role_configuration(r) if day.get("releasePolicy") == "task" else deepcopy(r) for r in config["roleConfigs"]})
             day["roleConfigs"] = list(current.values())
+            for cell in day["cells"]:
+                template = templates.get(cell['flightNo'])
+                if template is not None:
+                    template_role = next((item for item in template.get('roles', []) if item['roleName'] == cell['roleName']), {})
+                    cell['exclusiveSameFlightOverride'] = template_role.get('exclusiveSameFlight', False)
+                    cell['workModeOverride'] = template_role.get('workModeOverride')
             day["transitionMinutes"] = config["transitionMinutes"]
             plan.update(rotationMinutes=config["rotationMinutes"], rotationEnabled=config["rotationEnabled"])
             plan["balanceSettings"] = deepcopy(state["balanceSettings"])
@@ -694,7 +717,8 @@ class Workbench:
             previous = before_edit["draft"]
             affected = {a["taskId"] for a in previous + plan["draft"] if a not in previous or a not in plan["draft"]}
             affected.update(payload[k] for k in ("taskId", "targetTaskId", "sourceTaskId") if payload.get(k))
-            cell_ids = [payload['cellId']] if payload.get('cellId') else payload.get('cellIds', [])
+            cell_ids = [payload['cellId']] if payload.get('cellId') else list(payload.get('cellIds', []))
+            cell_ids.extend(payload[k] for k in ('sourceCellId', 'targetCellId') if payload.get(k) and payload[k] not in cell_ids)
             if cell_ids:
                 current, _ = plan_scenario(plan)
                 for cell_id in cell_ids:
@@ -881,6 +905,8 @@ class Workbench:
             raise WorkspaceError("岗位人数必须为0或正整数")
         old, _ = plan_scenario(plan)
         cell.update(requiredCountOverride=count, workStart=payload.get("workStart") or None, workEnd=payload.get("workEnd") or None)
+        if "exclusiveSameFlightOverride" in payload:
+            cell["exclusiveSameFlightOverride"] = payload["exclusiveSameFlightOverride"]
         if "workModeOverride" in payload:
             cell["workModeOverride"] = payload["workModeOverride"] or None
             if (plan['day'].get('flowPreferences') is None and not cell['workModeOverride']
@@ -903,38 +929,68 @@ class Workbench:
 
     def _move_assignment(self, plan, payload):
         scenario, _ = plan_scenario(plan)
-        if not scenario:
-            raise WorkspaceError("请先补齐当天资料")
-        tasks = {t.id: t for t in scenario.tasks}
+        tasks = {t.id: t for t in scenario.tasks} if scenario else {}
         member = payload["memberId"]
-        source, target = payload.get("sourceTaskId"), payload["targetTaskId"]
+        source, target = payload.get("sourceTaskId"), payload.get("targetTaskId")
+        source_cell, target_cell = payload.get('sourceCellId'), payload.get('targetCellId')
         target_member = payload.get("targetMemberId")
-        if target not in tasks or (source and source not in tasks) or member not in {m.id for m in scenario.members}:
+        # Cells without generated tasks still accept manual names. They retain
+        # the existing pending-draft semantics until their facts are confirmed.
+        matrix = task_matrix(scenario, ()) if scenario else {}
+        names = {value: name for name, value in plan['memberIds'].items()}
+        if (not (target or target_cell) or (target and target not in tasks)
+                or (source and source not in tasks) or member not in names
+                or (target_member and target_member not in names)
+                or (source and source_cell) or (target and target_cell)):
             raise WorkspaceError("拖动引用了失效任务或人员")
-        if source == target:
+        pending = {}
+        for cell_id in (source_cell, target_cell):
+            if not cell_id:
+                continue
+            cell = self._cell(plan, cell_id)
+            if matrix.get(cell['roleName'], {}).get(cell['flightNo']):
+                raise WorkspaceError('该格已有实际任务，请重新拖动')
+            pending[cell_id] = typed_names(plan, plan.get('cellDrafts', {}).get(cell_id, ''))
+        if (source and source == target) or (source_cell and source_cell == target_cell):
             raise WorkspaceError("来源与目标为同一实际任务，无需移动")
         values = deepcopy(plan["draft"])
         src = {"taskId": source, "memberId": member}
         dst = {"taskId": target, "memberId": target_member}
-        if source and src not in values:
+        if (source and src not in values) or (source_cell and names[member] not in pending[source_cell]):
             raise WorkspaceError("来源人员已改变，请重新拖动")
-        if target_member and dst not in values:
+        if target_member and ((target and dst not in values) or (target_cell and names[target_member] not in pending[target_cell])):
             raise WorkspaceError("目标人员已改变，请重新拖动")
-        if {"taskId": target, "memberId": member} in values:
+        if (target and {"taskId": target, "memberId": member} in values) or (target_cell and names[member] in pending[target_cell]):
             raise WorkspaceError("目标任务已安排此人")
-        if not target_member and sum(a["taskId"] == target for a in values) >= tasks[target].required_count:
+        if target and not target_member and sum(a["taskId"] == target for a in values) >= tasks[target].required_count:
             raise WorkspaceError("目标岗位已满，请拖到具体姓名上交换或在详情选择替换人员")
+        if target_member and ((source and {'taskId': source, 'memberId': target_member} in values)
+                              or (source_cell and names[target_member] in pending[source_cell])):
+            raise WorkspaceError("交换后会让同一人重复进入来源任务")
         if source:
             values.remove(src)
+        elif source_cell:
+            pending[source_cell].remove(names[member])
         if target_member:
-            values.remove(dst)
+            if target:
+                values.remove(dst)
+            else:
+                pending[target_cell][pending[target_cell].index(names[target_member])] = names[member]
             if source:
-                if {"taskId": source, "memberId": target_member} in values:
-                    raise WorkspaceError("交换后会让同一人重复进入来源任务")
                 values.append({"taskId": source, "memberId": target_member})
-        values.append({"taskId": target, "memberId": member})
+            elif source_cell:
+                # Keep partner order while exchanging just the selected name.
+                original = typed_names(plan, plan['cellDrafts'][source_cell])
+                pending[source_cell].insert(original.index(names[member]), names[target_member])
+        if target:
+            values.append({"taskId": target, "memberId": member})
+        elif not target_member:
+            pending[target_cell].append(names[member])
         plan["draft"] = values
-        plan["message"] = "拖动已保存为草稿；有冲突时须修正后才能采用"
+        for cell_id, cell_names in pending.items():
+            self._edit_cell(plan, {'cellId': cell_id, 'text': ' / '.join(cell_names)})
+        plan["message"] = ("拖动已保存；临时岗位姓名已保留，人数和工作方式待确认" if pending
+                           else "拖动已保存为草稿；有冲突时须修正后才能采用")
 
 
     @staticmethod

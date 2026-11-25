@@ -6,7 +6,7 @@ from .cp_backend import cp_model
 
 from .domain import Assignment, Scenario, SolveResult, has_role_qualification, task_pair_conflict, validate_handoff_preferences, preferred_handoff, handoff_rank, task_flight_ids, flight_balance_members
 from .validator import validate_scenario
-from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups, coverage_order_weights, coverage_shortage_windows, coverage_optimization_groups, staffing_continuation_links
+from .domain import member_available, scarce_role_groups, half_rest_period_violation, coverage_task_groups, coverage_order_weights, coverage_shortage_windows, coverage_optimization_groups
 
 
 def _eligible(scenario: Scenario, member, task) -> bool:
@@ -352,7 +352,6 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         return tuple((sum(missing_by_task[t.id] for t in group),
                       sum(t.required_count for t in group)) for group in groups)
     withheld_costs = []
-    staffing_links = staffing_continuation_links(scenario)
     for index, (ordinary, leave_empty) in enumerate(coverage_shortage_windows(scenario) if allow_partial else ()):
         if not ordinary or not leave_empty:
             continue
@@ -361,40 +360,13 @@ def solve(scenario: Scenario, time_limit_seconds: float = 5, *, allow_partial=Fa
         shortage = model.new_bool_var(f'coverage_shortage_{index}')
         model.add(missing <= bound * shortage)
         model.add(missing >= shortage)
-        ordinary_ids = {task.id for task in ordinary}
-        low_ids = {task.id for task in leave_empty}
-        part_time = {(member, task): model.new_bool_var(f'part_time_{index}_{member}_{task}')
-                     for member, task in variables if task in low_ids}
-        claims = {}
-        for source, target in staffing_links:
-            if target.id not in low_ids:
-                continue
-            for member in scenario.members:
-                target_assignment = variables.get((member.id, target.id))
-                if target_assignment is None or (member.id, source.id) not in route_order:
-                    continue
-                anchor = (variables.get((member.id, source.id)) if source.id in ordinary_ids
-                          else part_time.get((member.id, source.id)))
-                if anchor is None:
-                    continue
-                claim = model.new_bool_var(f'part_time_edge_{index}_{member.id}_{source.id}_{target.id}')
-                model.add(claim <= target_assignment)
-                model.add(claim <= anchor)
-                model.add(route_order[member.id, source.id] + 1 <= route_order[member.id, target.id]
-                          + (len(scenario.tasks) + 1) * (1 - claim))
-                claims.setdefault((member.id, target.id), []).append(claim)
-        # Existing route order prevents low-only cycles from manufacturing
-        # an anchor. Staffing identity does not inherit the one-edge reward
-        # limit: compatible configured targets may all share the same person.
-        for key, shared in part_time.items():
-            model.add(shared <= variables[key])
-            model.add(shared <= sum(claims.get(key, ())))
+        # Withholding precedes continuation, even for the same source worker
+        # and even when removing that continuation cannot fill another gap.
         for task in leave_empty:
             staffed = task.required_count - missing_by_task[task.id]
-            separate_staff = staffed - sum(shared for (member, task_id), shared in part_time.items() if task_id == task.id)
             unwanted = model.new_int_var(0, task.required_count, f'leave_empty_staffed_{task.id}')
-            model.add(unwanted >= separate_staff - task.required_count * (1 - shortage))
-            model.add(unwanted <= separate_staff)
+            model.add(unwanted >= staffed - task.required_count * (1 - shortage))
+            model.add(unwanted <= staffed)
             model.add(unwanted <= task.required_count * shortage)
             withheld_costs.append((unwanted, task.required_count))
     withholding_cost = ((sum(cost for cost, _ in withheld_costs),

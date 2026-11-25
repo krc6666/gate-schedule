@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
+FLOW_FLIGHT_SCOPES = {
+    'same-flight':'本航班',
+    'later-overlap':'重叠时段中较晚结束的航班',
+    'earlier-overlap':'重叠时段中较早结束的航班',
+}
+CROSS_FLIGHT_SCOPES = frozenset(FLOW_FLIGHT_SCOPES) - {'same-flight'}
+FLOW_FLIGHT_SCOPE_LABELS = {**{label:scope for scope,label in FLOW_FLIGHT_SCOPES.items()},
+    '重叠且晚结束的其他航班':'later-overlap','重叠且早结束的其他航班':'earlier-overlap'}
+
 
 def validate_duty_roster(value, member_ids=None):
     """Portable monthly roster inputs. Leave/status is checked on resolved rows."""
@@ -217,6 +228,7 @@ class Task:
     timing_mode: str = "exact"
     concurrent: bool = False
     exclusive_same_flight: bool = False
+    exclusive_flight_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -303,10 +315,13 @@ class ImportedCell:
     required_count_override: int | None = None
     fixed_member_names: tuple[str, ...] = ()
     work_mode_override: str | None = None
+    exclusive_same_flight_override: bool | None = None
 
     def __post_init__(self):
         if self.work_mode_override is not None and self.work_mode_override not in WORK_MODES:
             raise ValueError(f"{self.flight_no} / {self.role_name} 的工作方式例外无效")
+        if self.exclusive_same_flight_override is not None and type(self.exclusive_same_flight_override) is not bool:
+            raise ValueError(f"{self.flight_no} / {self.role_name} 的专人专岗设置无效")
 
 
 @dataclass(frozen=True)
@@ -422,6 +437,18 @@ def imported_work_mode(day: ImportedDay, cell: ImportedCell) -> str:
     return cell.work_mode_override or next((r.work_mode for r in day.role_configs if r.role_name == cell.role_name), "timed")
 
 
+def imported_exclusive_same_flight(day: ImportedDay, cell: ImportedCell) -> bool:
+    if cell.exclusive_same_flight_override is not None:
+        return cell.exclusive_same_flight_override
+    return next((role.exclusive_same_flight for role in day.role_configs if role.role_name == cell.role_name), False)
+
+
+def imported_concurrent(day: ImportedDay, cell: ImportedCell) -> bool:
+    if cell.exclusive_same_flight_override is not None:
+        return not cell.exclusive_same_flight_override
+    return next((role.concurrent for role in day.role_configs if role.role_name == cell.role_name), False)
+
+
 def imported_task_timing(day: ImportedDay, cell: ImportedCell):
     """Resolve explicit actual times, relative rules, then the phase envelope."""
     mode = imported_work_mode(day, cell)
@@ -498,6 +525,10 @@ class Assignment:
 def task_flight_ids(task: Task) -> tuple[str, ...]:
     """Actual flight identities served by one task; shared coverage takes precedence."""
     return tuple(dict.fromkeys(task.covered_flight_ids)) if task.covered_flight_ids else ((task.flight_id,) if task.flight_id is not None else ())
+
+
+def task_dedicated_flight_ids(task: Task) -> tuple[str, ...]:
+    return (task.exclusive_flight_ids or task_flight_ids(task)) if task.exclusive_same_flight else ()
 
 
 COVERAGE_PRIORITIES = {'protect': '优先保岗', 'normal': '正常安排', 'leave-empty': '缺人时优先留空'}
@@ -825,7 +856,7 @@ class ValidationIssue:
 
     @property
     def severity(self):
-        return 'warning' if self.code == 'coverage_order_unmet' else 'error'
+        return 'warning' if self.code in {'coverage_order_unmet','continuation_chain_unmet'} else 'error'
 
 
 @dataclass(frozen=True)
@@ -877,28 +908,41 @@ def validate_handoff_preferences(preferences, role_names=None, flight_numbers=No
     seen = set()
     for item in preferences:
         required = {"flightNo", "arrivalRole", "boardingRoles", "enabled"}
-        if not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"ordered", "targetFlightScopes"}:
+        if not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"ordered", "targetFlightScopes", "targetFlightScopeList", "mode", "id"}:
             raise ValueError("岗位接续偏好字段不完整或未知")
+        if not isinstance(item.get('mode','priority'),str) or item.get('mode','priority') not in {'priority','chain'}:
+            raise ValueError('请选择候选目标优先或同人多岗接续')
+        if 'id' in item and (item.get('mode')!='chain' or not isinstance(item['id'],str) or not item['id'].strip() or item['id']!=item['id'].strip()):
+            raise ValueError('接续组合编号须为非空文本且仅用于同人多岗接续')
         if any(not isinstance(item[k], str) or not item[k].strip() or item[k] != item[k].strip() for k in ("flightNo", "arrivalRole")):
             raise ValueError("接续优先级的航班号和来源岗位不能为空或含首尾空格")
         targets = item["boardingRoles"]
-        if not isinstance(targets, list) or (not targets and item['enabled'] is not False) or any(not isinstance(r, str) or not r.strip() or r != r.strip() for r in targets) or len(targets) != len(set(targets)) or item["arrivalRole"] in targets:
-            raise ValueError("请选择不重复的目标岗位，不能与来源岗位相同")
+        if not isinstance(targets, list) or (not targets and item['enabled'] is not False) or any(not isinstance(r, str) or not r.strip() or r != r.strip() for r in targets):
+            raise ValueError("请选择有效的目标岗位")
         if type(item["enabled"]) is not bool:
             raise ValueError("接续偏好启用开关必须为布尔值")
         if "ordered" in item and type(item["ordered"]) is not bool:
             raise ValueError("按顺序优先开关必须为布尔值")
         scopes = item.get('targetFlightScopes', {})
-        if not isinstance(scopes,dict) or set(scopes)-set(targets) or any(not isinstance(v,str) or v not in {'same-flight','later-overlap'} for v in scopes.values()):
+        if not isinstance(scopes,dict) or set(scopes)-set(targets) or any(not isinstance(v,str) or v not in FLOW_FLIGHT_SCOPES for v in scopes.values()):
             raise ValueError('接续航班范围无效，须对应已选目标岗位')
+        scope_list = item.get('targetFlightScopeList')
+        if scope_list is not None and (not isinstance(scope_list,list) or len(scope_list)!=len(targets) or any(not isinstance(v,str) or v not in FLOW_FLIGHT_SCOPES for v in scope_list)):
+            raise ValueError('接续航班范围列表须与目标岗位逐项对应')
+        if len(targets)!=len(set(targets)) and (scope_list is None or item.get('mode','priority')=='chain'):
+            raise ValueError('重复目标岗位须分别指定接续航班范围')
+        scopes_for_role = lambda role: [scope_list[i] if scope_list is not None else scopes.get(target, 'standard')
+                                        for i,target in enumerate(targets) if target==role]
+        if item['arrivalRole'] in targets and any(scope not in CROSS_FLIGHT_SCOPES for scope in scopes_for_role(item['arrivalRole'])):
+            raise ValueError('同名岗位接续须明确选择重叠时段中较早或较晚结束的航班，不能接本航班自身')
         if role_names is not None and unknown_flow_rule_roles({item["arrivalRole"], *targets}, role_names):
             raise ValueError("接续偏好引用了不存在的岗位，请核对配置中的岗位名称")
         validate_flight_scope(item['flightNo'])
         if flight_numbers is not None and '*' not in item["flightNo"] and item["flightNo"] not in flight_numbers:
             raise ValueError("接续偏好引用了不存在的航班，请核对航班模板")
-        key = (item["flightNo"], item["arrivalRole"])
+        key = (item["flightNo"], item.get('mode','priority'),item.get('id',item['arrivalRole']))
         if key in seen:
-            raise ValueError("同航班同接机岗位的偏好不能重复")
+            raise ValueError("同一范围的组合编号不能重复；候选目标规则的来源不能重复")
         seen.add(key)
     return preferences
 
@@ -906,6 +950,51 @@ def validate_handoff_preferences(preferences, role_names=None, flight_numbers=No
 def applicable_handoff_preference(preferences, flight_no, arrival_role):
     """An explicit flight/source exception replaces the shared path, even off."""
     return applicable_flight_rule((p for p in preferences if p['arrivalRole'] == arrival_role), flight_no)
+
+
+def simplify_handoff_preferences(preferences):
+    """Explicitly turn retired groups into normal reusable source links.
+
+    Preview only; the caller chooses whether to save the returned rules.
+    Conflicting scopes or disabled ordinary rules must never be overwritten.
+    Archived group snapshots continue to use their original contract.
+    """
+    from copy import deepcopy
+    validate_handoff_preferences(preferences)
+    groups=[r for r in preferences if r.get('mode')=='chain']
+    for group in groups:
+        identity=group.get('id',group['arrivalRole'])
+        if group['flightNo']!='*' and any(
+                r['flightNo']=='*' and r.get('id',r['arrivalRole'])==identity for r in groups):
+            raise ValueError('旧组合含覆盖通用的航班特例，请核对后分别维护普通来源规则，原设置保留')
+    result=[deepcopy(r) for r in preferences if r.get('mode')!='chain']
+    by_source={(r['flightNo'],r['arrivalRole']):r for r in result}
+    for group in preferences:
+        if group.get('mode')!='chain' or not group['enabled']:
+            continue
+        source=group['arrivalRole'];number=group['flightNo']
+        for target in group['boardingRoles']:
+            scope=group.get('targetFlightScopes',{}).get(target)
+            if scope is None:
+                raise ValueError(f'{source} → {target} 的旧范围未明确，请先核对后手工整理，原设置保留')
+            if number is None:
+                raise ValueError('旧组合跨班后的来源航班无法确定，请分别维护这些来源规则，原设置保留')
+            row=by_source.get((number,source))
+            if row is None:
+                row=dict(flightNo=number,arrivalRole=source,boardingRoles=[],enabled=True,ordered=True,targetFlightScopes={})
+                result.append(row);by_source[number,source]=row
+            elif not row['enabled']:
+                raise ValueError(f'{source} 的现有规则已停用，不能用旧组合自动启用，原设置保留')
+            if target in row['boardingRoles']:
+                if row.get('targetFlightScopes',{}).get(target)!=scope:
+                    raise ValueError(f'{source} → {target} 的范围与现有规则不同，原设置保留')
+            else:
+                row['boardingRoles'].append(target)
+                row.setdefault('targetFlightScopes',{})[target]=scope
+            source=target
+            if scope in CROSS_FLIGHT_SCOPES and number!='*':number=None
+    validate_handoff_preferences(result)
+    return result
 
 
 def preferred_handoff(preferences, flight_no, arrival_role, boarding_role):
@@ -919,6 +1008,16 @@ def handoff_rank(preferences, flight_no, arrival_role, boarding_role):
     if item and item['enabled'] and item.get('ordered', False) and boarding_role in item['boardingRoles']:
         return item['boardingRoles'].index(boarding_role)
     return 0
+
+
+def handoff_target_scopes(row, role):
+    """Return explicit scopes for every occurrence of a target role."""
+    if role not in row['boardingRoles']:
+        return ()
+    scope_list = row.get('targetFlightScopeList')
+    if scope_list is not None:
+        return tuple(scope_list[i] for i,target in enumerate(row['boardingRoles']) if target==role)
+    return (row.get('targetFlightScopes', {}).get(role, 'standard'),)
 
 
 def general_handoff_preferences(preferences):
@@ -1059,6 +1158,9 @@ def phase_handoff_options(day: ImportedDay) -> list[dict]:
 
 def task_timing_label(task: Task, scenario: Scenario | None = None) -> str:
     nature = " · 专人专岗" if task.exclusive_same_flight else " · 可兼任" if task.concurrent else ""
+    if scenario and flexible_baggage_task(scenario,task):
+        rotation=next(r for r in scenario.rotations if r.task_id==task.id)
+        return f'{task_rule_roles(scenario,task)[0]} · 灵活交接（参考 {format_minutes(rotation.segment_start)}—{format_minutes(rotation.segment_end)}）' + nature
     if task.timing_mode == "phase":
         return {"arrival": "接机环节", "boarding": "登机环节"}.get(task.service_stage, "全程保障") + nature
     turn = f'{task_rule_roles(scenario,task)[0]} · ' if scenario and task.role_id=='大件行李拦截' else ''
@@ -1070,7 +1172,19 @@ def empty_work_rules():
 
 
 def default_baggage_window():
-    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60,remainderToleranceMinutes=15,timeBasis='flight-window')
+    return dict(startBeforeMinutes=180,endBeforeMinutes=60,rotationMinutes=60,remainderToleranceMinutes=15,timeBasis='flight-window',handoffMode='flexible')
+
+
+def flexible_baggage_task(scenario, task):
+    window=(scenario.work_rules or {}).get('baggageWindow') or {}
+    return (task.role_id == '大件行李拦截' and task.task_kind == 'rotation'
+            and task.timing_mode == 'phase' and window.get('handoffMode') == 'flexible')
+
+
+def baggage_pool_window(scenario, task):
+    rotation = next((r for r in scenario.rotations if r.task_id == task.id), None)
+    turns = [r for r in scenario.rotations if rotation and r.group_id == rotation.group_id]
+    return (min(r.segment_start for r in turns), max(r.segment_end for r in turns)) if turns else (task.start,task.end)
 
 
 def unchanged_task_ids(before: Scenario | None, after: Scenario | None) -> set[str]:
@@ -1134,13 +1248,15 @@ def validate_baggage_window(value):
     if value is None:
         return None
     required = {'startBeforeMinutes','endBeforeMinutes','rotationMinutes'}
-    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'remainderToleranceMinutes','timeBasis'}
-            or any(type(n) is not int for k,n in value.items() if k != 'timeBasis')
+    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'remainderToleranceMinutes','timeBasis','handoffMode'}
+            or any(type(n) is not int for k,n in value.items() if k not in {'timeBasis','handoffMode'})
             or not 0 <= value['endBeforeMinutes'] < value['startBeforeMinutes'] <= 1440
             or not 1 <= value['rotationMinutes'] <= 1440):
         raise ValueError('大件保障规则需0至1440分钟提前量，开检提前大于截载提前，轮值1至1440分钟')
     if 'timeBasis' in value and value['timeBasis'] not in {'flight-window','departure-offsets'}:
         raise ValueError('请选择大件按航班保障窗口或按提前量计算')
+    if 'handoffMode' in value and value['handoffMode'] not in {'fixed','flexible'}:
+        raise ValueError('大件交接方式须为固定轮换或按接续灵活交接')
     if 'remainderToleranceMinutes' in value and not 0 <= value['remainderToleranceMinutes'] <= 1440:
         raise ValueError('大件尾段宽限须为0至1440分钟的整数')
     return value
@@ -1163,8 +1279,8 @@ def validate_work_rules(value, role_names=None):
         for target in row['targets']:
             if (not isinstance(target,dict) or set(target)!={'role','flightScope'}
                     or not isinstance(target['role'],str) or not target['role'].strip() or target['role']!=target['role'].strip()
-                    or target['role']==row['sourceRole'] or not isinstance(target['flightScope'],str)
-                    or target['flightScope'] not in {'same-flight','later-overlap'}):
+                    or not isinstance(target['flightScope'],str) or target['flightScope'] not in FLOW_FLIGHT_SCOPES
+                    or target['role']==row['sourceRole'] and target['flightScope']=='same-flight'):
                 raise ValueError('禁止衔接目标岗位或航班范围无效')
             key=(target['role'],target['flightScope'])
             if key in targets:
@@ -1242,7 +1358,7 @@ def forbidden_handoff_conflict(scenario, first, second):
         return None
     flights={f.id:f for f in scenario.flights}
     for source,target in ((first,second),(second,first)):
-        for identity in task_flight_ids(source):
+        for identity in flow_source_flight_ids(scenario,source):
             flight=flights.get(identity)
             if flight is None:
                 continue
@@ -1252,13 +1368,8 @@ def forbidden_handoff_conflict(scenario, first, second):
             for entry in row['targets']:
                 if entry['role'] not in task_rule_roles(scenario,target):
                     continue
-                same=entry['flightScope']=='same-flight' and identity in task_flight_ids(target)
-                later=entry['flightScope']=='later-overlap' and any(
-                    other in flights and other!=identity and flight.window_end<flights[other].window_end
-                    and flight.window_start<flights[other].window_end and flights[other].window_start<flight.window_end
-                    for other in task_flight_ids(target))
-                if same or later:
-                    scope='本航班' if same else '重叠且晚结束的其他航班'
+                if flow_flight_scope_matches(scenario,source,target,entry['flightScope'],source_flight_id=identity):
+                    scope=FLOW_FLIGHT_SCOPES[entry['flightScope']]
                     return 'forbidden_handoff',f'{flight.flight_no} 已设置禁止衔接：{source.role_id} 与{scope}的 {target.role_id} 不能由同一人承担'
     return None
 
@@ -1409,32 +1520,181 @@ def flow_flight_window(flight):
 
 def flow_preference(scenario, source):
     number = next((f.flight_no for f in scenario.flights if f.id == source.flight_id), None)
-    return flow_source_rule(scenario.flow_preferences or (), 'arrivalRole', task_rule_roles(scenario,source)[0], number)
+    return flow_source_rule(tuple(r for r in scenario.flow_preferences or () if r.get('mode')!='chain'),
+                            'arrivalRole', task_rule_roles(scenario,source)[0], number)
+
+
+def flow_chain_paths(scenario):
+    """Concrete ordered task identities for explicitly maintained multi-role groups.
+
+    Matching uses flight scopes, never guessed working minutes. This does not
+    establish legality: every pair still crosses task_pair_conflict, including
+    non-adjacent steps. Cache only immutable domain facts, not assignments.
+    """
+    return tuple((index,path) for index,_,paths in flow_chain_instances(scenario) for path in paths)
+
+
+def flow_chain_instances(scenario):
+    rows=tuple((r['flightNo'],r['arrivalRole'],tuple(r['boardingRoles']),r['enabled'],
+                tuple(sorted(r.get('targetFlightScopes',{}).items())),
+                tuple(r['targetFlightScopeList']) if 'targetFlightScopeList' in r else None,
+                r.get('mode','priority'),r.get('id'))
+               for r in scenario.flow_preferences or ())
+    if not any(r[6]=='chain' and r[3] for r in rows):
+        return ()
+    return _flow_chain_instances(scenario.flights,scenario.tasks,scenario.rotations,rows)
+
+
+@lru_cache(maxsize=64)
+def _flow_chain_instances(flights,tasks,rotations,rows):
+    preferences=tuple(dict(flightNo=f,arrivalRole=s,boardingRoles=list(t),enabled=e,
+                          targetFlightScopes=dict(scopes),**({'targetFlightScopeList':list(scope_list)} if scope_list is not None else {}),
+                          mode=mode,**({'id':identity} if identity else {}))
+                      for f,s,t,e,scopes,scope_list,mode,identity in rows)
+    scene=Scenario('',flights,(),tasks,rotations=rotations,flow_preferences=preferences)
+    groups={}
+    for row in preferences:
+        if row['mode']=='chain':groups.setdefault(row.get('id',row['arrivalRole']),[]).append(row)
+    result=[];numbers={f.id:f.flight_no for f in flights}
+    for group in groups.values():
+        for source in tasks:
+            if source.required_count<1:continue
+            row=flow_source_rule(group,'arrivalRole',task_rule_roles(scene,source)[0],numbers.get(source.flight_id))
+            if not row or not row['enabled'] or not row['boardingRoles']:
+                continue
+            index=next(i for i,r in enumerate(preferences) if r is row)
+            paths=[(source,)];prefixes=[]
+            for role in row['boardingRoles']:
+                next_paths=[]
+                for path in paths:
+                    for target in tasks:
+                        if target.required_count<1 or target in path or role not in task_rule_roles(scene,target):
+                            continue
+                        if not flow_target_scope_allows(scene,path[-1],target,row,role):
+                            continue
+                        if path[-1].timing_mode==target.timing_mode=='exact' and path[-1].end>target.start:
+                            continue
+                        next_paths.append((*path,target))
+                paths=next_paths
+                prefixes.extend(paths)
+            result.append((index,source,tuple(prefixes)))
+    return tuple(result)
 
 
 def flow_target_rank(scenario, source, target):
     row = flow_preference(scenario, source)
-    if row and row['enabled']:
+    if row and row['enabled'] and row.get('mode')!='chain':
         for index,role in enumerate(row['boardingRoles']):
             if role in task_rule_roles(scenario,target) and flow_target_scope_allows(scenario, source, target, row,role):
                 return index
+    if any(any(a.id==source.id and b.id==target.id for a,b in zip(path,path[1:]))
+           for _,path in flow_chain_paths(scenario)):
+        return 0
     return None
+
+
+def continuation_chain_notices(scenario, assignments):
+    """Explain incomplete same-person groups without making them hard rules."""
+    by_task={}
+    for a in assignments:
+        by_task.setdefault(a.task_id,set()).add(a.member_id)
+    members={m.id:m for m in scenario.members}
+    task_by_id={t.id:t for t in scenario.tasks}
+    result=[]
+    for index,source,paths in flow_chain_instances(scenario):
+        row=scenario.flow_preferences[index]
+        choices=[p for p in paths if len(p)==len(row['boardingRoles'])+1]
+        for member_id in by_task.get(source.id,()):
+            if any(all(member_id in by_task.get(t.id,()) for t in p) for p in choices):
+                continue
+            reason='本次没有匹配整组岗位及航班范围的完整任务，请核对需求与接续范围'
+            if choices:
+                path=max(choices,key=lambda p:sum(member_id in by_task.get(t.id,()) for t in p))
+                target=next(t for t in path if member_id not in by_task.get(t.id,()))
+                member=members.get(member_id)
+                if member and not has_role_qualification(member,target.role_id):
+                    reason=f'{target.role_id} 缺少资格'
+                elif target.locked_member_ids and member_id not in target.locked_member_ids:
+                    reason=f'{target.role_id} 已固定其他人员'
+                else:
+                    conflicts=[task_pair_conflict(scenario,task_by_id[a.task_id],target)
+                               for a in assignments if a.member_id==member_id and a.task_id in task_by_id]
+                    conflict=next((c for c in conflicts if c),None)
+                    reason=conflict[1] if conflict else f'{target.role_id} 未排为同一人；可能受保岗、优先留空或其他安排影响'
+            result.append(ValidationIssue('continuation_chain_unmet',
+                f'同人多岗接续未接齐：{" → ".join([row["arrivalRole"],*row["boardingRoles"]])}；{reason}。仅作提醒，可保留合法部分或人工安排。',
+                source.id,member_id))
+    return result
+
+
+def flow_source_flight_ids(scenario, source):
+    """A baggage turn selects destinations for its whole shared rotation pool.
+
+    This is a rule scope, not an expansion of the turn's actual occupied block
+    or covered-flight identities used by separation and conflict checks.
+    """
+    if source.role_id != '大件行李拦截':
+        return task_flight_ids(source)
+    rotation = next((r for r in scenario.rotations if r.task_id == source.id), None)
+    if rotation is None:
+        return task_flight_ids(source)
+    task_ids = {r.task_id for r in scenario.rotations if r.group_id == rotation.group_id}
+    return tuple(dict.fromkeys(identity for task in scenario.tasks if task.id in task_ids
+                               for identity in task_flight_ids(task)))
+
+
+def flow_flight_scope_matches(scenario, source, target, scope, *, source_flight_id=None):
+    """Match saved directional scopes using flight windows, not task duration.
+
+    Prohibitions may select one covered source flight before matching. Actual
+    occupied blocks and qualifications are checked independently by callers.
+    """
+    source_ids=(source_flight_id,) if source_flight_id is not None else flow_source_flight_ids(scenario,source)
+    target_ids=task_flight_ids(target)
+    if scope=='same-flight':
+        return bool(set(source_ids)&set(target_ids))
+    if scope not in CROSS_FLIGHT_SCOPES:
+        return False
+    flights={f.id:f for f in scenario.flights}
+    for identity in source_ids:
+        for other in target_ids:
+            if identity==other or identity not in flights or other not in flights:
+                continue
+            first,second=flights[identity],flights[other]
+            if first.window_start>=second.window_end or second.window_start>=first.window_end:
+                continue
+            if (second.window_end<first.window_end if scope=='earlier-overlap' else second.window_end>first.window_end):
+                return True
+    return False
 
 
 def flow_target_scope_allows(scenario, source, target, row, role=None):
     """Explicit target scope filters paths; missing scope retains old behavior."""
-    scope = row.get('targetFlightScopes', {}).get(role or target.role_id, 'standard')
+    target_role = role or target.role_id
+    scopes = handoff_target_scopes(row, target_role)
+    if not scopes:
+        return False
     shared = set(task_flight_ids(source)) & set(task_flight_ids(target))
-    if scope == 'same-flight':
-        return bool(shared)
-    if scope == 'later-overlap':
-        return not shared and _later_flight_target(scenario,source,target)
-    flights = {f.id:f for f in scenario.flights}
-    return bool(shared) or not any(flights[a].window_start < flights[b].window_end and flights[b].window_start < flights[a].window_end
-        for a in task_flight_ids(source) for b in task_flight_ids(target) if a in flights and b in flights)
+    for scope in scopes:
+        if scope=='same-flight' and shared:
+            return True
+        if (scope in CROSS_FLIGHT_SCOPES and source.role_id == '大件行李拦截'
+                and len(flow_source_flight_ids(scenario,source)) > 1
+                and flow_flight_scope_matches(scenario,source,target,scope)):
+            return True
+        if scope=='later-overlap' and not shared and _later_flight_target(scenario,source,target):
+            return True  # Preserve the original task-path contract for old snapshots.
+        if scope=='earlier-overlap' and not shared and flow_flight_scope_matches(scenario,source,target,scope):
+            return True
+        if scope=='standard':
+            flights = {f.id:f for f in scenario.flights}
+            if bool(shared) or not any(flights[a].window_start < flights[b].window_end and flights[b].window_start < flights[a].window_end
+                    for a in task_flight_ids(source) for b in task_flight_ids(target) if a in flights and b in flights):
+                return True
+    return False
 
 
-def flow_later_overlap_permitted(scenario, source, target):
+def flow_overlap_permitted(scenario, source, target):
     """Only an explicit direct ordinary-process route may bridge overlap.
 
     Real rotation/support blocks and shared pools never
@@ -1446,9 +1706,21 @@ def flow_later_overlap_permitted(scenario, source, target):
             or source.timing_mode != 'phase' or target.timing_mode != 'phase'):
         return False
     row = flow_preference(scenario,source)
-    return bool(row and row['enabled'] and target.role_id in row['boardingRoles']
-        and row.get('targetFlightScopes',{}).get(target.role_id) == 'later-overlap'
-        and _later_flight_target(scenario,source,target))
+    if (row and row['enabled'] and target.role_id in row['boardingRoles']
+        and any(scope in CROSS_FLIGHT_SCOPES for scope in handoff_target_scopes(row,target.role_id))
+        and flow_target_scope_allows(scenario,source,target,row)):
+        return True
+    for index,path in flow_chain_paths(scenario):
+        if not any(a.id==source.id and b.id==target.id for a,b in zip(path,path[1:])):
+            continue
+        if _later_flight_target(scenario,source,target):
+            return True  # The existing archived-group later-flight contract.
+        row=scenario.flow_preferences[index]
+        if any('earlier-overlap' in handoff_target_scopes(row,role)
+               and flow_target_scope_allows(scenario,source,target,row,role)
+               for role in task_rule_roles(scenario,target)):
+            return True
+    return False
 
 
 def flow_roles_connected(scenario, source, target):
@@ -1458,19 +1730,34 @@ def flow_roles_connected(scenario, source, target):
     because both appear as alternatives after A. Cycles terminate here; the
     solver separately forbids choosing cyclic route edges for one person.
     """
-    number = next((f.flight_no for f in scenario.flights if f.id == source.flight_id), None)
-    pending, visited = [task_rule_roles(scenario,source)[0]], set()
+    if any(any(t.id==source.id for t in path[:i]) for _,path in flow_chain_paths(scenario)
+           for i,t in enumerate(path) if t.id==target.id):
+        return True
+    pending, visited = [source], set()
     while pending:
-        role = pending.pop()
-        if role in visited:
+        current = pending.pop()
+        if current.id in visited:
             continue
-        visited.add(role)
-        row = flow_source_rule(scenario.flow_preferences or (), 'arrivalRole', role, number)
-        if row and row['enabled']:
-            targets = [r for r in row['boardingRoles'] if flow_target_scope_allows(scenario,source,target,row,r)]
-            if set(task_rule_roles(scenario,target)) & set(targets):
-                return True
-            pending.extend(targets)
+        visited.add(current.id)
+        row = flow_preference(scenario,current)
+        if row and row['enabled'] and row.get('mode')!='chain':
+            for candidate in scenario.tasks:
+                if candidate.id in visited or candidate.required_count < 1:
+                    continue
+                for role in row['boardingRoles']:
+                    if role not in task_rule_roles(scenario,candidate) or not flow_target_scope_allows(scenario,current,candidate,row,role):
+                        continue
+                    if not flow_continuation_direction(scenario,current,candidate):
+                        continue
+                    if (current.role_id == '大件行李拦截' and current.timing_mode == 'exact'
+                            and candidate.timing_mode == 'phase' and current.end >= candidate.end
+                            and any(scope in CROSS_FLIGHT_SCOPES for scope in handoff_target_scopes(row,role))
+                            and len(flow_source_flight_ids(scenario,current)) > 1):
+                        continue
+                    if candidate.id == target.id:
+                        return True
+                    pending.append(candidate)
+                    break
     return False
 
 
@@ -1491,7 +1778,7 @@ def task_handoff_possible(scenario, source, target):
     if target.timing_mode != 'phase' or not target.flight_id or source.id == target.id or source.role_id == target.role_id:
         return False
     shared = set(task_flight_ids(source)) & set(task_flight_ids(target))
-    if shared and (source.exclusive_same_flight or target.exclusive_same_flight):
+    if any(shared.intersection(task_dedicated_flight_ids(task)) for task in (source, target)):
         return False
     if source.role_id == '大件行李拦截':
         rule = work_pair_rule(scenario,source,target,'after-baggage')
@@ -1569,9 +1856,11 @@ def task_pair_conflict(scenario: Scenario, first: Task, second: Task) -> tuple[s
     group_conflict = separation_group_conflict(scenario, first, second)
     if group_conflict:
         return group_conflict
-    if shared_flights and first.role_id != second.role_id and (first.exclusive_same_flight or second.exclusive_same_flight):
-        dedicated = first if first.exclusive_same_flight else second
-        numbers = "、".join(f.flight_no for f in scenario.flights if f.id in shared_flights)
+    dedicated = next((task for task in (first, second)
+                      if shared_flights.intersection(task_dedicated_flight_ids(task))), None)
+    if dedicated and first.role_id != second.role_id:
+        numbers = "、".join(f.flight_no for f in scenario.flights
+                           if f.id in shared_flights.intersection(task_dedicated_flight_ids(dedicated)))
         return "exclusive_same_flight", f"{numbers} 的 {dedicated.role_id} 已开启同航班专岗专人，不能由同一人兼做该航班其他岗位"
     rule = work_pair_rule(scenario,first,second,'same-flight') if shared_flights else None
     if rule and rule['mode'] == 'separate':
@@ -1608,9 +1897,11 @@ def _flow_task_pair_conflict(scenario, first, second, shared_flights, rule):
             if baggage_rule and baggage_rule['mode'] == 'separate':
                 return 'role_separation', '大件轮换与后续岗位已设置必须分人'
     if not shared_flights and first.flight_id and second.flight_id:
-        if flow_later_overlap_permitted(scenario,first,second) or flow_later_overlap_permitted(scenario,second,first):
+        if flow_overlap_permitted(scenario,first,second) or flow_overlap_permitted(scenario,second,first):
             if scenario.minimum_transition_minutes:
-                return 'phase_transition_unknown', '已允许支援晚结束航班，但没有实际交接时刻可核对走动预留，请现场核对'
+                label='重叠航班' if any('earlier-overlap' in (row.get('targetFlightScopeList') or row.get('targetFlightScopes',{}).values())
+                    for row in scenario.flow_preferences or ()) else '晚结束航班'
+                return 'phase_transition_unknown', f'已允许支援{label}，但没有实际交接时刻可核对走动预留，请现场核对'
             return None
         for a in task_flight_ids(first):
             for b in task_flight_ids(second):
@@ -1690,7 +1981,7 @@ def preferred_mobile_handoffs(scenario):
         if source.required_count < 1:
             continue
         for target in scenario.tasks:
-            if source.id == target.id or source.role_id == target.role_id:
+            if source.id == target.id:
                 continue
             if not source.flight_id or not target.flight_id or source.task_kind not in {'mobile', 'rotation'} or target.task_kind not in {'mobile', 'rotation'}:
                 continue
@@ -1699,6 +1990,8 @@ def preferred_mobile_handoffs(scenario):
                     continue
                 if flow_target_rank(scenario, source, target) is not None and task_pair_conflict(scenario, source, target) is None:
                     result.append((source, target))
+                continue
+            if source.role_id == target.role_id:
                 continue
             if source.timing_mode == target.timing_mode == 'exact':
                 if source.end > target.start:
@@ -1711,22 +2004,6 @@ def preferred_mobile_handoffs(scenario):
     return tuple(result)
 
 
-def staffing_continuation_links(scenario):
-    """Configured legal links inside one staffing window may share its staff.
-
-    The solver anchors a part-time route at an occupied non-leave-empty task.
-    Earlier independent work and legacy implicit preferences do not supply
-    staff to the current window. This is a coverage cost, never a permission.
-    """
-    if scenario.flow_preferences is None:
-        return ()
-    windows = {task.id: index
-               for index, (ordinary, leave_empty) in enumerate(coverage_shortage_windows(scenario))
-               if ordinary and leave_empty for task in ordinary + leave_empty}
-    return tuple((source, target) for source, target in preferred_mobile_handoffs(scenario)
-                 if source.id in windows and windows.get(target.id) == windows[source.id])
-
-
 def flow_continuation_direction(scenario, source, target):
     """Task direction only; permission and hard conflicts are checked separately."""
     shared = set(task_flight_ids(source)) & set(task_flight_ids(target))
@@ -1734,7 +2011,7 @@ def flow_continuation_direction(scenario, source, target):
     if not shared and any(flights[a].window_end > flights[b].window_start
             for a in task_flight_ids(source) for b in task_flight_ids(target)
             if a in flights and b in flights):
-        return flow_later_overlap_permitted(scenario,source,target)
+        return flow_overlap_permitted(scenario,source,target)
     return not (source.timing_mode == target.timing_mode == 'exact' and source.end > target.start)
 
 

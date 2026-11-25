@@ -69,7 +69,7 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
   assert.equal((await state("A")).people.length,0);
   const command=async(group,action,payload={},planId)=>{
     const current=await state(group);
-    const result=await evaluate("fetch('/api/groups/"+group+"/workspace/command',{method:'POST',headers:{'Content-Type':'application/json','X-Gate-Rule-Schema':'flight-role-v1'},body:JSON.stringify("+JSON.stringify({expectedRevision:current.revision,action,payload,planId})+")}).then(async r=>({status:r.status,value:await r.json()}))");
+    const result=await evaluate("fetch('/api/groups/"+group+"/workspace/command',{method:'POST',headers:{'Content-Type':'application/json','X-Gate-Rule-Schema':'flight-role-v2'},body:JSON.stringify("+JSON.stringify({expectedRevision:current.revision,action,payload,planId})+")}).then(async r=>({status:r.status,value:await r.json()}))");
     assert.equal(result.status,200,JSON.stringify(result.value));
     return result.value;
   };
@@ -364,7 +364,8 @@ print(json.dumps(configuration([preference(targets=['登机核验']),preference(
     const source=jobs.find(t=>t.roleId==='接机1'&&t.flightId==='A');
     const target=jobs.find(t=>t.roleId==='登机查验'&&t.flightId==='A');
     const owner=plan.draft.find(a=>a.taskId===source.id)?.memberId;
-    assert.ok(owner&&plan.draft.some(a=>a.taskId===target.id&&a.memberId===owner),'缺人时合法接续兼职仍保留');
+    assert.ok(owner,'接机来源人员仍保留');
+    assert.ok(!plan.draft.some(a=>a.taskId===target.id),'缺人时优先留空高于合法同人兼职');
     assert.ok(plan.issues.some(i=>i.code==='coverage_shortfall'),'所有实际缺口仍显示');
   };
   let withheld=await solveCoverage();assertWithheld(withheld);

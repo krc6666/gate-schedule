@@ -5,6 +5,7 @@ from collections import defaultdict
 from .domain import Assignment, Scenario, ValidationIssue, has_role_qualification, task_pair_conflict, member_flight_participation, task_flight_ids, flight_balance_members
 from .domain import MEMBER_STATUSES, member_available, HALF_REST_MODES, half_rest_period_violation, validate_priority_flight_roles, validate_coverage_priorities
 from .domain import validate_coverage_role_order, coverage_order_weights, coverage_signature, task_coverage_priority
+from .domain import flexible_baggage_task, baggage_pool_window
 
 
 def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
@@ -70,7 +71,8 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
         if task.timing_mode not in ("exact", "phase") or type(task.concurrent) is not bool or type(task.exclusive_same_flight) is not bool or (task.timing_mode == "phase" and (task.flight_id is None or scenario.release_policy != "task")):
             issues.append(ValidationIssue("invalid_task_mode", f"任务 {task.id} 的环节或兼任性质无效", task.id))
         envelope = flights.get(task.flight_id)
-        if task.timing_mode == "phase" and envelope and (task.start, task.end) != (envelope.window_start, envelope.window_end):
+        expected_envelope = baggage_pool_window(scenario,task) if flexible_baggage_task(scenario,task) else ((envelope.window_start,envelope.window_end) if envelope else None)
+        if task.timing_mode == "phase" and expected_envelope and (task.start, task.end) != expected_envelope:
             issues.append(ValidationIssue("invalid_phase_envelope", f"任务 {task.id} 的环节范围必须保留完整航班窗口，不能伪造实际起止", task.id))
         if task.end <= task.start:
             issues.append(ValidationIssue("invalid_time", f"任务 {task.id} 的结束时间必须晚于开始时间", task.id))
@@ -84,6 +86,10 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
             issues.append(ValidationIssue("unknown_flight", f"任务 {task.id} 引用了未知航班 {task.flight_id}", task.id))
         if any(identity not in known_flights for identity in task.covered_flight_ids) or len(task.covered_flight_ids) != len(set(task.covered_flight_ids)):
             issues.append(ValidationIssue("invalid_covered_flights", f"任务 {task.id} 的共享覆盖航班无效", task.id))
+        if (len(task.exclusive_flight_ids) != len(set(task.exclusive_flight_ids))
+                or set(task.exclusive_flight_ids) - set(task_flight_ids(task))
+                or (task.exclusive_flight_ids and not task.exclusive_same_flight)):
+            issues.append(ValidationIssue("invalid_exclusive_flights", f"任务 {task.id} 的专人专岗航班范围无效", task.id))
         for member_id in task.locked_member_ids:
             if member_id not in known_members:
                 issues.append(ValidationIssue("unknown_locked_member", f"任务 {task.id} 锁定了未知人员 {member_id}", task.id, member_id))
@@ -99,11 +105,26 @@ def validate_scenario(scenario: Scenario) -> list[ValidationIssue]:
         if task is None or task.task_kind != "rotation":
             issues.append(ValidationIssue("invalid_rotation_task", f"轮换引用了非轮换任务 {rotation.task_id}", rotation.task_id))
             continue
-        if (rotation.segment_start, rotation.segment_end, rotation.required_count) != (task.start, task.end, task.required_count):
+        consistent = ((task.start <= rotation.segment_start < rotation.segment_end <= task.end
+                       and rotation.required_count == task.required_count) if flexible_baggage_task(scenario,task)
+                      else (rotation.segment_start,rotation.segment_end,rotation.required_count) == (task.start,task.end,task.required_count))
+        if not consistent:
             issues.append(ValidationIssue("rotation_mismatch", f"轮换 {rotation.task_id} 与任务时段或人数不一致", rotation.task_id))
         for member_id in rotation.candidate_member_ids:
             if member_id not in known_members:
                 issues.append(ValidationIssue("unknown_rotation_member", f"轮换 {rotation.task_id} 引用了未知人员 {member_id}", rotation.task_id, member_id))
+    flexible_groups = defaultdict(list)
+    for rotation in scenario.rotations:
+        task = next((t for t in scenario.tasks if t.id == rotation.task_id), None)
+        if task and flexible_baggage_task(scenario,task):
+            flexible_groups[rotation.group_id].append((rotation,task))
+    for turns in flexible_groups.values():
+        turns.sort(key=lambda pair:pair[0].segment_start)
+        first,last=turns[0],turns[-1]
+        if (first[0].segment_start != first[1].start or last[0].segment_end != last[1].end
+                or any(left[0].segment_end != right[0].segment_start for left,right in zip(turns,turns[1:]))
+                or any((t.start,t.end,set(task_flight_ids(t))) != (first[1].start,first[1].end,set(task_flight_ids(first[1]))) for _,t in turns)):
+            issues.append(ValidationIssue('invalid_baggage_pool','灵活大件池的参考轮次须完整连续覆盖同一共享保障范围',first[1].id))
     for requirement in scenario.external_support_requirements:
         if requirement.task_id not in known_tasks:
             issues.append(ValidationIssue("unknown_external_task", f"外援缺口引用了未知任务 {requirement.task_id}", requirement.task_id))
@@ -196,7 +217,11 @@ def validate_schedule(scenario: Scenario, assignments: tuple[Assignment, ...]) -
     """
     assignments = tuple(assignments)
     issues = _validate_schedule_rules(scenario, assignments)
-    if not scenario.coverage_role_order or any(i.code != 'coverage_shortfall' for i in issues):
+    if any(i.code != 'coverage_shortfall' for i in issues):
+        return issues
+    from .domain import continuation_chain_notices
+    issues.extend(continuation_chain_notices(scenario,assignments))
+    if not scenario.coverage_role_order:
         return issues
     weights = coverage_order_weights(scenario)
     tasks = {t.id: t for t in scenario.tasks}

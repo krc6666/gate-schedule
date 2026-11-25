@@ -42,7 +42,7 @@ class CompleteExcelTests(unittest.TestCase):
         self.assertIn("岗位资质", book.sheetnames)
         self.assertNotIn("人员配置", book.sheetnames)
         self.assertNotIn("保障明细", book.sheetnames)
-        retired={'相对岗位时间','当天相对时间例外','岗位时间','航班衔接','支援释放规则','岗位方式例外'}
+        retired={'岗位性质','当天岗位例外','相对岗位时间','当天相对时间例外','岗位时间','航班衔接','支援释放规则','岗位方式例外'}
         self.assertTrue(all(sheet.sheet_state == ('hidden' if sheet.title in retired else 'visible') for sheet in book))
         self.assertEqual(15, book["岗位资质"].max_column - 1)
         imported = import_complete_configuration(self.content)

@@ -1,19 +1,34 @@
 import { html, type State, type FlightTemplate } from "./workbench-model";
-import { handoffPreferences, bindHandoffPreferences } from "./handoff-preferences";
 
-export function templatePositions(state: State, mode: (role: State["configuration"]["roleConfigs"][number]) => string): string {
+export function templatePositions(state: State): string {
   return state.flightLibrary.map(f => {
     const names = f.roleNames ?? state.configuration.roleConfigs.map(r => r.roleName);
     return `<details class="position-rule-group" id="template-${html(f.flightNo)}"><summary><strong>${html(f.flightNo)}</strong><span>${html(f.windowStart)}—${html(f.windowEnd)} · ${names.length} 个岗位</span><span class="chevron">⌄</span></summary><div class="template-actions"><select data-add-template-source="${html(f.flightNo)}" aria-label="${html(f.flightNo)} 新增岗位分类"><option value="">选择岗位分类（可选）</option>${state.configuration.roleConfigs.map(r=>`<option value="${html(r.roleName)}">${html(r.roleName)}</option>`).join("")}</select><input data-add-template-name="${html(f.flightNo)}" list="template-role-catalog" placeholder="输入岗位名称；不填则自动命名" aria-label="${html(f.flightNo)} 新增岗位名称" /><button data-add-template-role="${html(f.flightNo)}" class="btn btn-sm btn-outline-primary">＋ 增加岗位</button><button data-copy-template="${html(f.flightNo)}" class="btn btn-sm btn-outline-secondary">复制岗位到其他航班</button></div><p class="section-note group-note">选择分类或输入名称即可增加一行；同名自动编号。分类沿用人数、性质和资质，新增后可调整。</p><p class="section-note group-note" data-template-add-feedback="${html(f.flightNo)}" role="status" aria-live="polite"></p><div class="table-responsive"><table class="data-table position-rule-table"><thead><tr><th>岗位</th><th>人数</th><th>性质 / 工作环节</th><th>资质人员</th><th>操作</th></tr></thead><tbody>${names.map(name => state.configuration.roleConfigs.find(r => r.roleName === name)!).map(role => {
       const override = f.roles?.find(r => r.roleName === role.roleName);
       const people = state.people.filter(p => p.eligibleRoleNames.includes(role.roleName));
-      return `<tr><td class="role-name">${html(role.roleName)}</td><td><input class="number-input" type="number" min="0" data-template-demand="${html(f.flightNo)}" data-template-role="${html(role.roleName)}" value="${override?.requiredCount ?? ""}" placeholder="${role.requiredCount ?? "待配置"}" aria-label="${html(f.flightNo)} ${html(role.roleName)} 人数" /></td><td>${mode(role)}${override?.workModeOverride ? `<small>本航班例外：${html(state.workModes[override.workModeOverride])}</small>` : ""}</td><td><button class="qualified-button" data-qualification="${html(role.roleName)}" data-scope="base"><span>${html(people.map(p => p.name).join("、") || "选择资质人员")}</span><small>${people.length} 人 ⌄</small></button></td><td><button class="btn btn-sm btn-outline-danger" data-remove-template-role="${html(role.roleName)}" data-template-number="${html(f.flightNo)}">移除</button></td></tr>`;
+      const dedicated = `<label><input type="checkbox" data-template-exclusive="${html(f.flightNo)}" data-template-role="${html(role.roleName)}" ${override?.exclusiveSameFlight ? "checked" : ""} aria-label="${html(f.flightNo)} ${html(role.roleName)} 专人专岗" />专人专岗</label>`;
+      const currentMode = override?.workModeOverride ?? state.newRoleDefaults[role.roleName]?.workMode ?? role.workMode ?? "continuous";
+      const modes = role.roleName === "大件行李拦截" ? "共享覆盖 / 可轮换" : `<select data-template-mode="${html(f.flightNo)}" data-template-role="${html(role.roleName)}" aria-label="${html(f.flightNo)} ${html(role.roleName)} 工作环节">${Object.entries(state.workModes).filter(([key]) => key !== "timed").map(([key, label]) => `<option value="${key}" ${currentMode === key ? "selected" : ""}>${html(label)}</option>`).join("")}</select>`;
+      return `<tr><td class="role-name">${html(role.roleName)}</td><td><input class="number-input" type="number" min="0" data-template-demand="${html(f.flightNo)}" data-template-role="${html(role.roleName)}" value="${override?.requiredCount ?? ""}" placeholder="${role.requiredCount ?? "待配置"}" aria-label="${html(f.flightNo)} ${html(role.roleName)} 人数" /></td><td><div class="role-mode-controls">${modes}${dedicated}</div></td><td><button class="qualified-button" data-qualification="${html(role.roleName)}" data-scope="base"><span>${html(people.map(p => p.name).join("、") || "选择资质人员")}</span><small>${people.length} 人 ⌄</small></button></td><td><button class="btn btn-sm btn-outline-danger" data-remove-template-role="${html(role.roleName)}" data-template-number="${html(f.flightNo)}">移除</button></td></tr>`;
     }).join("") || '<tr><td colspan="5" class="empty-cell">本航班尚无岗位，可在上方添加。</td></tr>'}</tbody></table></div></details>`;
-  }).join("") + `<datalist id="template-role-catalog">${state.configuration.roleConfigs.map(r=>`<option value="${html(r.roleName)}"></option>`).join("")}</datalist><section class="workspace-section"><h3>接续兼职</h3>${handoffPreferences(state)}</section>`;
+  }).join("") + `<datalist id="template-role-catalog">${state.configuration.roleConfigs.map(r=>`<option value="${html(r.roleName)}"></option>`).join("")}</datalist>`;
 }
 
 export function bindTemplateConfig(root: HTMLElement, state: State, save: (action: string, payload: unknown) => Promise<boolean>, openCopy: (number: string) => void): void {
-  bindHandoffPreferences(root, state, save);
+  root.querySelectorAll<HTMLSelectElement>("[data-template-mode]").forEach(input => input.onchange = () => {
+    const flight = structuredClone(state.flightLibrary.find(f => f.flightNo === input.dataset.templateMode)!);
+    const role = flight.roles?.find(r => r.roleName === input.dataset.templateRole);
+    if (!role) return;
+    role.workModeOverride = input.value;
+    void save("save-flight-template", flight);
+  });
+  root.querySelectorAll<HTMLInputElement>("[data-template-exclusive]").forEach(input => input.onchange = () => {
+    const flight = structuredClone(state.flightLibrary.find(f => f.flightNo === input.dataset.templateExclusive)!);
+    const role = flight.roles?.find(r => r.roleName === input.dataset.templateRole);
+    if (!role) return;
+    role.exclusiveSameFlight = input.checked;
+    void save("save-flight-template", flight);
+  });
   root.querySelectorAll<HTMLInputElement>("[data-template-demand]").forEach(input => input.onchange = () => {
     const flight = structuredClone(state.flightLibrary.find(f => f.flightNo === input.dataset.templateDemand)!);
     flight.roles ??= [];

@@ -60,7 +60,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await action();
     try { await until(async () => (await state()).revision > revision, "后端事务提交"); }
     catch(error) { throw new Error(`${error.message}; ${await evaluate("document.querySelector('.run-error')?.textContent || document.querySelector('.dialog-error')?.textContent || document.querySelector('.app-message')?.textContent || document.body.textContent.slice(-2000)")}`); }
-    await until(() => evaluate(`!document.querySelector('.schedule-progress[data-run-status="running"]') && ![...document.querySelectorAll('#app button')].every(b=>b.disabled)`), "页面完成更新");
+    await until(() => evaluate(`!document.querySelector('.schedule-progress[data-run-status="running"]') && document.querySelector('.save-state')?.textContent !== '正在保存…'`), "页面完成更新");
   };
   const rerun = async ({keepDayCounts=false,keepDayConfig=false}={}) => { await until(()=>evaluate("!!document.querySelector('#solve-draft') && !document.querySelector('#solve-draft').disabled"),'排班入口就绪'); await click('#solve-draft'); await waitElement('#confirm-prepare'); if(keepDayCounts)await click('#prepare-keep-day-counts'); if(keepDayConfig)await click('#prepare-keep-day-config'); await mutate(() => click('#confirm-prepare')); };
   const reloadPage = async () => { await evaluate('window.__reloadMarker=true'); await call('Page.reload'); await until(()=>evaluate('!window.__reloadMarker && !!document.querySelector(".wb-matrix")'),'新页面矩阵加载'); };
@@ -178,9 +178,14 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await click('[data-qualification="登机主验"][data-scope="base"]');
   await value(`[data-qualified-person="${peopleIds[3]}"]`,true,true);
   await mutate(() => click("#save-qualification"));
-  for (const role of (await state()).configuration.roleConfigs) await mutate(() => value(`[data-default-demand="${role.roleName}"]`,role.roleName==='接机1'?'2':'0'));
-  // Ordinary roles now use the flight envelope without task-minute entry.
-  await mutate(()=>value('[data-role-mode="接机1"][data-scope="base"]','arrival'));
+  // Legacy temporary-flight fixture setup; current UI maintains each template independently.
+  for (const role of (await state()).configuration.roleConfigs) {
+    const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedRevision:(await state()).revision,action:'save-role',payload:{roleName:role.roleName,requiredCount:role.roleName==='接机1'?2:0,...(role.roleName==='接机1'?{workMode:'arrival'}:{})}})});
+    assert.ok(response.ok);
+  }
+  // An element in the old document is not evidence that the reload finished.
+  await evaluate('window.__reloadMarker=true');await call('Page.reload');
+  await until(()=>evaluate('!window.__reloadMarker && !!document.querySelector("#service-date")'),'重新载入后的日期控件');
   await mutate(() => value("#service-date", "2026-08-02"));
   await click('[data-view="flights"]');
   await click("#open-flight");
@@ -930,15 +935,16 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await uploadCompleteExcel(suppliedPhaseExcel);await waitElement('#confirm-complete-configuration');
   await mutate(()=>click('#confirm-complete-configuration'));
   await click('#phase-config');
-  await waitElement('[data-role-mode="接机1"][data-scope="day"]');
-  assert.equal(await evaluate("document.querySelector('[data-role-mode=接机1][data-scope=day]').value"),'arrival');
+  const phaseArrival=(await current()).day.cells.find(c=>c.roleName==='接机1');
+  await waitElement(`[data-cell-mode="${phaseArrival.id}"]`);
+  assert.equal(await evaluate(`document.querySelector('[data-cell-mode="${phaseArrival.id}"]').value`),'arrival');
   assert.equal(await evaluate("document.querySelectorAll('[data-role-concurrent]').length"),0,'岗位性质只保留专人专岗开关');
   assert.equal(await evaluate("document.querySelectorAll('[data-cell][data-field=workStart],[data-cell][data-field=workEnd]').length"),0,'环节配置不要求逐格分钟');
-  await value('[data-role-exclusive="督导"][data-scope="day"]',true,true);
+  const phaseSupervisor=(await current()).day.cells.find(c=>c.roleName==='督导');
+  await value(`[data-cell-exclusive="${phaseSupervisor.id}"]`,true,true);
   await mutate(()=>click('#save-preparation'));
-  assert.equal((await current()).day.roleConfigs.find(r=>r.roleName==='督导').concurrent,false);
-  assert.equal((await current()).day.roleConfigs.find(r=>r.roleName==='督导').exclusiveSameFlight,true);
-  await value('[data-role-exclusive="督导"][data-scope="day"]',false,true);
+  assert.equal((await current()).day.cells.find(c=>c.id===phaseSupervisor.id).exclusiveSameFlightOverride,true);
+  await value(`[data-cell-exclusive="${phaseSupervisor.id}"]`,false,true);
   await mutate(()=>click('#save-preparation'));
   await click('[data-view="rules"]');
   assert.equal(await evaluate('document.querySelector("[data-phase-source]")'),null);
@@ -1120,24 +1126,33 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await click(`[data-view="${view}"]`);
     const shot=await call('Page.captureScreenshot',{format:'png'});await writeFile(join(temporaryRoot,`parity-final-${view}.png`),Buffer.from(shot.data,'base64'));
   }
-  await t.test('岗位接续偏好与界面设置：规则页和配置页共同维护、完整Excel导出、空库导入及重启', async () => {
+  await t.test('岗位接续统一规则页维护、完整Excel导出、空库导入及重启', async () => {
     await click('[data-view="config"]');
-    for (const [role, mode] of [['接机1','arrival'],['接机2','arrival'],['登机主验','boarding'],['登机核验','boarding'],['登机人证核对/队伍秩序维护','boarding']]) {
-      await mutate(()=>value(`[data-role-mode="${role}"][data-scope="base"]`,mode));
+    const fixtureModes={'接机1':'arrival','接机2':'arrival','登机主验':'boarding','登机核验':'boarding','登机人证核对/队伍秩序维护':'boarding'};
+    for(const flight of (await state()).flightLibrary) {
+      for(const role of flight.roles) if(fixtureModes[role.roleName]) role.workModeOverride=fixtureModes[role.roleName];
+      const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedRevision:(await state()).revision,action:'save-flight-template',payload:flight})});
+      assert.ok(response.ok);
     }
+    await reloadPage();await click('[data-view="config"]');
     await evaluate('document.querySelector("#template-TEST101").open=true');
     const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedRevision:(await state()).revision,action:'save-handoff-preferences',payload:{preferences:[{flightNo:'*',arrivalRole:'接机2',boardingRoles:['登机核验'],enabled:true,ordered:true}]}})});assert.ok(response.ok);
     await reloadPage();await click('[data-view="config"]');
+    assert.equal(await evaluate('document.querySelectorAll("[data-flow-rule]").length'),0,'配置页不重复维护');
+    await click('[data-view="rules"]');
     const source='[data-flow-rule="0"]';
     assert.equal(await evaluate(`document.querySelector('${source} [data-flow-target]').value`),'登机核验');
     await click('[data-view="rules"]');await click(source+' [data-flow-add-target]');
     await value(source+' [data-flow-target-row="1"] [data-flow-target]','登机人证核对/队伍秩序维护');
     await click(source+' [data-flow-target-row="1"] [data-flow-up]');
-    await value(source+' [data-flow-enabled]',false,true);await mutate(()=>click('#save-rules'));
+    await mutate(()=>click('#save-rules'));
+    const stopped=structuredClone((await state()).handoffPreferences);stopped[0].enabled=false;
+    const stoppedResponse=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedRevision:(await state()).revision,action:'save-handoff-preferences',payload:{preferences:stopped}})});assert.ok(stoppedResponse.ok);
+    await reloadPage();await click('[data-view="rules"]');
     const prefs=(await state()).handoffPreferences;
     assert.deepEqual(prefs[0].boardingRoles,['登机人证核对/队伍秩序维护','登机核验']);
     assert.equal(prefs[0].enabled,false);
-    await click('[data-view="config"]');assert.equal(await evaluate(`document.querySelector('${source} [data-flow-target]').value`),'登机人证核对/队伍秩序维护');
+    await click('[data-view="config"]');assert.equal(await evaluate('document.querySelectorAll("[data-flow-rule]").length'),0);assert.deepEqual((await state()).handoffPreferences,prefs);
     await click('[data-view="schedule"]');
     if ((await state()).displayPreferences.layout !== 'matrix') await mutate(()=>click('#toggle-schedule-layout'));
     await mutate(()=>value('#schedule-zoom','120'));
@@ -1173,10 +1188,11 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.deepEqual((await state()).displayPreferences,{layout:'matrix',zoom:120});
     assert.equal(await evaluate('document.querySelector("#schedule-zoom").value'),'120');
     assert.equal(await evaluate('document.querySelector("[data-zoom-sheet] table").style.fontSize'),'120%');
-    await click('[data-view="config"]');await evaluate('document.querySelector("#template-TEST101").open=true');
+    await click('[data-view="config"]');assert.equal(await evaluate('document.querySelectorAll("[data-flow-rule]").length'),0);
+    await click('[data-view="rules"]');
     assert.equal(await evaluate(`document.querySelector('${source} [data-flow-target]').value`),'登机人证核对/队伍秩序维护');
-    assert.equal(await evaluate(`document.querySelector('${source} [data-flow-enabled]').checked`),false);
-    await click('[data-view="rules"]');await value(source+' [data-flow-enabled]',true,true);
+    assert.ok(await evaluate(`!!document.querySelector('${source} [data-flow-resume]')`));
+    await click('[data-view="rules"]');await click(source+' [data-flow-resume]');
     await click(source+' [data-flow-target-row="1"] [data-flow-up]');await mutate(()=>click('#save-rules'));
     assert.deepEqual((await state()).handoffPreferences[0].boardingRoles,['登机核验','登机人证核对/队伍秩序维护']);
 
@@ -1185,34 +1201,34 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await click('[data-view="config"]');
     const shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(join(temporaryRoot,'handoff-preferences-config.png'),Buffer.from(shot.data,'base64'));
   });
-  await t.test('每岗专岗开关：长期与当天独立维护、Excel及重启保留', async()=>{
+  await t.test('按航班岗位专岗开关：长期与当天独立维护、Excel及重启保留', async()=>{
     await click('[data-view="config"]');
-    const selector = '#base-positions [data-role-exclusive="登机主验"]';
-    const initial = await state(), previousDay = structuredClone(initial.plans[initial.selectedPlanId].day);
-    assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`),true);
-    assert.ok(await evaluate('document.querySelectorAll("[data-role-exclusive=大件行李拦截]").length>0'),'共享岗位同样提供独立开关');
+    const initial=await state(),previousDay=structuredClone(initial.plans[initial.selectedPlanId].day);
+    const flight=initial.flightLibrary.find(f=>f.roleNames.includes('登机主验'));
+    const selector=`[data-template-exclusive="${flight.flightNo}"][data-template-role="登机主验"]`;
+    const others=initial.flightLibrary.filter(f=>f.flightNo!==flight.flightNo);
+    assert.equal(await evaluate('document.querySelectorAll("#base-positions,[data-role-exclusive]").length'),0);
     await mutate(()=>value(selector,true,true));
-    assert.equal((await state()).configuration.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true);
-    assert.deepEqual((await current()).day,previousDay,'长期开关不追改当前计划');
+    assert.deepEqual((await state()).flightLibrary.filter(f=>f.flightNo!==flight.flightNo),others,'不改其他航班');
+    assert.deepEqual((await current()).day,previousDay,'长期模板不追改当天');
     const pid=(await state()).selectedPlanId;
     const bytes=Buffer.from(await(await fetch(`${baseUrl}/api/workspace/configuration/export/${pid}`)).arrayBuffer());
-    const previewResponse=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:bytes});
-    assert.equal(previewResponse.status,200);
-    const imported=(await previewResponse.json()).payload;
-    assert.equal(imported.day.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true,'同一Excel带出开关');
+    const response=await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:bytes});
+    assert.equal(response.status,200);
+    const imported=(await response.json()).payload;
+    assert.equal(imported.flightLibrary.find(f=>f.flightNo===flight.flightNo).roles.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true);
     await reloadPage();await click('[data-view="config"]');
-    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).checked`),true,'重启保持开关');
-    await evaluate('document.querySelector("#day-position-exceptions").open=true;document.querySelector("#day-demands").open=true');
-    const daily='#day-demands [data-role-exclusive="登机主验"]';
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).checked`),true);
+    const cell=(await current()).day.cells.find(c=>c.roleName==='登机主验');
+    const daily=`[data-cell-exclusive="${cell.id}"]`;
     await value(daily,true,true);await mutate(()=>click('#save-preparation'));
-    assert.equal((await current()).day.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true);
+    assert.equal((await current()).day.cells.find(c=>c.id===cell.id).exclusiveSameFlightOverride,true);
     await value(daily,false,true);await mutate(()=>click('#save-preparation'));
-    assert.equal((await current()).day.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,false,'当天可以单独关闭');
-    assert.equal((await state()).configuration.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true,'当天关闭不取消长期设置');
+    assert.equal((await current()).day.cells.find(c=>c.id===cell.id).exclusiveSameFlightOverride,false);
+    assert.equal((await state()).flightLibrary.find(f=>f.flightNo===flight.flightNo).roles.find(r=>r.roleName==='登机主验').exclusiveSameFlight,true);
     await mutate(()=>value(selector,false,true));
-    assert.equal((await state()).configuration.roleConfigs.find(r=>r.roleName==='登机主验').exclusiveSameFlight,false);
     await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
-    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,'开关不撑宽页面');
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
     await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   });
   await t.test('分队长人员开关、统一规则草稿及Excel可迁移', async()=>{
@@ -1522,7 +1538,10 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     await value('#relaxed-statistics-month','2044-02');await waitElement('.relaxed-statistics-table');
     await evaluate('(()=>{const el=document.querySelector("#relaxed-statistics-name");el.value="甲";el.dispatchEvent(new InputEvent("input",{bubbles:true}));})()');
     assert.equal(await evaluate('document.querySelectorAll(".relaxed-statistics-table tbody tr").length'),1);
-    assert.deepEqual(await evaluate('[...document.querySelectorAll(".relaxed-statistics-table tbody tr:first-child td")].map(el=>el.textContent)'),['0','—','1','02-02','1','02-02 / F0']);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll(".relaxed-statistics-table tbody tr:first-child td")].slice(0,6).map(el=>el.querySelector("summary")?.textContent ?? el.textContent)'),['0','—','1','02-02','1','1 条']);
+    assert.equal(await evaluate('document.querySelector(".relaxed-flight-details").open'),false,'末班日期与航班明细默认折叠');
+    await evaluate('document.querySelector(".relaxed-flight-details").open=true');
+    assert.match(await evaluate('document.querySelector(".relaxed-flight-details").textContent'),/02-02 \/ F0/);
     for(const width of [1440,390]){
       await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
       await evaluate('document.querySelector("#relaxed-statistics-root").scrollIntoView({block:"center"})');
@@ -1706,7 +1725,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   });
   await t.test('自由流程：来源目标增删排序、特例关闭继承与保存',async()=>{
     await click('[data-view="rules"]');const before=(await state()).handoffPreferences;
-    await click('#add-flow-exception');const row='#flow-exceptions [data-flow-rule]:last-of-type';
+    await value('[data-flow-exception-source]','大件行李拦截');await value('[data-flow-exception-flight]','FLOW*');await click('#add-flow-exception');const row='#flow-exceptions [data-flow-rule]:last-of-type';
     await value(row+' [data-flow-scope]','FLOW*');await value(row+' [data-flow-source]','大件行李拦截');
     while(await evaluate(`!!document.querySelector('${row} [data-flow-remove-target]')`))await click(row+' [data-flow-remove-target]');
     await click(row+' [data-flow-add-target]');await value(row+' [data-flow-target]','接机1');
@@ -1715,8 +1734,8 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.deepEqual((await state()).handoffPreferences,before,'统一保存前不写后端');
     await mutate(()=>click('#save-rules'));
     assert.deepEqual((await state()).handoffPreferences.at(-1).boardingRoles,['接机2','接机1']);
-    await value(row+' [data-flow-enabled]',false,true);await mutate(()=>click('#save-rules'));
-    assert.equal((await state()).handoffPreferences.at(-1).enabled,false);
+    assert.equal(await evaluate('document.querySelectorAll("[data-flow-enabled]").length'),0);
+    assert.equal((await state()).handoffPreferences.at(-1).enabled,true,'新目标默认启用');
     await click(row+' [data-flow-target-row="1"] [data-flow-remove-target]');await mutate(()=>click('#save-rules'));
     assert.deepEqual((await state()).handoffPreferences.at(-1).boardingRoles,['接机2']);
     await click(row+' [data-flow-remove-rule]');await mutate(()=>click('#save-rules'));
@@ -1735,14 +1754,13 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.equal(covered.filter(task=>task.exclusiveSameFlight).length,2,'两班专岗都先配齐');
     assert.deepEqual(covered.filter(task=>task.roleId==='普通岗').map(task=>task.flightId),['A'],'只剩一人时普通岗先给早结束航班');
     await click('[data-view="config"]');
-    await value('[data-role-exclusive="登机主验"][data-scope="day"]',false,true);
+    for(const cell of (await current()).day.cells.filter(c=>c.roleName==='登机主验'))await value(`[data-cell-exclusive="${cell.id}"]`,false,true);
     await mutate(()=>click('#save-preparation'));
-    assert.equal((await current()).day.roleConfigs.find(r=>r.roleName==='登机主验').concurrent,true);
+    assert.ok((await current()).day.cells.filter(c=>c.roleName==='登机主验').every(c=>c.exclusiveSameFlightOverride===false));
     await click('[data-view="schedule"]');await rerun({keepDayConfig:true});
     plan=await current();assert.equal(plan.valid,true,JSON.stringify(plan.issues));assert.equal(plan.draft.length,4,'取消专岗允许同航班兼任');
     await click('[data-view="config"]');
-    await value('[data-role-exclusive="登机主验"][data-scope="day"]',true,true);
-    await value('[data-demand="登机主验"]','2');
+    for(const cell of (await current()).day.cells.filter(c=>c.roleName==='登机主验'))await value(`[data-cell-exclusive="${cell.id}"]`,true,true);
     // 之前默认重排已从航班模板带入逐格1，临时2必须明确改航班格，不能只改被覆盖的基础人数。
     for(const cell of (await current()).day.cells.filter(c=>c.roleName==='登机主验'))await value(`[data-cell="${cell.id}"][data-field="requiredCountOverride"]`,'2');
     await mutate(()=>click('#save-preparation'));
@@ -1760,7 +1778,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.ok(await evaluate('document.querySelectorAll(".history-matrix .schedule-cell-conflict").length>=1'),'归档保留专岗缺口红色');
     const raw=Buffer.from(await(await fetch(`${baseUrl}/api/workspace/configuration/export/${plan.id}`)).arrayBuffer());
     const file=join(directory,'single-switch.xlsx');await writeFile(file,raw);
-    execFileSync(python,['-c',"from openpyxl import load_workbook;import sys;b=load_workbook(sys.argv[1]);assert [c.value for c in b['岗位性质'][1]]==['岗位','工作方式','同航班专岗专人'];assert [c.value for c in b['当天岗位例外'][1]]==['岗位','同时需要人数','工作方式','同航班专岗专人']",file],{cwd:repo,windowsHide:true});
+    execFileSync(python,['-c',"from openpyxl import load_workbook;import sys;b=load_workbook(sys.argv[1]);assert b['岗位性质'].sheet_state=='hidden';assert b['当天岗位例外'].sheet_state=='hidden';assert b['模板岗位'].cell(1,7).value=='同航班专人专岗';assert any(r[2]=='是' for r in b['当天航班岗位专人专岗'].iter_rows(min_row=2,values_only=True) if r[1]=='登机主验')",file],{cwd:repo,windowsHide:true});
     const preview=await(await fetch(`${baseUrl}/api/workspace/configuration/preview`,{method:'POST',body:raw})).json();
     await command('import-complete-configuration',preview.payload);
     await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('#service-date');
@@ -1898,7 +1916,9 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     for(const role of dedicatedState.configuration.roleConfigs){
       if(!dedicatedDay.roleNames.includes(role.roleName))await command('save-role',{roleName:role.roleName,requiredCount:0});
     }
-    await command('save-role',{roleName:'登机主验',exclusiveSameFlight:true});
+    const dedicatedTemplate=structuredClone((await state()).flightLibrary.find(f=>f.flightNo===dedicatedDay.flights[0].flightNo));
+    dedicatedTemplate.roles.find(r=>r.roleName==='登机主验').exclusiveSameFlight=true;
+    await command('save-flight-template',dedicatedTemplate);
     await evaluate('window.__reloadMarker=true');await call('Page.reload');
     await until(()=>evaluate('!window.__reloadMarker && !!document.querySelector(\'[data-view="schedule"]\')'),'专岗测试工作台加载');
     await click('[data-view="schedule"]');await rerun({keepDayConfig:true});

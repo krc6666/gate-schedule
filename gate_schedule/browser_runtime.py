@@ -51,6 +51,9 @@ def validate_cloud_documents(documents):
         window = (state.get('workRules') or {}).get('baggageWindow')
         if isinstance(window, dict):
             window.setdefault('timeBasis', default_baggage_window()['timeBasis'])
+            window.setdefault('handoffMode', default_baggage_window()['handoffMode'])
+        from .flight_configuration import with_role_membership
+        with_role_membership(state)
     candidate = deepcopy(root)
     groups = GroupWorkspaces(Path('/browser-unused'), store=BrowserStore({key: candidate}))
     groups._validate(candidate)
@@ -60,16 +63,23 @@ def validate_cloud_documents(documents):
 
 class BrowserStore:
     def __init__(self, documents=None):
-        self.documents = deepcopy(documents or {})
+        self.documents = self._copy(documents or {})
+
+    @staticmethod
+    def _copy(document):
+        # This boundary only stores JSON wire documents. The JSON codec makes
+        # an isolated copy without walking every scalar through Python deepcopy
+        # in WebAssembly. Preserve read/write isolation and CAS semantics.
+        return json.loads(json.dumps(document, ensure_ascii=False))
 
     def read_document(self, key):
-        return deepcopy(self.documents.get(key))
+        return self._copy(self.documents.get(key))
 
     def compare_and_save(self, key, expected_revision, state):
         current = self.documents.get(key, {'revision': 0})
         if current['revision'] != expected_revision:
             raise ValueError('数据已经更新，请重新读取；当前输入未被覆盖')
-        self.documents[key] = deepcopy(state)
+        self.documents[key] = self._copy(state)
 
 
 class BrowserRoutes:

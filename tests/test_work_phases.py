@@ -91,8 +91,7 @@ class WorkPhaseTests(unittest.TestCase):
         payload = {'day': day, 'rotationEnabled': True, 'rotationMinutes': 60, 'source': '测试'}
         restored = import_complete_configuration(export_complete_configuration(payload))
         restored_day = imported_day_from_dict(restored['day'])
-        self.assertEqual(tuple(replace(r, concurrent=not r.exclusive_same_flight)
-                               for r in imported_day_from_dict(day).role_configs), restored_day.role_configs)
+        self.assertEqual(imported_day_from_dict(day).role_configs, restored_day.role_configs)
         self.assertEqual('task', restored_day.release_policy)
         with self.assertRaises(ValueError):
             bad = deepcopy(day); bad['phaseHandoffs'] = [['A', 'missing']]

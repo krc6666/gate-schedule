@@ -279,7 +279,6 @@
 .flow-settings { --rule-accent:#47749d; --rule-tint:#f1f6fb; --rule-border:#c6d8e9; }
 .separation-settings { --rule-accent:#786591; --rule-tint:#f6f3fa; --rule-border:#d9cee6; margin-top:24px; }
 .forbidden-handoffs { --rule-accent:#a66b57; --rule-tint:#fcf4ef; --rule-border:#e8d0c3; }
-.flow-inheritance-note { padding:10px 14px; background:#edf4fa; border-left:3px solid #648eb2; color:#385d7e; border-radius:4px; line-height:1.7; }
 .rule-common > h4 { color:var(--rule-accent); margin:16px 0 8px; font-size:14px; }
 .rule-common > .flow-rule,.rule-common > .separation-group { border-color:var(--rule-border); border-left:3px solid var(--rule-accent); background:var(--rule-tint); }
 .rule-exceptions { margin:16px 0; border:1px solid #e5d3ad; border-left:3px solid #b78b3c; border-radius:6px; background:#fffcf5; }
@@ -324,6 +323,42 @@
 .rule-card-body { padding:14px;border-top:1px solid var(--rule-border,#dce2e8);background:#fff; }
 .rule-card-body .button-row { flex-wrap:wrap; }
 .rule-card-body .flow-targets { padding-left:24px; }
+.flow-rule .flow-linked-step { margin:10px 0 0;border:1px solid var(--rule-border,#dce2e8);border-radius:6px; }
+.flow-linked-step > summary { padding:10px 12px;background:#f8fafc; }
+.flow-linked-step > .rule-card-body { padding:12px; }
+.flow-expand-hint { color:var(--rule-accent);font-size:12px; }
+.flow-linked-step[open] > summary .flow-expand-hint { display:none; }
+.flow-editor-row { display:grid;grid-template-columns:minmax(130px,190px) 20px minmax(0,1fr);gap:10px;align-items:start; }
+.flow-editor-row label,.flow-exception-fields label,.flow-scope-field { display:grid;gap:7px;min-width:0;font-size:12px;color:#566676; }
+.flow-editor-row select,.flow-exception-fields select,.flow-exception-fields input,.flow-scope-field input { width:100%;min-width:0;height:36px; }
+.flow-arrow { align-self:start;padding-top:27px;color:#8398aa;text-align:center; }
+.flow-editor-row .flow-targets { list-style:none;padding:0;margin:0;min-width:0; }
+.flow-settings .flow-targets li { display:grid;grid-template-columns:minmax(160px,1fr) minmax(210px,1fr) auto;gap:10px;align-items:end;padding:0;margin:0 0 10px;border:0; }
+.flow-settings .flow-targets li > label { display:grid;gap:7px;margin:0; }
+.flow-targets .button-row { gap:4px;flex-wrap:nowrap; }
+.flow-targets .button-row .btn { min-height:36px;padding:5px 8px; }
+.flow-targets .flow-remove-target { color:#8a6265;border-color:transparent;background:transparent; }
+.flow-settings .flow-targets .flow-empty-target { display:block;margin:0;padding:27px 0 10px;color:var(--muted);font-size:12px; }
+.flow-step-actions { gap:8px;padding-top:4px; }
+.flow-step-actions > [data-flow-remove-rule] { margin-left:auto;border-color:transparent; }
+.flow-scope-field { max-width:300px;margin-bottom:14px; }
+.flow-settings [data-flow-feedback]:empty,.flow-settings [data-flow-exception-feedback]:empty { display:none; }
+.flow-inactive-note { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
+.flow-exception-create { padding:16px;margin:16px 0;border:1px dashed #dfcda7;border-radius:6px;background:#fffcf7; }
+.flow-exception-create h4 { margin:0;color:#86652c;font-size:14px; }
+.flow-exception-fields { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:12px; }
+@media(max-width:1200px) {
+  .flow-settings .flow-targets li { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .flow-targets .button-row { grid-column:1/-1;justify-content:flex-end; }
+}
+@media(max-width:700px) {
+  .flow-editor-row { grid-template-columns:minmax(0,1fr);gap:10px; }
+  .flow-arrow { display:none; }
+  .flow-settings .flow-targets li { grid-template-columns:minmax(0,1fr);padding:10px;background:#f8fafc;border-radius:5px; }
+  .flow-exception-fields { grid-template-columns:minmax(0,1fr); }
+  .flow-exception-create { padding:12px; }
+  .flow-step-actions > [data-flow-remove-rule] { margin-left:0; }
+}
 .rule-group-body .separation-settings,.rule-group-body .forbidden-handoffs,.rule-group-body .baggage-window { margin-top:0; }
 .rules-disclosure-actions { flex-wrap:wrap; }
 .wb-main .separation-settings .rule-add-actions .btn-outline-primary { color:#6d5a84;border-color:#a795bb; }

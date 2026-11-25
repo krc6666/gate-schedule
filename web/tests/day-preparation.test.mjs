@@ -85,6 +85,21 @@ function fixture() {
   return {day,state};
 }
 
+test('重新排班逐航班取专岗值；沿用当天与切换回最新不串通用岗位',()=>{
+  const {day,state}=fixture();
+  day.cells[0].exclusiveSameFlightOverride=false;
+  state.configuration.roleConfigs[0].exclusiveSameFlight=false;
+  state.flightLibrary[0].roles[0].exclusiveSameFlight=true;
+  const before=structuredClone({day,state});
+  const preparation=startPreparation(day,state,'reschedule');
+  assert.equal(preparation.day.cells[0].exclusiveSameFlightOverride,true);
+  useDayPreparationConfiguration(preparation,state,day);
+  assert.equal(preparation.day.cells[0].exclusiveSameFlightOverride,false);
+  loadPreparationConfiguration(preparation,state);
+  assert.equal(preparation.day.cells[0].exclusiveSameFlightOverride,true);
+  assert.deepEqual({day,state},before);
+});
+
 test('明确沿用当天配置，在副本保留当天资格/环节/出勤及默认选中，人数独立',()=>{
   const {day,state}=fixture(),saved=structuredClone({day,state});
   const p=startPreparation(day,state,'reschedule');

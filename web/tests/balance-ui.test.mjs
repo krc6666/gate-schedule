@@ -22,6 +22,7 @@ test('规则页可选重点岗位和硬差距，次数修正不混在设置表�
   assert.match(markup,/data-priority-role="接机1"/);
   assert.match(markup,/id="flight-count-gap"[^>]*value="1"/);
   assert.match(markup,/id="save-rules"/);
+  assert.match(markup,/<details id="handoff-preference-rules"[^>]*><summary><strong>流动岗位管理（接续兼职）<\/strong>/);
   assert.match(markup,/本月.*次数|本自然月/);
   assert.match(markup,/重新排班/);
   assert.match(markup,/data-relaxed-enabled="earlyDeparture"[^>]*checked/);
@@ -71,7 +72,7 @@ test('规则保存与重点次数：真实页面、累计修正、切月隔离�
         if(command.action==='save-rules'&&rejectSettings){response.statusCode=409;response.end(JSON.stringify({detail:'模拟保存失败，原数据保留'}));return;}
         assert.equal(command.expectedRevision,state.revision);
         if(command.action==='save-rules') {
-          assert.equal(request.headers['x-gate-rule-schema'],'flight-role-v1');
+          assert.equal(request.headers['x-gate-rule-schema'],'flight-role-v2');
           state.balanceSettings=command.payload.balanceSettings;
           state.teamLeaderSettings=command.payload.teamLeaderSettings;state.halfRestSettings=command.payload.halfRestSettings;
           state.configuration=command.payload.configuration;

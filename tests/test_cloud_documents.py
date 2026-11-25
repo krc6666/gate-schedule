@@ -2,7 +2,7 @@
 from copy import deepcopy
 import unittest
 
-from gate_schedule.browser_runtime import BrowserStore, validate_cloud_documents
+from gate_schedule.browser_runtime import BrowserStore, validate_cloud_documents, request_sync
 from gate_schedule.group_workspaces import GroupWorkspaces
 from pathlib import Path
 import json
@@ -10,6 +10,91 @@ from tests.test_balance_configuration import configuration
 
 
 class CloudDocumentsTests(unittest.TestCase):
+    def test_old_role_wide_dedication_can_open_and_materialize_without_writing_original(self):
+        for group in ('A', 'B'):
+            state = self.documents[GroupWorkspaces.KEY]['groups'][group]
+            state['configuration']['roleConfigs'][0]['exclusiveSameFlight'] = True
+            name = state['configuration']['roleConfigs'][0]['roleName']
+            state['flightLibrary'] = [dict(flightNo='CX937',windowStart='10:00',windowEnd='11:00',
+                                           roleNames=[name],roles=[dict(roleName=name,requiredCount=1,
+                                               workModeOverride=None,workStart=None,workEnd=None)])]
+        self.documents[GroupWorkspaces.KEY]['shared']['flightTemplates'] = [
+            dict(flightNo='CX937',windowStart='10:00',windowEnd='11:00')]
+        before = deepcopy(self.documents)
+        validate_cloud_documents(self.documents)
+        self.assertEqual(before, self.documents)
+        loaded = GroupWorkspaces(Path('unused'), store=BrowserStore(self.documents))
+        for group in ('A', 'B'):
+            state = loaded.workbench(group).snapshot()
+            self.assertTrue(state['flightLibrary'][0]['roles'][0]['exclusiveSameFlight'])
+        self.assertEqual(before, self.documents)
+
+    def test_saved_cloud_rules_without_new_time_basis_can_still_open(self):
+        from tests.test_baggage_window import baggage_day
+        rules = baggage_day()['workRules']
+        rules['baggageWindow'].pop('timeBasis', None)
+        for state in self.documents[GroupWorkspaces.KEY]['groups'].values():
+            state['workRules'] = deepcopy(rules)
+        before = deepcopy(self.documents)
+        validate_cloud_documents(self.documents)
+        self.assertEqual(before, self.documents, 'Opening must not overwrite the server snapshot')
+
+    def test_legacy_cloud_login_save_and_reopen_preserve_history_and_explicit_settings(self):
+        from tests.test_baggage_window import baggage_day
+        for group in ('A', 'B'):
+            wb = self.groups.workbench(group)
+            state = wb.execute(wb.snapshot()['revision'], 'import-complete-configuration', configuration())
+            pid = state['selectedPlanId']
+            state = wb.execute(state['revision'], 'solve', {}, pid)
+            wb.execute(state['revision'], 'adopt', {}, pid)
+        documents = deepcopy(self.store.documents)
+        groups = documents[GroupWorkspaces.KEY]['groups']
+        for group, basis in [('A', None), ('B', 'departure-offsets')]:
+            groups[group]['workRules'] = deepcopy(baggage_day()['workRules'])
+            if basis is None:
+                groups[group]['workRules']['baggageWindow'].pop('timeBasis', None)
+            else:
+                groups[group]['workRules']['baggageWindow']['timeBasis'] = basis
+        before = deepcopy(documents)
+        checked = json.loads(request_sync(json.dumps({'url': '/__cloud_validate__', 'documents': documents})))
+        self.assertEqual(200, checked['response']['status'])
+        self.assertEqual(before, checked['documents'])
+        restored = GroupWorkspaces(Path('unused'), store=BrowserStore(documents))
+        for group, basis in [('A', 'flight-window'), ('B', 'departure-offsets')]:
+            state = restored.workbench(group).snapshot()
+            self.assertEqual(basis, state['workRules']['baggageWindow']['timeBasis'])
+            self.assertEqual(before[GroupWorkspaces.KEY]['groups'][group]['plans'],
+                             restored.backup()['groups'][group]['plans'])
+            restored.workbench(group).execute(state['revision'], 'save-display-preferences', {'zoom': 110, 'layout': 'flights'})
+        saved = {GroupWorkspaces.KEY: restored.backup()}
+        validate_cloud_documents(saved)
+        reopened = GroupWorkspaces(Path('unused'), store=BrowserStore(saved))
+        for group in ('A', 'B'):
+            state = reopened.workbench(group).snapshot()
+            self.assertEqual(110, state['displayPreferences']['zoom'])
+            for pid, plan in before[GroupWorkspaces.KEY]['groups'][group]['plans'].items():
+                self.assertEqual(plan, reopened.backup()['groups'][group]['plans'][pid])
+        self.assertEqual(before, documents)
+
+    def test_compatibility_never_allows_unrelated_repairs_or_invalid_time_basis(self):
+        from tests.test_baggage_window import baggage_day
+        original = deepcopy(self.documents)
+        original[GroupWorkspaces.KEY]['groups']['A']['workRules'] = deepcopy(baggage_day()['workRules'])
+        original[GroupWorkspaces.KEY]['groups']['A']['workRules']['baggageWindow'].pop('timeBasis', None)
+        for case in ('missing-policy', 'invalid-basis', 'missing-core'):
+            bad = deepcopy(original)
+            state = bad[GroupWorkspaces.KEY]['groups']['A']
+            if case == 'missing-policy':
+                state['balanceSettings'].pop('priorityFlightRoles')
+            elif case == 'invalid-basis':
+                state['workRules']['baggageWindow']['timeBasis'] = 'guess'
+            else:
+                state.pop('configuration')
+            before = deepcopy(bad)
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                validate_cloud_documents(bad)
+            self.assertEqual(before, bad)
+
     def test_baggage_tolerance_is_preserved_in_complete_cloud_documents(self):
         from tests.test_baggage_window import baggage_day
         for group, tolerance in [('A',15),('B',45)]:
@@ -38,19 +123,6 @@ class CloudDocumentsTests(unittest.TestCase):
         before = deepcopy(self.documents)
         validate_cloud_documents(self.documents)
         self.assertEqual(self.documents, before)
-
-    def test_old_cloud_snapshot_without_time_basis_opens_without_server_mutation(self):
-        from tests.test_baggage_window import baggage_day
-
-        rules = baggage_day()['workRules']
-        rules['baggageWindow'].pop('timeBasis', None)
-        for state in self.documents[GroupWorkspaces.KEY]['groups'].values():
-            state['workRules'] = deepcopy(rules)
-        before = deepcopy(self.documents)
-
-        validate_cloud_documents(self.documents)
-
-        self.assertEqual(before, self.documents)
 
     def test_missing_group_or_configuration_never_seeds_defaults(self):
         for remove in ('groups', 'shared'):

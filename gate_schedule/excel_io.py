@@ -504,7 +504,7 @@ def import_day(content: bytes, service_date: str, previous_day: ImportedDay | No
                 replace(config, eligible_role_names=tuple(role for role in config.eligible_role_names if role in day.role_names))
                 for config in previous_day.member_configs if config.member_name in current_names
             ))
-    return _read_relative_times(workbook, _read_work_modes(workbook, day))
+    return _read_flight_dedication(workbook, _read_relative_times(workbook, _read_work_modes(workbook, day)))
 
 
 def update_imported_day(
@@ -543,6 +543,7 @@ def update_imported_day(
                 work_start=work_start,
                 work_end=work_end,
                 work_mode_override=update.get("workModeOverride", current.work_mode_override),
+                exclusive_same_flight_override=update.get("exclusiveSameFlightOverride", current.exclusive_same_flight_override),
                 required_count_override=update.get("requiredCountOverride", current.required_count_override),
                 fixed_member_names=tuple(update["fixedMemberNames"] or ()) if "fixedMemberNames" in update else current.fixed_member_names,
             )
@@ -576,6 +577,11 @@ def _write_work_modes(book, day):
     sheet.append(["岗位", "工作方式", "岗位性质", "同航班专岗专人"])
     for r in day.role_configs:
         sheet.append([r.role_name, WORK_MODES[r.work_mode], "可兼任" if r.concurrent else "常规", "是" if r.exclusive_same_flight else "否"])
+    dedicated = book.create_sheet("当天航班岗位专人专岗")
+    dedicated.append(["航班号", "岗位", "同航班专人专岗"])
+    for cell in day.cells:
+        value = cell.exclusive_same_flight_override
+        dedicated.append([cell.flight_no, cell.role_name, None if value is None else "是" if value else "否"])
     links = book.create_sheet("航班衔接")
     links.append(["来源航班", "目标航班", "接机完成可接登机"])
     flights = {f.id: f.flight_no for f in day.flights}
@@ -590,7 +596,7 @@ def _write_work_modes(book, day):
     for c in day.cells:
         if c.work_mode_override is not None:
             overrides.append([c.flight_no, c.role_name, WORK_MODES[c.work_mode_override]])
-    for sheet in (sheet, links, policy):
+    for sheet in (sheet, links, policy, dedicated):
         sheet.freeze_panes = "A2"
         for c in sheet[1]: c.font = Font(bold=True)
         for col in "ABC": sheet.column_dimensions[col].width = 32
@@ -663,6 +669,30 @@ def _read_work_modes(book, day):
                 raise ValueError("岗位方式例外引用未知/重复岗位或无效工作方式")
             overrides[flight, role] = modes[mode]
     return replace(day, cells=tuple(replace(c, work_mode_override=overrides.get((c.flight_no, c.role_name))) for c in day.cells), role_configs=tuple(current.values()), release_policy=policies[settings["支援释放"]], attendance_mode=attendance_modes.get(settings.get("当天出勤"), "bounded"), phase_handoffs=_phase_handoffs(confirmed_pairs, set(flights.values())))
+
+
+def _read_flight_dedication(book, day):
+    name = "当天航班岗位专人专岗"
+    if name not in book.sheetnames:
+        return day
+    sheet = book[name]
+    header = ["航班号", "岗位", "同航班专人专岗"]
+    if [_text(sheet.cell(1, col).value) for col in range(1, 4)] != header:
+        raise ValueError(f"{name}表头无效")
+    if any(c.data_type in {'f', 'e'} for row in sheet for c in row):
+        raise ValueError(f"{name}不能使用公式或错误值")
+    cells = {(cell.flight_no, cell.role_name): cell for cell in day.cells}
+    values = {}
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        if not any(value is not None for value in row):
+            continue
+        flight, role, dedicated = map(_text, row[:3])
+        if (flight, role) not in cells or (flight, role) in values or dedicated not in {"是", "否", ""}:
+            raise ValueError(f"{name}引用未知/重复岗位或专人专岗值无效")
+        if any(value is not None for value in row[3:]):
+            raise ValueError(f"{name}不能在表头外填写数据")
+        values[flight, role] = None if dedicated == "" else dedicated == "是"
+    return replace(day, cells=tuple(replace(cell, exclusive_same_flight_override=values.get((cell.flight_no, cell.role_name))) for cell in day.cells))
 
 
 def _write_relative_times(book, day):
@@ -1184,9 +1214,7 @@ def export_complete_configuration(data, *, history_schedules=None):
     data = validate_complete_configuration(data)
     day = imported_day_from_dict(data["day"])
     book = load_workbook(BytesIO(export_imported_day(day)))
-    # Current complete configuration exposes one choice; older 3/4-column
-    # nature sheets remain readable for backward-compatible import.
-    book['岗位性质'].delete_cols(3)
+    # Legacy defaults stay hidden for old day snapshots; editable dedication is per flight.
     # The explicit flight table and position-first matrix replace these old views.
     for name in ("保障明细", "当天名单", "人员配置", "自动排班设置"):
         if name in book.sheetnames:
@@ -1198,18 +1226,18 @@ def export_complete_configuration(data, *, history_schedules=None):
         ["资质更新", "岗位为行、人员为列。1=有资质，0或空白=取消该资质。以本表列出的人员×岗位范围为准更新基础配置；范围外资料保留。新增姓名新增人员，不自动启用已停用人员。"],
         ["既有排班", "每次确认新增当天维护方案；文件附带的全部日计划、航班、草稿和正式班表同时补入历史。已有同ID方案保留设备上的版本，不重复导入。"],
         ["新增人员", "在岗位资质末尾添加姓名列，并在当日出勤添加对应姓名；资质填1或0。"],
-        ["新增岗位或航班", "岗位在岗位资质增加一行，填写岗位配置人数、工作环节及同航班专岗专人；航班在航班表增加一行，人数例外可按航班覆盖。只保留专岗一个选择；勾选不能兼任，不勾选允许同航班普通岗位兼任，跨班仍检查时间和接续许可。"],
-        ["同航班专岗专人", "在岗位性质的同航班专岗专人列填是或否。是表示做该岗的人不能兼做同一航班其他岗位，并优先配齐；否允许同航班普通岗位兼任。其他航班仍按时间、资格和接续许可检查。同名岗位共用开关，当天不同可在当天岗位例外表覆盖。旧文件缺此列保留现有设置，空库默认关闭。"],
+        ["新增岗位或航班", "岗位在岗位资质增加一行；人数、工作环节及专人专岗分别在航班模板的模板岗位表维护。新航班岗位的专人专岗默认否；资格、出勤和跨班时间仍独立检查。"],
+        ["同航班专岗专人", "模板岗位表按航班号与岗位填同航班专人专岗，是表示该航班此岗位不能与本航班其他岗位同人，优先于接续偏好；否允许合法兼职。当天差异在当天航班岗位专人专岗表维护，缺行沿用当天旧岗位默认。旧模板缺列按旧岗位开关迁移一次，不能据旧文件还原此前未保存的航班差异。岗位性质的旧开关仅用于兼容旧资料。"],
         ["时段与出勤", "重新排班无需填写普通岗位起止、偏移或持续分钟；以航班落地到起飞为整体窗口，未填起降时沿用保障窗口。日常出勤勾选参加即可，到离岗仍可作特殊限制。大件按有需求航班窗口合并及实际轮换块安排。旧时间资料仅为历史兼容保留。"],
         ["跨航班衔接", "同航班按岗位接续优先级安排；跨航班按整体窗口判断重叠和走动预留，不能因接续偏好绕过冲突。自动排班保留可行部分和缺岗，人工强填冲突标红，供现场核对微调。"],
         ["固定与原文", "固定人员只有明确填写才锁定。岗位原文只保留旧名单/外援和已确认斜杠含义，不等同于新排班或资质。备注需核对，0910不猜占用。"],
         ["配置迁移", "导出使用最新长期人数、性质、资质、轮换、走动与航班模板，同时包含当天航班和例外。人员状态、岗位接续偏好、界面偏好均在可见表中；换设备导入此文件即可保留。全部日期的航班、草稿与正式历史随本文件迁移，在历史页查看。"],
         ["排班平衡维护", "排班平衡表维护当天航班数最大差距（空白表示关闭）和重点轮换启用；新版重点在航班重点岗位表逐行填写航班号和岗位，空表清空。重点次数修正按月份、人员ID、航班号和岗位维护增减；可填负整数，有效次数最低为0。旧修正航班号空白时保留待归属，不猜测分配；核对后补填航班号。排班平衡、航班重点岗位、重点次数修正三表与范围版本一起保留。旧文件缺航班范围时保留本机新选择、空库不勾选；旧岗位名单仅兼容保留，不再作为新版重点。姓名只供核对，不授予资质。"],
         ["人员身份维护", "人员身份表保留稳定人员ID，换设备后重点次数修正仍对应同一个人。已有人员不要手改ID；新增姓名可以不填ID，由系统建立。修正表的人员ID与姓名须和身份表一致。历史附表保留全部草稿、正式班表和累计次数依据；请勿手改历史数据，历史班表应在工作台维护。"],
-        ["岗位空缺优先级", "规则页每岗自行勾选优先保岗或缺人时优先留空，两项互斥，不勾正常，初始全部不勾，所有航班共用。维护后本文件的保岗优先级表按岗位填写优先保岗、正常安排或缺人时优先留空，空表恢复正常；与排班平衡的保岗优先级版本及配套表一起保留。旧文件无本项保留本机选择，新设备全正常。先补各航班专岗，再按航班结束从早到晚补非留空岗位，同一结束时间先保优先岗位，再排正常岗位。同一保障时段其他岗位仍缺人时，另占人手的留空岗优先空着；已安排人员按配置合法接续兼职不另占人手，仍可安排。独立无缺口时段正常安排，最后考虑轮岗等偏好。不突破资格、出勤、固定、专岗、冲突和差距。重新排班生效，原班表保留；与重点轮换统计设置分开。"],
+        ["岗位空缺优先级", "规则页每岗自行勾选优先保岗或缺人时优先留空，两项互斥，不勾正常，初始全部不勾，所有航班共用。维护后本文件的保岗优先级表按岗位填写优先保岗、正常安排或缺人时优先留空，空表恢复正常；与排班平衡的保岗优先级版本及配套表一起保留。旧文件无本项保留本机选择，新设备全正常。先补各航班专岗，再按航班结束从早到晚补非留空岗位，同一结束时间先保优先岗位，再排正常岗位。同一保障时段其他非留空岗位仍缺人时，优先留空岗先空着；即使已安排人员能顺带接续兼职，也不自动填回，不以腾人后能否补上缺口为条件。独立无缺口时段正常安排，最后考虑轮岗等偏好。不突破资格、出勤、固定、专岗、冲突和差距。重新排班生效，原班表保留；与重点轮换统计设置分开。"],
         ["分队长维护", "人员状态表的分队长列填是/否。分队长设置表维护最后使用和不参与航班数比较，默认都是。先补齐岗位，再尽量少用分队长，之后考虑重点轮换/接续。豁免只影响航班数比较，其他人员硬差距不放松，分队长仍须有资质、出勤且无冲突。旧文件无新列/表时保留当前值，新设备默认不标记任何分队长；显式否取消。"],
         ["人员状态与删除", "人员状态表的状态填正常、病假或休假，备注可自由填写。病假/休假及停用人员不参与新排班；恢复正常且启用后可继续参加，仍须选择当天出勤。旧文件缺状态/备注列保留当前值，新设备默认正常/空备注，显式正常或空白备注更新。人员删除请在配置页点击删除并确认；旧班表和历史保留，可编辑名单只列现有人员；历史附表保留已删除人员的身份和旧班表。"],
-        ["接续偏好维护", "来源岗位和目标岗位可自由组合，目标用顿号分隔，重新排班按从左到右的优先顺序匹配；第一目标已满、无资格或冲突时考虑下一项。适用范围填通用、具体航班或CX*系列；具体航班优先，其次最长系列，最后通用。启用填是/否；关闭特例不回退，删除恢复继承。专岗和必须分人仍检查。表存在则更新，空表清空；旧文件缺表保留本机设置，空库默认无接续规则。"],
+        ["接续偏好维护", "统一在规则页的流动岗位管理维护。新增接续兼职后选择来源和目标；在前面加岗位会让新岗位成为来源，原来源和后续在同一条顺排，后续联动不复制。多个目标按优先顺序比较，不表示必须全部承担。同一个人可以承担多个合法岗位，资格、实际冲突、分人、禁止及优先留空仍检查。范围填通用、具体航班或CX*系列；具体航班优先，其次最长系列，最后通用。目标航班可选本航班、重叠时段中较晚结束的航班、重叠时段中较早结束的航班。共享大件池在池内重叠航班中比较结束，不绑定某一架航班；普通岗位相对来源航班比较。结束相等不属于早或晚。大件交接方式可选按接续灵活交接或固定时段轮换，灵活模式的分钟仅作人数计算和交接参考。禁止衔接表使用相同范围。旧文字范围仍可导入。关闭特例不回退，删除恢复继承；旧文件缺表保留本机设置，空库默认无接续规则。旧版组合仅保留资料兼容，原正式历史不改。"],
         ["每航班岗位", "航班模板的本航班岗位用顿号分隔，可添加或移除名称，空白表示无岗位；模板岗位维护相应人数/工作方式例外。删除单个航班岗位不删除通用资质，新增通用岗位不会自动加入其他已配置航班。旧文件缺清单列时，已有库保留当前选择，空库沿用通用岗位。"],
         ["当天例外", "长期岗位人数/性质/资质及轮换设置保存在通用表；当天不同的设置在当天岗位例外、当天资质例外、当天设置例外三表中，仅覆盖导入的新日计划，不改长期默认。空表表示当天沿用长期配置，三表应一起保留。"],
         ["上午下午半休", "当日出勤的半休时段填写不半休、上午半休或下午半休。06:00至12:00前开始算早班；上午休不排早班，下午休只排早班，12点及凌晨归其他时段，跨午按开始判断。半休设置表默认不参与航班数比较，仍按实际岗位计次；无岗保留休息。旧四列出勤默认不半休，旧文件无设置表保留当前开关。新日默认清空当天半休，同日重排保留。"],
@@ -1223,9 +1251,11 @@ def export_complete_configuration(data, *, history_schedules=None):
     qualifications = book.create_sheet("岗位资质", 1)
     if "handoffPreferences" in data:
         paths = book.create_sheet("岗位接续偏好")
-        paths.append(["适用范围", "来源岗位", "目标岗位优先顺序", "启用", "按顺序优先"])
+        has_modes=any('mode' in row for row in data['handoffPreferences'])
+        has_ids=any('id' in row for row in data['handoffPreferences'])
+        paths.append(["适用范围", "来源岗位", "目标岗位优先顺序", "启用", "按顺序优先"]+(['接续方式'] if has_modes else [])+(['组合编号'] if has_ids else []))
         for item in data["handoffPreferences"]:
-            paths.append(["通用" if item['flightNo']=='*' else item['flightNo'], item["arrivalRole"], "、".join(item["boardingRoles"]), "是" if item["enabled"] else "否", ("是" if item["ordered"] else "否") if "ordered" in item else None])
+            paths.append(["通用" if item['flightNo']=='*' else item['flightNo'], item["arrivalRole"], "、".join(item["boardingRoles"]), "是" if item["enabled"] else "否", ("是" if item["ordered"] else "否") if "ordered" in item else None]+([{'priority':'候选目标优先','chain':'同人多岗接续'}.get(item.get('mode'))] if has_modes else [])+([item.get('id')] if has_ids else []))
         from .work_rules_excel import write_flow_scopes
         write_flow_scopes(book,data['handoffPreferences'])
     if "displayPreferences" in data:
@@ -1320,9 +1350,9 @@ def export_complete_configuration(data, *, history_schedules=None):
                     rule = role['relativeTiming']
                     relative_daily.append([role['roleName'], *( [rule['anchor'], rule['offsetMinutes'], rule['durationMinutes']] if rule is not None else [None, None, None])])
         daily = book.create_sheet("当天岗位例外")
-        daily.append(["岗位", "同时需要人数", "工作方式", "同航班专岗专人"])
+        daily.append(["岗位", "同时需要人数", "工作方式", "可兼任", "同航班专岗专人"])
         for r in overrides.get("roleConfigs", []):
-            daily.append([r["roleName"], r["requiredCount"], r["workMode"], "是" if r.get("exclusiveSameFlight", next((base.exclusive_same_flight for base in day.role_configs if base.role_name == r["roleName"]), False)) else "否"])
+            daily.append([r["roleName"], r["requiredCount"], r["workMode"], "是" if r.get("concurrent", False) else "否", "是" if r.get("exclusiveSameFlight", next((base.exclusive_same_flight for base in day.role_configs if base.role_name == r["roleName"]), False)) else "否"])
         daily = book.create_sheet("当天资质例外")
         daily.append(["人员", "岗位", "有资质"])
         for q in overrides.get("qualifications", []):
@@ -1336,11 +1366,13 @@ def export_complete_configuration(data, *, history_schedules=None):
         templates = book.create_sheet("航班模板")
         templates.append(["航班号", "保障开始", "保障结束", "本航班岗位"])
         positions = book.create_sheet("模板岗位")
-        positions.append(["航班号", "岗位", "同时需要人数", "工作方式例外", "特殊开始", "特殊结束"])
+        positions.append(["航班号", "岗位", "同时需要人数", "工作方式例外", "特殊开始", "特殊结束", "同航班专人专岗"])
         for flight in data["flightLibrary"]:
             templates.append([flight["flightNo"], flight["windowStart"], flight["windowEnd"], "、".join(flight["roleNames"]) if "roleNames" in flight else "沿用通用岗位"])
             for role in flight.get("roles", []):
-                positions.append([flight["flightNo"], role["roleName"], role.get("requiredCount"), role.get("workModeOverride"), role.get("workStart"), role.get("workEnd")])
+                base = next((config for config in day.role_configs if config.role_name == role["roleName"]), None)
+                dedicated = role.get("exclusiveSameFlight", base.exclusive_same_flight if base else False)
+                positions.append([flight["flightNo"], role["roleName"], role.get("requiredCount"), role.get("workModeOverride"), role.get("workStart"), role.get("workEnd"), "是" if dedicated else "否"])
     if "weeklyFlightPresets" in data:
         weekly = book.create_sheet("每周航班")
         weekly.append(["星期（日0至六6）", "航班号", "保障开始", "保障结束"])
@@ -1418,7 +1450,7 @@ def export_complete_configuration(data, *, history_schedules=None):
         from .configuration_archive import append_configuration_history
         append_configuration_history(book, data["history"], history_schedules or {})
     # Retain legacy values for old snapshots without exposing retired controls.
-    for name in ('相对岗位时间', '当天相对时间例外', '岗位时间', '航班衔接', '支援释放规则', '岗位方式例外'):
+    for name in ('岗位性质', '当天岗位例外', '相对岗位时间', '当天相对时间例外', '岗位时间', '航班衔接', '支援释放规则', '岗位方式例外'):
         if name in book.sheetnames:
             book[name].sheet_state = 'hidden'
     if '模板岗位' in book.sheetnames:
@@ -1677,10 +1709,15 @@ def import_complete_configuration(content):
                 library.append(template)
             by_number = {f["flightNo"]: f for f in library}
             if "模板岗位" in book.sheetnames:
-                for number, role, count, mode, start, end in rows("模板岗位", ["航班号", "岗位", "同时需要人数", "工作方式例外", "特殊开始", "特殊结束"]):
+                header = ["航班号", "岗位", "同时需要人数", "工作方式例外", "特殊开始", "特殊结束"]
+                if _text(book["模板岗位"].cell(1, 7).value):
+                    header.append("同航班专人专岗")
+                for row in rows("模板岗位", header):
+                    number, role, count, mode, start, end = row[:6]
                     if _text(number) not in by_number:
                         raise ValueError("模板岗位引用未知航班")
-                    by_number[_text(number)]["roles"].append({"roleName": _text(role), "requiredCount": count, "workModeOverride": _text(mode) or None, "workStart": _work_time_text(start), "workEnd": _work_time_text(end)})
+                    flags = {"exclusiveSameFlight": yes_no(row[6])} if len(row) == 7 else {}
+                    by_number[_text(number)]["roles"].append({"roleName": _text(role), "requiredCount": count, "workModeOverride": _text(mode) or None, "workStart": _work_time_text(start), "workEnd": _work_time_text(end), **flags})
             data["flightLibrary"] = validate_library(library)
         elif "模板岗位" in book.sheetnames:
             raise ValueError("模板岗位需要配套航班模板表")
@@ -1693,13 +1730,24 @@ def import_complete_configuration(content):
                       target_header if target_header in {'优先登机岗位','目标岗位优先顺序'} else '目标岗位优先顺序', "启用"]
             if _text(book["岗位接续偏好"].cell(1, 5).value):
                 header.append("按顺序优先")
+            if _text(book['岗位接续偏好'].cell(1,6).value):
+                if len(header)!=5:raise ValueError('接续方式需保留按顺序优先列')
+                header.append('接续方式')
+            if _text(book['岗位接续偏好'].cell(1,7).value):
+                if len(header)!=6:raise ValueError('组合编号需保留接续方式列')
+                header.append('组合编号')
             data["handoffPreferences"] = []
             for row in rows("岗位接续偏好", header):
                 number, role, targets, enabled = row[:4]
                 scope = _text(number)
                 item = {"flightNo": "*" if scope in {"通用", "*"} else scope, "arrivalRole": _text(role), "boardingRoles": [r.strip() for r in re.split(r"[、,，;；\n]+", _text(targets)) if r.strip()], "enabled": yes_no(enabled)}
-                if len(row) == 5 and _text(row[4]):
+                if len(row) >= 5 and _text(row[4]):
                     item["ordered"] = yes_no(row[4])
+                if len(row)>=6 and _text(row[5]):
+                    modes={'候选目标优先':'priority','同人多岗接续':'chain'}
+                    if _text(row[5]) not in modes:raise ValueError('接续方式须为候选目标优先或同人多岗接续')
+                    item['mode']=modes[_text(row[5])]
+                if len(row)==7 and _text(row[6]):item['id']=_text(row[6])
                 data["handoffPreferences"].append(item)
         from .work_rules_excel import read_flow_scopes
         read_flow_scopes(book,data)

@@ -23,7 +23,8 @@ test('规则页无需当前日计划即可维护已导入的航班接续偏好',
   assert.match(markup,/data-flow-rule="0"/);
   assert.equal((markup.match(/data-flow-rule=/g) ?? []).length,1);
   assert.match(markup,/value="登机核验" selected/);
-  assert.match(markup,/data-flow-enabled checked/);
+  assert.doesNotMatch(markup,/data-flow-enabled/);
+  assert.equal(state.handoffPreferences[0].enabled,true);
 });
 
 const fixtures = () => ({

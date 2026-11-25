@@ -9,14 +9,16 @@ export function baggageWindowHtml(state:State,rules:WorkRules,coverage?:BaggageC
     <label class="switch-label"><input type="checkbox" data-baggage-window-enabled ${setting?'checked':''}/>按保障时段计算轮换人数</label>
     <div class="form-grid">
     <label>时间依据<select data-baggage-time-basis ${setting?'':'disabled'}><option value="flight-window" ${byWindow?'selected':''}>航班保障窗口（按已填开始、结束）</option><option value="departure-offsets" ${!byWindow?'selected':''}>提前量计算（开检至截载）</option></select></label>
+    <label>交接方式<select data-baggage-handoff-mode ${setting?'':'disabled'}><option value="flexible" ${value.handoffMode==='flexible'?'selected':''}>按接续灵活交接</option><option value="fixed" ${value.handoffMode!=='flexible'?'selected':''}>固定时段轮换</option></select></label>
     <label>开检：模板结束时间提前（分钟）<input data-baggage-window-field="startBeforeMinutes" type="number" min="1" max="1440" value="${value.startBeforeMinutes}" ${setting&&!byWindow?'':'disabled'}/></label>
     <label>截载：起飞时间提前（分钟）<input data-baggage-window-field="endBeforeMinutes" type="number" min="0" max="1439" value="${value.endBeforeMinutes}" ${setting&&!byWindow?'':'disabled'}/></label>
     <label>每人轮值（分钟）<input data-baggage-window-field="rotationMinutes" type="number" min="1" max="1440" value="${value.rotationMinutes}" ${setting?'':'disabled'}/></label>
     <label>尾段宽限（分钟）<input data-baggage-window-field="remainderToleranceMinutes" type="number" min="0" max="1440" placeholder="旧规则：尾段不增人" value="${value.remainderToleranceMinutes??''}" ${setting?'':'disabled'}/></label></div>
     <p class="section-note">重叠及首尾相接的窗口合并，有空档的分开。整轮之后剩余时间不超过宽限，由最后一人继续；超过宽限就增加一人。每轮60分钟、宽限15分钟时，1小时15分用1人，1小时16分用2人，2小时45分和3小时15分均用3人；整段不足一轮至少1人。宽限0表示有尾段就增人；留空沿用旧规则，尾段不增人。同一合并段每轮必须换人，不同段可复用。未填起飞时间时，截载以当天航班结束时间为基准。各轮按大件1、大件2、大件3编号，可用于接续、禁止及分人规则。关闭本开关沿用“轮换与走动”的旧设置。</p>
     <p class="section-note">${byWindow?'按航班已填保障窗口计算，不再向前倒推；一小时窗口每轮60分钟时只需一轮。':'按开检、截载提前量计算，实际大件窗口可能与表头不同。'}</p>
+    <p class="section-note">${value.handoffMode==='flexible'?'大件为共享池，轮换时刻供参考，可按接机等接续需要提前交接；人数和每轮分人仍按上述规则计算。较早/较晚在池内重叠航班中比较，不绑定某一架航班。':'固定模式按各轮实际起止检查，不能在这一轮结束后倒接已经结束的航班。'}</p>
     ${setting&&coverage?`<div class="baggage-window-preview"><strong>已保存规则的计算预览 · ${coverage.requiredPeople} 轮值人次</strong>
-    ${coverage.groups.map(g=>`<p>${g.flights.map(html).join(' / ')}：${html(g.start)}—${html(g.end)}，${g.requiredPeople} 名不同人员</p><ol>${g.turns.map(t=>`<li>${html(t.role??'')} · ${html(t.start)}—${html(t.end)}</li>`).join('')}</ol>`).join('')||'<p>当前日期没有需要大件保障的航班。</p>'}</div>`:''}
+    ${coverage.groups.map(g=>`<p>${g.flights.map(html).join(' / ')}：${html(g.start)}—${html(g.end)}，${g.requiredPeople} 名不同人员</p><ol>${g.turns.map(t=>`<li>${html(t.role??'')} · ${value.handoffMode==='flexible'?'参考 ':''}${html(t.start)}—${html(t.end)}</li>`).join('')}</ol>`).join('')||'<p>当前日期没有需要大件保障的航班。</p>'}</div>`:''}
     <p class="section-note">修改后统一保存配置并重新排班；预览按已保存规则计算，未保存的改动尚未计算，当前班表和正式历史不会被预览改写。</p></section>`;
 }
 
@@ -27,10 +29,12 @@ export function bindBaggageWindow(container:HTMLElement,state:State,modify:(fn:(
   container.querySelector<HTMLSelectElement>('[data-baggage-time-basis]')!.onchange=event=>modify(r=>{
     if(r.baggageWindow)r.baggageWindow.timeBasis=(event.target as HTMLSelectElement).value as NonNullable<BaggageWindow['timeBasis']>;
   },true);
+  const handoff=container.querySelector<HTMLSelectElement>('[data-baggage-handoff-mode]');
+  if(handoff)handoff.onchange=event=>modify(r=>{if(r.baggageWindow)r.baggageWindow.handoffMode=(event.target as HTMLSelectElement).value as 'fixed'|'flexible';},true);
   container.querySelectorAll<HTMLInputElement>('[data-baggage-window-field]').forEach(input=>{
     input.onchange=()=>modify(r=>{
       if(!r.baggageWindow)return;
-      const field=input.dataset.baggageWindowField as Exclude<keyof BaggageWindow,'timeBasis'>;
+      const field=input.dataset.baggageWindowField as Exclude<keyof BaggageWindow,'timeBasis'|'handoffMode'>;
       if(field==='remainderToleranceMinutes'&&input.value==='')delete r.baggageWindow.remainderToleranceMinutes;
       else r.baggageWindow[field]=input.valueAsNumber;
     });

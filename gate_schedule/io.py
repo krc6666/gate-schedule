@@ -35,6 +35,7 @@ def scenario_from_dict(data: dict) -> Scenario:
             service_stage=item.get("serviceStage"),
             covered_flight_ids=tuple(item.get("coveredFlightIds", ())),
             timing_mode=item.get("timingMode", "exact"), concurrent=item.get("concurrent", False), exclusive_same_flight=item.get("exclusiveSameFlight", False),
+            exclusive_flight_ids=tuple(item.get("exclusiveFlightIds", ())),
         )
         for item in data["tasks"]
     )
@@ -139,7 +140,8 @@ def scenario_to_dict(scenario: Scenario) -> dict:
             {"id": item.id, "flightId": item.flight_id, "roleId": item.role_id, "start": item.start, "end": item.end,
              "requiredCount": item.required_count, "taskKind": item.task_kind, "locationId": item.location_id,
              "lockedMemberIds": list(item.locked_member_ids), "serviceStage": item.service_stage,
-             "coveredFlightIds": list(item.covered_flight_ids), "timingMode": item.timing_mode, "concurrent": item.concurrent, **({"exclusiveSameFlight": True} if item.exclusive_same_flight else {})}
+             "coveredFlightIds": list(item.covered_flight_ids), "timingMode": item.timing_mode, "concurrent": item.concurrent, **({"exclusiveSameFlight": True} if item.exclusive_same_flight else {}),
+             **({"exclusiveFlightIds": list(item.exclusive_flight_ids)} if item.exclusive_flight_ids else {})}
             for item in scenario.tasks
         ],
         "rotations": [
@@ -200,6 +202,7 @@ def _split_boarding_tasks_at_arrival_flight_ends(
                     service_stage=task.service_stage,
                     covered_flight_ids=task.covered_flight_ids,
                     timing_mode=task.timing_mode, concurrent=task.concurrent, exclusive_same_flight=task.exclusive_same_flight,
+                    exclusive_flight_ids=task.exclusive_flight_ids,
                 )
             )
         task_ids_by_original[task.id] = tuple(segment_ids)
@@ -215,6 +218,7 @@ def normalize_saved_scenario(raw: dict, assignments: list[dict]) -> tuple[dict, 
         required_count=t["requiredCount"], task_kind=t["taskKind"],
         location_id=t.get("locationId"), locked_member_ids=tuple(t.get("lockedMemberIds", ())), service_stage=t.get("serviceStage"),
         covered_flight_ids=tuple(t.get("coveredFlightIds", ())), timing_mode=t.get("timingMode", "exact"), concurrent=t.get("concurrent", False), exclusive_same_flight=t.get("exclusiveSameFlight", False),
+        exclusive_flight_ids=tuple(t.get("exclusiveFlightIds", ())),
     ) for t in raw["tasks"])
     _, mapping = _split_boarding_tasks_at_arrival_flight_ends(original_tasks, normalized.flights) if normalized.release_policy == "flight" else (original_tasks, {t.id: (t.id,) for t in original_tasks})
     migrated = []

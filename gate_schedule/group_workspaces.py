@@ -32,8 +32,9 @@ def _shared(state):
     }
 
 
-def _project(state, shared):
-    state = deepcopy(state)
+def _project(state, shared, *, copy_state=True):
+    if copy_state:
+        state = deepcopy(state)
     local = {f['flightNo']: f for f in state['flightLibrary']}
     state['flightLibrary'] = [{**deepcopy(local.get(f['flightNo'], {
         'roles': [], 'roleNames': [r['roleName'] for r in state['configuration']['roleConfigs']]})),
@@ -49,7 +50,9 @@ class _GroupStore:
 
     def read_document(self, key):
         root = self.owner._load()
-        return _project(root['groups'][self.group], root['shared'])
+        # _load() owns its store-read document; projecting shared flights need
+        # not clone every unrelated saved day a second time.
+        return _project(root['groups'][self.group], root['shared'], copy_state=False)
 
     def compare_and_save(self, key, expected_revision, state):
         for _ in range(5):

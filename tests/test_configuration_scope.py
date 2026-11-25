@@ -29,7 +29,8 @@ class ConfigurationScopeTests(unittest.TestCase):
         self.command('add-template-role', {'flightNo': included, 'roleName': '专项服务岗'})
         self.command('save-role', {'roleName': '专项服务岗', 'requiredCount': 1, 'workMode': 'boarding'})
         template = next(f for f in self.wb.snapshot()['flightLibrary'] if f['flightNo'] == included)
-        template['roles'].append({'roleName': '专项服务岗', 'requiredCount': 2})
+        scoped = next(role for role in template['roles'] if role['roleName'] == '专项服务岗')
+        scoped.update(requiredCount=2, workModeOverride='boarding')
         self.command('save-flight-template', template)
         return included, excluded
 

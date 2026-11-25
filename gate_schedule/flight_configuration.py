@@ -19,7 +19,7 @@ def validate_library(library):
         if not isinstance(roles, list) or len(roles) != len({r["roleName"] for r in roles}):
             raise ValueError("模板岗位重复或无效")
         for role in roles:
-            if set(role) - {"roleName", "requiredCount", "workModeOverride", "workStart", "workEnd"}:
+            if set(role) - {"roleName", "requiredCount", "workModeOverride", "workStart", "workEnd", "exclusiveSameFlight"}:
                 raise ValueError("模板岗位字段无效")
             if not isinstance(role["roleName"], str) or not role["roleName"].strip():
                 raise ValueError("模板岗位名称不能为空")
@@ -28,6 +28,8 @@ def validate_library(library):
                 raise ValueError("模板人数必须为空、0或正整数")
             if role.get("workModeOverride") is not None and role["workModeOverride"] not in WORK_MODES:
                 raise ValueError("模板岗位方式无效")
+            if "exclusiveSameFlight" in role and type(role["exclusiveSameFlight"]) is not bool:
+                raise ValueError("模板岗位专人专岗必须为明确的是或否")
             for key in ("workStart", "workEnd"):
                 if role.get(key):
                     parse_minutes(role[key])
@@ -39,12 +41,21 @@ def validate_library(library):
 
 
 def with_role_membership(state):
-    """Materialize legacy inheritance once; later catalog additions are opt-in."""
-    names = [r["roleName"] for r in state["configuration"]["roleConfigs"]]
+    """Materialize old role-wide flags once; current templates own their values."""
+    configs = {r["roleName"]: r for r in state["configuration"]["roleConfigs"]}
+    names = list(configs)
     for flight in state["flightLibrary"]:
         flight.setdefault("roleNames", list(names))
         if set(flight["roleNames"]) - set(names):
             raise ValueError("本航班岗位引用了不存在的通用岗位")
+        roles = {role["roleName"]: role for role in flight.get("roles", [])}
+        for name in flight["roleNames"]:
+            if name not in roles:
+                role = {"roleName": name, "requiredCount": None, "workModeOverride": None, "workStart": None, "workEnd": None}
+                flight.setdefault("roles", []).append(role)
+                roles[name] = role
+            role = roles[name]
+            role.setdefault("exclusiveSameFlight", configs.get(name, {}).get("exclusiveSameFlight", False))
 
 
 def seed_library(state):
@@ -60,7 +71,8 @@ def seed_library(state):
                 if cell["flightId"] != flight["id"]:
                     continue
                 roles.append({"roleName": cell["roleName"], "requiredCount": cell.get("requiredCountOverride") if cell.get("requiredCountOverride") is not None else defaults.get(cell["roleName"], {}).get("requiredCount"),
-                              "workModeOverride": cell.get("workModeOverride"), "workStart": cell.get("workStart"), "workEnd": cell.get("workEnd")})
+                              "workModeOverride": cell.get("workModeOverride"), "workStart": cell.get("workStart"), "workEnd": cell.get("workEnd"),
+                              "exclusiveSameFlight": cell.get("exclusiveSameFlightOverride", defaults.get(cell["roleName"], {}).get("exclusiveSameFlight", False))})
             catalog[flight["flightNo"]] = {k: flight[k] for k in ("flightNo", "windowStart", "windowEnd")}
             catalog[flight["flightNo"]]["roles"] = roles
     for flights in state.get("weeklyFlightPresets", {}).values():
@@ -74,7 +86,21 @@ def save_template(state, payload):
     number = payload["flightNo"].strip()
     existing = next((f for f in state["flightLibrary"] if f["flightNo"] == number), {})
     template = {**deepcopy(existing), **deepcopy(payload), "flightNo": number}
-    library = [f for f in state["flightLibrary"] if f["flightNo"] != number] + [template]
+    validate_library([template])
+    previous_roles = {role["roleName"]: role for role in existing.get("roles", [])}
+    role_names = template.get("roleNames", existing.get("roleNames", [r["roleName"] for r in state["configuration"]["roleConfigs"]]))
+    supplied_roles = {role["roleName"]: role for role in template.get("roles", [])}
+    template['roles'] = list(supplied_roles.values())
+    for name in role_names:
+        if name not in supplied_roles:
+            role = {'roleName': name, 'requiredCount': None, 'workModeOverride': None, 'workStart': None, 'workEnd': None}
+            template['roles'].append(role)
+            supplied_roles[name] = role
+    for name, role in supplied_roles.items():
+        role.setdefault('exclusiveSameFlight', previous_roles.get(name, {}).get('exclusiveSameFlight', False))
+    library = [template if f["flightNo"] == number else f for f in state["flightLibrary"]]
+    if not existing:
+        library.append(template)
     state["flightLibrary"] = validate_library(library)
     with_role_membership(state)
 
@@ -102,4 +128,5 @@ def fill_day(state, day, flight_numbers):
             rule = roles.get(role_name, {})
             day["cells"].append({"id": str(uuid4()), "flightId": flight["id"], "flightNo": number, "roleName": role_name,
                                  "rawValue": "", "internalNames": [], "externalLabels": [], "semantics": "empty", "fixedMemberNames": [],
-                                 "requiredCountOverride": template_required_count(template, role_name), "workModeOverride": rule.get("workModeOverride") if role_name in template["roleNames"] else None, "workStart": rule.get("workStart") if role_name in template["roleNames"] else None, "workEnd": rule.get("workEnd") if role_name in template["roleNames"] else None})
+                                 "requiredCountOverride": template_required_count(template, role_name), "workModeOverride": rule.get("workModeOverride") if role_name in template["roleNames"] else None, "workStart": rule.get("workStart") if role_name in template["roleNames"] else None, "workEnd": rule.get("workEnd") if role_name in template["roleNames"] else None,
+                                 "exclusiveSameFlightOverride": rule.get("exclusiveSameFlight", False) if role_name in template["roleNames"] else False})

@@ -33,7 +33,7 @@ function editor(state: State, rules: WorkRules, kind: string, plan:Plan|null): s
     ${kind==='base' && state.groupedWorkRules && rules.pairs.some(r=>r.scope==='same-flight'&&r.mode==='separate')?'<button type="button" class="btn btn-sm" id="convert-work-groups">旧同航班分人规则转为分人组</button><p class="section-note">转换使用已保存配置；有未保存改动时，请先保存。跨航班及兼任许可仍保留在高级区。</p>':''}
     </section>`;
   return `<div data-work-editor="${kind}">
-    ${category('baggage-rules','大件保障',rules.baggageWindow?'按开检与截载计算轮换':'沿用基础轮换设置',baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined))}
+    ${category('baggage-rules','大件保障',rules.baggageWindow?(rules.baggageWindow.handoffMode==='flexible'?'共享大件池 · 按接续灵活交接':'按保障时段固定轮换'):'沿用基础轮换设置',baggageWindowHtml(state,rules,(kind==='day'||!plan?.day.workRulesOverride)?plan?.baggageRulePreview:undefined))}
     ${category('separation-rules','禁止同人集合',`${groups.length} 项 · ${groups.filter(g=>g.enabled).length} 项启用`,separation)}
     ${category('forbidden-rules','禁止衔接',`${rules.forbiddenHandoffs?.length??0} 项 · ${rules.forbiddenHandoffs?.filter(r=>r.enabled).length??0} 项启用`,forbiddenHandoffsHtml(state,rules,kind))}
     ${category('work-relation-rules','其他岗位关系',`${rules.pairs.length} 项旧关系 · 高级维护`,`${kind==='base'?'<button id="load-confirmed-work-rules" type="button" class="btn btn-sm btn-outline-secondary">载入已确认规则</button>':''}${legacyEditor(state,rules)}`)}

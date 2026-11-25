@@ -62,6 +62,7 @@ def _with_preferences(state):
     window = (state.get('workRules') or {}).get('baggageWindow')
     if isinstance(window, dict):
         window.setdefault('timeBasis', 'flight-window')
+        window.setdefault('handoffMode', 'flexible')
     if "handoffPreferences" not in state:
         state["handoffPreferences"] = general_handoff_preferences(default_handoff_preferences([f["flightNo"] for f in state["flightLibrary"]], [r["roleName"] for r in state["configuration"]["roleConfigs"]]))
     # Saved flight rules outlive daily plans (including after clearing history).

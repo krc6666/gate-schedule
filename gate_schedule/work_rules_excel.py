@@ -1,6 +1,6 @@
 """Visible Excel tables for work relations; domain owns all rule decisions."""
 from copy import deepcopy
-from .domain import empty_work_rules, validate_work_rules, task_handoff_options, task_handoff_key, format_minutes
+from .domain import empty_work_rules, validate_work_rules, task_handoff_options, task_handoff_key, format_minutes, FLOW_FLIGHT_SCOPES, FLOW_FLIGHT_SCOPE_LABELS
 
 PAIR_HEADER = ['设置范围','适用航班','来源岗位','目标岗位','适用关系','搭配方式']
 BAG_HEADER = ['设置范围','目标航班','大件轮次','优先后续岗位','启用']
@@ -13,23 +13,39 @@ FORBIDDEN_HEADER = ['设置范围','来源航班','来源岗位','目标岗位',
 BAGGAGE_WINDOW_SHEET = '大件保障规则'
 BAGGAGE_WINDOW_LEGACY_HEADER = ['设置范围','启用','模板结束前开检分钟','起飞前截载分钟','每人轮值分钟']
 BAGGAGE_WINDOW_TOLERANCE_HEADER = [*BAGGAGE_WINDOW_LEGACY_HEADER,'尾段宽限分钟']
-BAGGAGE_WINDOW_HEADER = [*BAGGAGE_WINDOW_TOLERANCE_HEADER,'时间依据']
+BAGGAGE_WINDOW_BASIS_HEADER = [*BAGGAGE_WINDOW_TOLERANCE_HEADER,'时间依据']
+BAGGAGE_WINDOW_HEADER = [*BAGGAGE_WINDOW_BASIS_HEADER,'交接方式']
 TIME_BASES = {'flight-window':'航班保障窗口','departure-offsets':'提前量计算'}
+HANDOFF_MODES = {'fixed':'固定时段轮换','flexible':'按接续灵活交接'}
 SHEETS = LEGACY_SHEETS | {GROUP_SHEET,FORBIDDEN_SHEET,BAGGAGE_WINDOW_SHEET}
 SCOPES = {'same-flight':'同航班','later-flight':'晚结束航班','after-baggage':'大件完成后'}
 MODES = {'separate':'必须分人','sequence':'先后接续','concurrent':'同时兼做'}
 FLOW_SCOPE_SHEET = '接续航班范围'
 FLOW_SCOPE_HEADER = ['适用来源航班','来源岗位','目标岗位','接续范围']
-FLOW_SCOPES = {'same-flight':'本航班','later-overlap':'重叠且晚结束的其他航班'}
+FLOW_SCOPES = FLOW_FLIGHT_SCOPES
 
 
 def write_flow_scopes(book, preferences):
-    if not any('targetFlightScopes' in p for p in preferences):
+    if not any('targetFlightScopes' in p or 'targetFlightScopeList' in p for p in preferences):
         return
-    sheet=book.create_sheet(FLOW_SCOPE_SHEET);sheet.append(FLOW_SCOPE_HEADER)
+    extended=any('mode' in p or 'id' in p for p in preferences)
+    sheet=book.create_sheet(FLOW_SCOPE_SHEET);sheet.append(FLOW_SCOPE_HEADER+(['接续方式','组合编号'] if extended else []))
     for row in preferences:
-        for target,scope in row.get('targetFlightScopes',{}).items():
-            sheet.append(['通用' if row['flightNo']=='*' else row['flightNo'],row['arrivalRole'],target,FLOW_SCOPES[scope]])
+        targets=row['boardingRoles']
+        scope_list=row.get('targetFlightScopeList')
+        scope_rows=[]
+        entries=enumerate(targets)
+        for position,target in entries:
+            scope=(scope_list[position] if scope_list is not None else row.get('targetFlightScopes',{}).get(target))
+            if scope is None:
+                continue
+            scope_rows.append(['通用' if row['flightNo']=='*' else row['flightNo'],row['arrivalRole'],target,FLOW_SCOPES[scope]])
+        if scope_rows:
+            for entry in scope_rows:
+                sheet.append(entry+([{'priority':'候选目标优先','chain':'同人多岗接续'}[row.get('mode','priority')],row.get('id')] if extended else []))
+        elif not targets and 'targetFlightScopes' in row and not row['targetFlightScopes']:
+            marker=['通用' if row['flightNo']=='*' else row['flightNo'],row['arrivalRole'],None,None]
+            sheet.append(marker+([{'priority':'候选目标优先','chain':'同人多岗接续'}[row.get('mode','priority')],row.get('id')] if extended else []))
 
 
 def read_flow_scopes(book, data):
@@ -38,17 +54,45 @@ def read_flow_scopes(book, data):
     if 'handoffPreferences' not in data:
         raise ValueError('接续航班范围需要配套岗位接续偏好表')
     rows=list(book[FLOW_SCOPE_SHEET].values)
-    if not rows or list(rows[0])!=FLOW_SCOPE_HEADER:
+    if not rows or list(rows[0]) not in (FLOW_SCOPE_HEADER,FLOW_SCOPE_HEADER+['接续方式','组合编号']):
         raise ValueError('接续航班范围表头无效')
-    by_key={(r['flightNo'],r['arrivalRole']):r for r in data['handoffPreferences']}
-    for row in by_key.values():row['targetFlightScopes']={}
-    scopes={v:k for k,v in FLOW_SCOPES.items()}
-    for flight,source,target,scope in rows[1:]:
+    extended=len(rows[0])==6
+    by_key={(r['flightNo'],r['arrivalRole'],r.get('mode','priority'),r.get('id')):r for r in data['handoffPreferences']}
+    for row in by_key.values():
+        row['targetFlightScopes']={}
+        row.pop('targetFlightScopeList',None)
+    positions={key:{} for key in by_key}
+    collected={key:{} for key in by_key}
+    scopes=FLOW_FLIGHT_SCOPE_LABELS
+    for entry in rows[1:]:
+        flight,source,target,scope=entry[:4]
         if all(v is None or v=='' for v in (flight,source,target,scope)):continue
-        row=by_key.get(('*' if flight=='通用' else flight,source))
-        if row is None or target not in row['boardingRoles'] or scope not in scopes or target in row['targetFlightScopes']:
-            raise ValueError('接续航班范围引用未知或重复的来源、目标或范围')
-        row['targetFlightScopes'][target]=scopes[scope]
+        mode,identity=('priority',None)
+        if extended:
+            mode={'候选目标优先':'priority','同人多岗接续':'chain'}.get(entry[4])
+            identity=entry[5] or None
+        row=by_key.get(('*' if flight=='通用' else flight,source,mode,identity))
+        key=('*' if flight=='通用' else flight,source,mode,identity)
+        if row is not None and target in (None,'') and scope in (None,''):
+            continue
+        if row is None or target not in row['boardingRoles'] or scope not in scopes:
+            raise ValueError('接续航班范围引用未知的来源、目标或范围')
+        used=positions[key].get(target,0)
+        matches=[i for i,role in enumerate(row['boardingRoles']) if role==target]
+        if used>=len(matches):
+            raise ValueError('接续航班范围重复超过目标岗位数量')
+        collected[key].setdefault(target,[]).append(scopes[scope])
+        positions[key][target]=used+1
+        if len(matches)==1:
+            row.setdefault('targetFlightScopes',{})[target]=scopes[scope]
+    for key,row in by_key.items():
+        if any(row['boardingRoles'].count(target)>1 for target in row['boardingRoles']):
+            if any(len(collected[key].get(target,()))!=row['boardingRoles'].count(target)
+                   for target in row['boardingRoles'] if row['boardingRoles'].count(target)>1):
+                raise ValueError('重复目标岗位的接续范围表不完整')
+            row['targetFlightScopeList']=[collected[key][target].pop(0) if collected[key].get(target) else 'same-flight'
+                                          for target in row['boardingRoles']]
+            row.pop('targetFlightScopes',None)
 
 
 def write_work_rules(book, settings, day, rotation_minutes, rotation_enabled):
@@ -83,7 +127,8 @@ def write_work_rules(book, settings, day, rotation_minutes, rotation_enabled):
                 window['endBeforeMinutes'] if window is not None else None,
                 window['rotationMinutes'] if window is not None else None,
                 window.get('remainderToleranceMinutes') if window is not None else None,
-                TIME_BASES.get(window.get('timeBasis')) if window is not None else None])
+                TIME_BASES.get(window.get('timeBasis')) if window is not None else None,
+                HANDOFF_MODES.get(window.get('handoffMode')) if window is not None else None])
         for r in rules['pairs']:
             pairs.append([label,'通用' if r['flightNo']=='*' else r['flightNo'],r['firstRole'],r['secondRole'],SCOPES[r['scope']],MODES[r['mode']]])
         for r in rules['baggage']:
@@ -136,17 +181,18 @@ def read_work_rules(book, data):
         for rules in by_scope.values():rules['baggageWindow']=None
         seen=set()
         header=list(next(book[BAGGAGE_WINDOW_SHEET].values))
-        if header not in (BAGGAGE_WINDOW_HEADER,BAGGAGE_WINDOW_TOLERANCE_HEADER,BAGGAGE_WINDOW_LEGACY_HEADER):
+        if header not in (BAGGAGE_WINDOW_HEADER,BAGGAGE_WINDOW_BASIS_HEADER,BAGGAGE_WINDOW_TOLERANCE_HEADER,BAGGAGE_WINDOW_LEGACY_HEADER):
             raise ValueError('大件保障规则表头无效')
         for row in rows(BAGGAGE_WINDOW_SHEET,header):
             label,enabled,start,end,minutes,*extra=row
             tolerance=extra[0] if extra else None
             basis=extra[1] if len(extra)>1 else None
+            handoff=extra[2] if len(extra)>2 else None
             if label not in by_scope or label in seen or enabled not in {'是','否'}:
                 raise ValueError('大件保障规则设置范围、启用或重复行无效')
             seen.add(label)
             if enabled=='否':
-                if any(v is not None and v!='' for v in (start,end,minutes,tolerance,basis)):
+                if any(v is not None and v!='' for v in (start,end,minutes,tolerance,basis,handoff)):
                     raise ValueError('关闭的大件保障规则请清空分钟列，避免误解')
             else:
                 by_scope[label]['baggageWindow']=dict(startBeforeMinutes=start,endBeforeMinutes=end,rotationMinutes=minutes)
@@ -156,8 +202,12 @@ def read_work_rules(book, data):
                     if basis not in TIME_BASES.values():
                         raise ValueError('大件保障规则时间依据无效')
                     by_scope[label]['baggageWindow']['timeBasis']=next(k for k,v in TIME_BASES.items() if v==basis)
+                if handoff is not None and handoff!='':
+                    if handoff not in HANDOFF_MODES.values():
+                        raise ValueError('大件交接方式无效')
+                    by_scope[label]['baggageWindow']['handoffMode']=next(k for k,v in HANDOFF_MODES.items() if v==handoff)
     if FORBIDDEN_SHEET in found:
-        entries={};scopes={v:k for k,v in FLOW_SCOPES.items()}
+        entries={};scopes=FLOW_FLIGHT_SCOPE_LABELS
         for rules in by_scope.values():rules['forbiddenHandoffs']=[]
         for label,flight,source,target,scope,enabled in rows(FORBIDDEN_SHEET,FORBIDDEN_HEADER):
             if label not in by_scope or enabled not in {'是','否'}:

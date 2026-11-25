@@ -39,6 +39,25 @@ def flow_scene():
 
 
 class FlowSchedulingTests(unittest.TestCase):
+    def test_baggage_first_turn_can_continue_to_arrival_then_boarding(self):
+        original=flow_scene()
+        boarding=Task('board','A','秩序维护',480,660,1,'mobile',timing_mode='phase',service_stage='boarding')
+        scene=replace(original,tasks=(original.tasks[0],original.tasks[2],boarding),
+            members=(replace(original.members[0],eligible_role_ids=original.members[0].eligible_role_ids|{'秩序维护'}),),
+            rotations=(replace(original.rotations[0],candidate_member_ids=('甲',)),),
+            flow_preferences=(preference(['接机1'],source='大件1'),preference(['秩序维护'],source='接机1')))
+        result=solve(scene)
+        self.assertEqual('OPTIMAL',result.status,result.diagnostics)
+        self.assertEqual({Assignment(t.id,'甲') for t in scene.tasks},set(result.assignments))
+        self.assertFalse(validate_schedule(scene,result.assignments))
+        # A third job does not waive a direct prohibition between the first
+        # and last duties, even though the intermediate route exists.
+        prohibited=replace(scene,work_rules={'pairs':[],'baggage':[],
+            'forbiddenHandoffs':[dict(flightNo='*',sourceRole='大件1',
+                targets=[dict(role='秩序维护',flightScope='same-flight')],enabled=True)]})
+        self.assertIn('forbidden_handoff',{i.code for i in validate_schedule(prohibited,result.assignments)})
+        self.assertEqual('INFEASIBLE',solve(prohibited).status)
+
     def test_cross_flight_continuation_only_goes_forward_and_cycles_stay_feasible(self):
         scenario=flow_scene()
         scene=replace(scenario, flights=(*scenario.flights,Flight('B','B','2057-08-02',720,780)),

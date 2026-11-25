@@ -5,6 +5,7 @@ type Hooks<T> = { source(el: HTMLElement): T | null; drop(source: T, target: Tar
 export class ScheduleDrag<T> {
   private controller = new AbortController();
   private cleanup: (() => void) | null = null;
+  get dragging(): boolean { return this.cleanup !== null; }
   constructor(private root: HTMLElement, private hooks: Hooks<T>) {}
   dispose(): void { this.cleanup?.(); this.controller.abort(); this.controller = new AbortController(); }
   bind(scope: HTMLElement = this.root): void {

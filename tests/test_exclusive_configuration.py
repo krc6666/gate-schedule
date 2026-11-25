@@ -17,6 +17,12 @@ def configuration():
     day['roleConfigs'].append({'roleName': '登机主验', 'requiredCount': 1, 'workMode': 'boarding', 'concurrent': False})
     for member in day['memberConfigs']: member['eligibleRoleNames'].append('登机主验')
     day['cells'].extend([{**deepcopy(c), 'id': c['id']+'boarding', 'roleName': '登机主验'} for c in day['cells'][:]])
+    data['flightLibrary'] = [{
+        'flightNo': flight['flightNo'], 'windowStart': flight['windowStart'], 'windowEnd': flight['windowEnd'],
+        'roleNames': list(day['roleNames']),
+        'roles': [{'roleName': name, 'requiredCount': None, 'workModeOverride': next(r['workMode'] for r in day['roleConfigs'] if r['roleName'] == name),
+                   'exclusiveSameFlight': False} for name in day['roleNames']],
+    } for flight in day['flights']]
     return data
 
 
@@ -43,17 +49,24 @@ class ExclusiveConfigurationTests(unittest.TestCase):
         return next(role for role in state['configuration']['roleConfigs'] if role['roleName'] == name)
 
     def test_export_empty_device_restart_solve_and_manual_corruption_rejected(self):
-        state = self.command('save-role', {'roleName':'登机主验', 'exclusiveSameFlight':True})
+        state = self.workspace.snapshot()
+        for flight in deepcopy(state['flightLibrary']):
+            for role in flight['roles']:
+                if role['roleName'] == '登机主验':
+                    role['exclusiveSameFlight'] = True
+            state = self.command('save-flight-template', flight)
         original_pid = state['selectedPlanId']
         old_plans = deepcopy(state['plans'])
         content = self.workspace.export_complete_configuration(original_pid)
         imported = import_complete_configuration(content)
-        self.assertTrue(next(r for r in imported['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
-        # The exported old day's exception stays off; new plans use the enabled default.
+        self.assertTrue(all(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验')
+                            for f in imported['flightLibrary']))
+        # The old day stays off; explicitly loading the flight templates applies their flags.
         other_path = self.path.with_name('device.sqlite3'); other = Workbench(other_path)
         self.command('import-complete-configuration', imported, workspace=other)
         other = Workbench(other_path)
-        self.assertTrue(self.role(other.snapshot())['exclusiveSameFlight'])
+        self.assertTrue(all(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验')
+                            for f in other.snapshot()['flightLibrary']))
         pid = other.snapshot()['selectedPlanId']
         self.command('apply-config', {}, pid, other)
         result = self.command('solve', {}, pid, other)
@@ -79,43 +92,53 @@ class ExclusiveConfigurationTests(unittest.TestCase):
         self.assertEqual(old_plans, self.workspace.snapshot()['plans'])
         restored = Workbench(self.path.with_name('restore.sqlite3'))
         restored.restore(0, other.backup())
-        self.assertTrue(self.role(restored.snapshot())['exclusiveSameFlight'])
+        self.assertTrue(all(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验')
+                            for f in restored.snapshot()['flightLibrary']))
         self.assertEqual(formal, restored.snapshot()['plans'][pid]['adopted'])
 
     def test_legacy_missing_flag_preserves_current_and_explicit_no_disables(self):
-        self.command('save-role', {'roleName':'登机主验', 'exclusiveSameFlight':True})
+        for template in deepcopy(self.workspace.snapshot()['flightLibrary']):
+            for role in template['roles']:
+                if role['roleName'] == '登机主验': role['exclusiveSameFlight'] = True
+            self.command('save-flight-template', template)
         legacy = load_workbook(BytesIO(export_complete_configuration(configuration())))
+        legacy['使用说明']['B2'] = '登机口完整配置-5'
+        del legacy['岗位性质']
+        legacy.create_sheet('岗位性质')
+        legacy['岗位性质'].cell(1, 1, '岗位')
+        legacy['岗位性质'].cell(1, 2, '工作方式')
         # Reconstruct the old three-column nature format, without the dedicated flag.
         legacy['岗位性质'].cell(1, 3, '岗位性质')
         for row in legacy['岗位性质'].iter_rows(min_row=2): row[2].value = '常规'
+        legacy['岗位性质'].cell(1, 4, '同航班专岗专人')
+        for row in legacy['岗位性质'].iter_rows(min_row=2): row[3].value = '是' if row[0].value == '登机主验' else '否'
+        legacy['模板岗位'].delete_cols(7, 2)
+        del legacy['当天航班岗位专人专岗']
+        modes = {'timed':'特殊实际时段', 'arrival':'接机环节', 'boarding':'登机环节', 'continuous':'全程保障'}
+        for role in configuration()['day']['roleConfigs']:
+            legacy['岗位性质'].append([role['roleName'], modes[role.get('workMode', 'timed')], '常规', '是' if role['roleName']=='登机主验' else '否'])
         incoming = import_complete_configuration(book_bytes(legacy))
-        self.assertNotIn('exclusiveSameFlight', next(r for r in incoming['day']['roleConfigs'] if r['roleName']=='登机主验'))
+        self.assertTrue(next(r for r in incoming['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
         state = self.command('import-complete-configuration', incoming)
-        self.assertTrue(self.role(state)['exclusiveSameFlight'])
-        self.assertTrue(next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
+        self.assertTrue(all(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验')
+                            for f in state['flightLibrary']))
         incoming = import_complete_configuration(export_complete_configuration(configuration()))
         state = self.command('import-complete-configuration', incoming)
-        self.assertFalse(self.role(state)['exclusiveSameFlight'])
+        self.assertFalse(any(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验') for f in state['flightLibrary']))
         fresh = Workbench(self.path.with_name('legacy-device.sqlite3'))
         state = self.command('import-complete-configuration', import_complete_configuration(book_bytes(load_workbook(BytesIO(export_complete_configuration(configuration()))))), workspace=fresh)
-        self.assertFalse(self.role(state).get('exclusiveSameFlight',False))
+        self.assertFalse(any(next(r['exclusiveSameFlight'] for r in f['roles'] if r['roleName']=='登机主验') for f in state['flightLibrary']))
 
     def test_daily_on_and_off_survive_excel_and_old_daily_column_inherits_base(self):
         data = configuration()
-        data['day']['roleConfigs'][1]['exclusiveSameFlight'] = True
-        data['dayOverrides'] = {'roleConfigs':[{**data['day']['roleConfigs'][1], 'exclusiveSameFlight':False}], 'qualifications':[], 'settings':{}}
+        data['day']['cells'][0]['exclusiveSameFlightOverride'] = True
         restored = import_complete_configuration(export_complete_configuration(data))
-        self.assertTrue(restored['day']['roleConfigs'][1]['exclusiveSameFlight'])
-        self.assertFalse(restored['dayOverrides']['roleConfigs'][0]['exclusiveSameFlight'])
-        state = self.command('import-complete-configuration', restored)
-        self.assertTrue(self.role(state)['exclusiveSameFlight'])
-        self.assertFalse(next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
+        self.assertTrue(restored['day']['cells'][0]['exclusiveSameFlightOverride'])
         book = load_workbook(BytesIO(export_complete_configuration(data)))
-        book['当天岗位例外'].cell(1, 4, '可兼任')
-        for row in book['当天岗位例外'].iter_rows(min_row=2): row[3].value = '否'
+        self.assertEqual('hidden', book['岗位性质'].sheet_state)
+        book['当天航班岗位专人专岗']['C2'] = '否'
         restored = import_complete_configuration(book_bytes(book))
-        state = self.command('import-complete-configuration', restored)
-        self.assertTrue(next(r for r in state['plans'][state['selectedPlanId']]['day']['roleConfigs'] if r['roleName']=='登机主验')['exclusiveSameFlight'])
+        self.assertFalse(restored['day']['cells'][0]['exclusiveSameFlightOverride'])
 
     def test_bad_boolean_or_excel_flag_never_writes(self):
         before = self.workspace.backup()
@@ -124,5 +147,5 @@ class ExclusiveConfigurationTests(unittest.TestCase):
                 self.command('save-role', {'roleName':'登机主验', 'exclusiveSameFlight':value})
             self.assertEqual(before, self.workspace.backup())
         book = load_workbook(BytesIO(export_complete_configuration(configuration())))
-        book['岗位性质']['D2'] = '随便'
+        book['模板岗位']['G2'] = '随便'
         with self.assertRaises(ValueError): import_complete_configuration(book_bytes(book))

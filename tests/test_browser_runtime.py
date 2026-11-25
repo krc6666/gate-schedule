@@ -15,7 +15,7 @@ class BrowserRuntimeTests(unittest.TestCase):
         body = binary if binary is not None else json.dumps(payload, ensure_ascii=False).encode() if payload is not None else b''
         result = json.loads(request_sync(json.dumps({
             'documents': documents, 'url': url, 'method': 'POST' if payload is not None or binary is not None else 'GET',
-            'headers': {'X-Gate-Rule-Schema': 'flight-role-v1'}, 'body': base64.b64encode(body).decode(),
+            'headers': {'X-Gate-Rule-Schema': 'flight-role-v2'}, 'body': base64.b64encode(body).decode(),
         })))
         response = result['response']
         content = base64.b64decode(response['body'])

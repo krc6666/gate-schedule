@@ -21,11 +21,11 @@ def scene():
 
 
 class ContinuationStaffingTests(unittest.TestCase):
-    def test_configured_part_time_does_not_consume_another_person_in_shortage(self):
+    def test_shortage_withholds_configured_part_time_too(self):
         s=scene();result=solve(s,allow_partial=True)
         self.assertEqual('OPTIMAL',result.status)
-        self.assertEqual({Assignment('source','m'),Assignment('target','m')},set(result.assignments))
-        self.assertEqual({('coverage_shortfall','missing')},{(i.code,i.task_id) for i in validate_schedule(s,result.assignments)})
+        self.assertEqual({Assignment('source','m')},set(result.assignments))
+        self.assertEqual({('coverage_shortfall','missing'),('coverage_shortfall','target')},{(i.code,i.task_id) for i in validate_schedule(s,result.assignments)})
 
     def test_no_source_no_route_disabled_unqualified_and_dedicated_remain_boundaries(self):
         original=scene()
@@ -39,7 +39,7 @@ class ContinuationStaffingTests(unittest.TestCase):
             with self.subTest(s=s):
                 result=solve(s,allow_partial=True)
                 self.assertNotIn(Assignment('target','m'),result.assignments)
-        valid=solve(original,allow_partial=True).assignments
+        valid=solve(original,allow_partial=True).assignments+(Assignment('target','m'),)
         broken=replace(original,tasks=tuple(replace(t,flight_id='A') if t.id=='target' else t for t in original.tasks))
         self.assertIn('exclusive_same_flight',{i.code for i in validate_schedule(broken,valid)})
 
@@ -50,7 +50,9 @@ class ContinuationStaffingTests(unittest.TestCase):
                 'targetFlightScopes':{'秩序':'later-overlap','查验':'later-overlap'}}, {'flightNo':'*','arrivalRole':'秩序','boardingRoles':['查验'],
                 'targetFlightScopes':{'查验':'same-flight'},'enabled':True,'ordered':True},))
         values=solve(chain,allow_partial=True).assignments
-        self.assertEqual({'source','target','third'},{a.task_id for a in values})
+        self.assertEqual({'source'},{a.task_id for a in values})
+        enough=replace(chain,tasks=tuple(t for t in chain.tasks if t.id!='missing'))
+        self.assertEqual({'source','target','third'},{a.task_id for a in solve(enough,allow_partial=True).assignments})
         no_anchor=replace(chain,tasks=tuple(t for t in chain.tasks if t.id!='source'),
             flow_preferences=chain.flow_preferences+({'flightNo':'*','arrivalRole':'查验','boardingRoles':['秩序'],
                 'targetFlightScopes':{'秩序':'same-flight'},'enabled':True,'ordered':True},),
@@ -74,14 +76,16 @@ class ContinuationStaffingTests(unittest.TestCase):
                 'targetFlightScopes':{'秩序':'later-overlap','查验':'later-overlap'}},))
         legal=(Assignment('source','m'),Assignment('target','m'),Assignment('third','m'))
         self.assertEqual({'coverage_shortfall'},{i.code for i in validate_schedule(s,legal)})
-        self.assertEqual(set(legal),set(solve(s,allow_partial=True).assignments))
+        self.assertEqual({Assignment('source','m')},set(solve(s,allow_partial=True).assignments))
+        enough=replace(s,tasks=tuple(t for t in s.tasks if t.id!='missing'))
+        self.assertEqual(set(legal),set(solve(enough,allow_partial=True).assignments))
 
     def test_an_extra_person_at_low_role_is_still_withheld_and_flight_order_is_kept(self):
         s=scene()
         s=replace(s,members=s.members+(Member('other','乙',frozenset({'秩序'}),0),),
                   tasks=tuple(replace(t,required_count=2) if t.id=='target' else t for t in s.tasks))
         values=solve(s,allow_partial=True).assignments
-        self.assertEqual({Assignment('source','m'),Assignment('target','m')},set(values))
+        self.assertEqual({Assignment('source','m')},set(values))
         # A legal source in an earlier independent window does not turn an
         # otherwise independently staffed role in this shortage into a free job.
         disjoint=replace(s,flights=(replace(s.flights[0],window_end=650),s.flights[1]),

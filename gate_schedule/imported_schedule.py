@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .domain import Flight, ImportedDay, Member, Rotation, Scenario, Task, ValidationIssue, imported_member_names, imported_required_count, imported_work_mode, imported_task_timing, parse_minutes, compile_attendance_bounds, flow_flight_window, baggage_turn_bounds
+from .domain import Flight, ImportedDay, Member, Rotation, Scenario, Task, ValidationIssue, imported_member_names, imported_required_count, imported_work_mode, imported_exclusive_same_flight, imported_concurrent, imported_task_timing, parse_minutes, compile_attendance_bounds, flow_flight_window, baggage_turn_bounds
 from .io import scenario_from_dict, scenario_to_dict
 from .validator import validate_scenario
 
@@ -93,8 +93,8 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
             locked_member_ids=cell.fixed_member_names,
             service_stage=stage,
             timing_mode=timing_mode,
-            concurrent=config.concurrent if config else False,
-            exclusive_same_flight=config.exclusive_same_flight if config else False,
+            concurrent=imported_concurrent(day, cell),
+            exclusive_same_flight=imported_exclusive_same_flight(day, cell),
         ))
     if baggage_cells:
         merged: list[list[int]] = []
@@ -111,6 +111,7 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
             group_cells = [item for item in baggage_cells if item[2] < window_end and window_start < item[3]]
             baggage_window = (day.work_rules or {}).get('baggageWindow')
             if baggage_window is not None:
+                flexible = day.flow_preferences is not None and baggage_window.get('handoffMode') == 'flexible'
                 # A turn remains one assignment, including flight boundaries
                 # and the final remainder. Do not silently split it into people.
                 for rotation_index, (start, end) in enumerate(baggage_turn_bounds(window_start, window_end, baggage_window['rotationMinutes'], baggage_window.get('remainderToleranceMinutes'))):
@@ -123,10 +124,13 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
                     task_id = f'imported-baggage-{group_index}-{rotation_index + 1}'
                     tasks.append(Task(
                         id=task_id, flight_id=flights_by_no[active[0][0].flight_no].id,
-                        role_id='大件行李拦截', start=start, end=end, required_count=1,
+                        role_id='大件行李拦截', start=window_start if flexible else start,
+                        end=window_end if flexible else end, required_count=1,
                         task_kind='rotation', locked_member_ids=fixed_names,
-                        exclusive_same_flight=(role_configs['大件行李拦截'].exclusive_same_flight if '大件行李拦截' in role_configs else False),
-                        covered_flight_ids=tuple(dict.fromkeys(item[0].flight_id for item in active)),
+                        timing_mode='phase' if flexible else 'exact',
+                        exclusive_same_flight=any(imported_exclusive_same_flight(day,item[0]) for item in (group_cells if flexible else active)),
+                        exclusive_flight_ids=tuple(dict.fromkeys(item[0].flight_id for item in (group_cells if flexible else active) if imported_exclusive_same_flight(day,item[0]))),
+                        covered_flight_ids=tuple(dict.fromkeys(item[0].flight_id for item in (group_cells if flexible else active))),
                     ))
                     rotations.append(Rotation(task_id, f'baggage-{group_index}', start, end, 1, eligible_baggage, rotation_index))
                 continue
@@ -172,7 +176,8 @@ def imported_day_to_scenario(day: ImportedDay, baggage_interval_minutes: int = 6
                         required_count=required_count,
                         task_kind="rotation" if baggage_rotation_enabled else "mobile",
                         locked_member_ids=fixed_names,
-                        exclusive_same_flight=(role_configs["大件行李拦截"].exclusive_same_flight if "大件行李拦截" in role_configs else False),
+                        exclusive_same_flight=any(imported_exclusive_same_flight(day,item[0]) for item in group_cells if item[2] < segment_end and segment_start < item[3]),
+                        exclusive_flight_ids=tuple(dict.fromkeys(item[0].flight_id for item in group_cells if item[2] < segment_end and segment_start < item[3] and imported_exclusive_same_flight(day,item[0]))),
                         covered_flight_ids=tuple(dict.fromkeys(item[0].flight_id for item in group_cells if item[2] < segment_end and segment_start < item[3])),
                     ))
                     if baggage_rotation_enabled:

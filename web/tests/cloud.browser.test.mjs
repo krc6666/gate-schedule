@@ -8,6 +8,13 @@ import {join,resolve,extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer as createTcpServer} from 'node:net';
 import {continuationAcceptance,savedDayContinuationAcceptance,partTimeDayAcceptance} from './continuation-acceptance.mjs';
+import {predecessorAcceptance} from './predecessor-acceptance.mjs';
+import {earlierAcceptance} from './earlier-acceptance.mjs';
+import {sharedPoolAcceptance} from './shared-pool-acceptance.mjs';
+import {flightDedicationAcceptance} from './flight-dedication-acceptance.mjs';
+import {manualDragAcceptance} from './manual-drag-acceptance.mjs';
+import {dragSpeedAcceptance} from './drag-speed-acceptance.mjs';
+import {immediateDragAcceptance} from './immediate-drag-acceptance.mjs';
 
 const repo=fileURLToPath(new URL('../../',import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -18,9 +25,14 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
     console.log('Preparing cloud mock build');
     execFileSync(process.platform==='win32'?'npm.cmd':'npm',['run','build:cloud','--','--outDir','../build/cloud-mock'],{cwd:join(repo,'web'),env:{...process.env,VITE_SUPABASE_URL:'https://gate-cloud-test.invalid',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test'},shell:process.platform==='win32',stdio:'pipe'});
   }
-  const runtimeVersion=createHash('sha256').update(await readFile(join(repo,'.tmp/browser-public/runtime/gate_schedule.zip'))).digest('hex').slice(0,12);
+  const runtimeVersion=development?null:createHash('sha256').update(await readFile(join(repo,'.tmp/browser-public/runtime/gate_schedule.zip'))).digest('hex').slice(0,12);
   let stored=null,revision=0,saves=0,mode='',release;const runtimeVersions=[];
   if(process.env.GATE_TEST_CONTINUATION_SNAPSHOT){const snapshot=JSON.parse(await readFile(process.env.GATE_TEST_CONTINUATION_SNAPSHOT,'utf8'));stored=snapshot.documents;revision=snapshot.revision;}
+  else if(process.env.GATE_TEST_DRAG_SPEED_ONLY==='1'||process.env.GATE_TEST_IMMEDIATE_DRAG_ONLY==='1'){
+    stored=JSON.parse(execFileSync(process.env.GATE_TEST_PYTHON??join(repo,'.venv-local/Scripts/python.exe'),
+      ['-X','utf8','-B','-c','import json;from tests.test_drag_performance import drag_documents;print(json.dumps(drag_documents(12)))'],{cwd:repo,encoding:'utf8'}));
+    revision=1;
+  }
   let launcherOutput='';
   let holder='',request=null; let reads=0;
   const errors=[],dialogs=[];
@@ -110,7 +122,12 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   await call('Page.navigate',{url:pageUrl});
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const value=(selector,value)=>evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()`);
-  const ready=()=>until(()=>evaluate('!!document.querySelector("[data-view=config]")'),'工作台');
+  const ready=()=>until(async()=>{
+    if(await evaluate('!!document.querySelector("[data-view=config]")'))return true;
+    const error=await evaluate('document.querySelector("#app > p[role=alert]")?.textContent');
+    if(error)throw Error(error);
+    return false;
+  },'工作台');
   const login=async()=>{await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录');await value('#cloud-email','admin@example.test');await value('#cloud-password','test-only');await click('#cloud-login-form button')};
   // Capture alerts while allowing tests to control application confirms.
   // The COI service worker reloads the first non-isolated document. Wait for its
@@ -118,9 +135,76 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   await until(()=>evaluate('crossOriginIsolated && !!document.querySelector("#cloud-login-form")'),'隔离后的登录表单');
   await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
   await login();if(!stored){await until(()=>evaluate('!!document.querySelector("#cloud-empty")'),'首次选择');await click('#cloud-empty');}await ready();
-  assert.equal(runtimeVersions.at(-1),runtimeVersion,'runtime archive requests must match the built content version');
+  if(!development)assert.equal(runtimeVersions.at(-1),runtimeVersion,'runtime archive content version');
+  // Keep the familiar entry name visible while its editor is collapsed.
+  // This exercises the actual dev.py entry when GATE_TEST_CLOUD_DEV=1.
+  const beforeRuleNavigation=await evaluate('fetch("/api/groups/A/workspace/backup").then(r=>r.json())');
+  await click('[data-view=rules]');
+  for(const width of [1440,390]){
+    await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    assert.match(await evaluate('document.querySelector("#handoff-preference-rules > summary > strong").textContent'),/^流动岗位管理（接续兼职）$/);
+    await value('#rules-search','流动岗位管理');
+    assert.ok(await evaluate('!document.querySelector("#handoff-preference-rules").hidden && document.querySelector("#handoff-preference-rules").open'));
+    assert.ok(await evaluate('document.querySelector("#add-flow-rule").getBoundingClientRect().height>0'));
+    assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+    await value('#rules-search','');await click('#rules-collapse-all');
+  }
+  assert.deepEqual(await evaluate('fetch("/api/groups/A/workspace/backup").then(r=>r.json())'),beforeRuleNavigation,'查找和展开入口不改变规则或资料');
+  await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  await click('[data-view=config]');
+  assert.equal(await evaluate('document.querySelectorAll("[data-flow-rule]").length'),0,'配置页继续没有重复编辑器');
+  if(process.env.GATE_TEST_CLOUD_READ_ONLY==='1'){
+    const original=structuredClone(stored),originalRevision=revision;
+    for(const group of ['A','B']){
+      const state=await evaluate(`fetch('/api/groups/${group}/workspace').then(r=>r.json())`);
+      assert.equal(Object.keys(state.plans).length,Object.keys(original['group-workspaces-v1'].groups[group].plans).length);
+      assert.equal(state.people.length,original['group-workspaces-v1'].groups[group].people.filter(p=>!p.deleted).length);
+    }
+    const backup=await evaluate('fetch("/api/groups/A/workspace/backup").then(r=>r.json())');
+    assert.deepEqual(backup,original['group-workspaces-v1']);
+    await click('.cloud-more summary');await click('#cloud-logout');
+    await until(()=>evaluate('document.body.textContent.includes("会话已结束")'),'只读副本退出');
+    await until(()=>holder==='','只读副本释放使用权');
+    await evaluate('location.reload();true');await login();await ready();
+    assert.deepEqual(stored,original);assert.equal(revision,originalRevision);assert.equal(saves,0);
+    assert.equal(errors.length,0,JSON.stringify(errors));
+    console.log('Read-only saved cloud snapshot login and reopen passed: '+directory);return;
+  }
   const addPerson=async name=>{await click('[data-view=config]');await click('#add-person');await value('#person-name',name);await click('#save-person');await until(()=>evaluate('!document.querySelector("#person-form")'),'保存人员')};
   const save=async()=>{await click('#cloud-save');await until(()=>evaluate('!document.querySelector("#cloud-save").disabled'),'云端回执')};
+  if(process.env.GATE_TEST_IMMEDIATE_DRAG_ONLY==='1'){
+    await immediateDragAcceptance({evaluate,click,until,call});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_DRAG_SPEED_ONLY==='1'){
+    await dragSpeedAcceptance({evaluate,click,until,ready});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_MANUAL_DRAG_ONLY==='1'){
+    await evaluate('window.confirm=()=>true');
+    await manualDragAcceptance({evaluate,click,until,ready,save,login,released:()=>holder==='',call});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_FLIGHT_DEDICATION_ONLY==='1'){
+    await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+    await flightDedicationAcceptance({evaluate,click,value,until,ready,save,login,released:()=>holder==='',call,repo});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_SHARED_POOL_ONLY==='1'){
+    await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+    await sharedPoolAcceptance({evaluate,click,value,until,ready,save,login,released:()=>holder==='',call,repo});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_EARLIER_ONLY==='1'){
+    await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+    await earlierAcceptance({evaluate,click,value,until,ready,save,login,released:()=>holder==='',call,repo});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
+  if(process.env.GATE_TEST_PREDECESSOR_ONLY==='1'){
+    await evaluate('window.alerts=[];window.alert=m=>window.alerts.push(m);window.confirm=()=>true');
+    await predecessorAcceptance({evaluate,click,value,until,ready,save,login,released:()=>holder==='',call,repo});
+    assert.equal(errors.length,0,JSON.stringify(errors));return;
+  }
   const warning=()=>evaluate('(()=>{const e=new Event("beforeunload",{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()');
   const label=()=>evaluate('document.querySelector("#cloud-status").textContent');
   if(process.env.GATE_TEST_CONTINUATION_ONLY==='1'){
@@ -140,13 +224,14 @@ test('cloud UI with simulated Supabase: actual save entry, recovery, failures, c
   // A failed request cannot alter the server revision and must produce an obvious alert.
   mode='network';const before=revision;await save();assert.equal(revision,before);assert.match(await label(),/保存失败，点击重试/);assert.match(await evaluate('window.alerts.at(-1)'),/网络或云端服务异常/);
   mode='';await click('#cloud-status');await until(()=>evaluate('!document.querySelector("#cloud-save").disabled'),'重试');assert.equal(await warning(),false);
-  // Older saved workspaces omit the now-optional baggage time basis.
+  // Real saved documents from before timeBasis existed must still open after
+  // upgrade. Only the explicit save below may update the mock server snapshot.
   const legacy=structuredClone(stored);
   for(const group of ['A','B'])legacy['group-workspaces-v1'].groups[group].workRules={pairs:[],baggage:[],baggageWindow:{startBeforeMinutes:180,endBeforeMinutes:60,rotationMinutes:60,remainderToleranceMinutes:15}};
   stored=legacy;
   const legacyRevision=revision,legacySaves=saves;
-  await click('.cloud-more summary');await click('#cloud-logout');await until(()=>evaluate('document.body.textContent.includes("会话已结束")'),'旧云快照验收退出');
-  await until(()=>holder==='','旧云快照验收释放会话');
+  await click('.cloud-more summary');await click('#cloud-logout');await until(()=>evaluate('document.body.textContent.includes("会话已结束")'),'旧格式验收退出');
+  await until(()=>holder==='','旧格式验收释放使用权');
   await evaluate('location.reload();true');await login();await ready();
   assert.deepEqual(stored,legacy);assert.equal(revision,legacyRevision);assert.equal(saves,legacySaves);
   const loadedLegacy=await evaluate('fetch("/api/groups/A/workspace").then(r=>r.json())');

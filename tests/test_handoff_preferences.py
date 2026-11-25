@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from openpyxl import load_workbook
 
-from gate_schedule.domain import Assignment, Flight, Member, Scenario, Task, handoff_rank
+from gate_schedule.domain import Assignment, Flight, Member, Scenario, Task, flow_target_scope_allows, handoff_rank, validate_handoff_preferences
 from gate_schedule.solver import solve
 from gate_schedule.validator import validate_schedule
 from gate_schedule.workbench import Workbench
@@ -25,6 +25,28 @@ def scenario():
 
 
 class HandoffSolverTests(unittest.TestCase):
+    def test_duplicate_target_roles_keep_independent_flight_scopes(self):
+        row = dict(preference(targets=['登机核验', '登机核验']), ordered=True,
+                   targetFlightScopeList=['earlier-overlap', 'later-overlap'])
+        self.assertEqual([row], validate_handoff_preferences([row]))
+
+    def test_duplicate_target_scope_matches_each_directional_flight(self):
+        flights=(Flight('source','SRC','2026-08-02',600,700),Flight('early','EARLY','2026-08-02',600,650),
+                 Flight('late','LATE','2026-08-02',600,750))
+        source=Task('source-task','source','接机1',600,650,1,'mobile',timing_mode='phase')
+        early=Task('early-task','early','登机核验',600,640,1,'mobile',timing_mode='phase')
+        late=Task('late-task','late','登机核验',600,740,1,'mobile',timing_mode='phase')
+        sc=Scenario('2026-08-02',flights,(),(source,early,late))
+        row=dict(flightNo='*',arrivalRole='接机1',boardingRoles=['登机核验','登机核验'],enabled=True,
+                 targetFlightScopeList=['earlier-overlap','later-overlap'])
+        self.assertTrue(flow_target_scope_allows(sc,source,early,row))
+        self.assertTrue(flow_target_scope_allows(sc,source,late,row))
+        row['boardingRoles']=['登机核验']
+        row['targetFlightScopeList']=['later-overlap']
+        self.assertFalse(flow_target_scope_allows(sc,source,early,row))
+        row['targetFlightScopeList']=['earlier-overlap']
+        self.assertFalse(flow_target_scope_allows(sc,source,late,row))
+
     def test_legacy_and_disabled_paths_have_equal_rank_and_custom_roles_work(self):
         legacy=preference(targets=['登机核验','登机主验'])
         for item in [legacy,dict(legacy,ordered=False),dict(legacy,ordered=True,enabled=False)]:
@@ -110,6 +132,21 @@ class HandoffConfigurationTests(unittest.TestCase):
         legacy=import_complete_configuration(stream.getvalue())['handoffPreferences'][0]
         self.assertNotIn('ordered',legacy)
         self.assertEqual(prefs[0]['boardingRoles'],legacy['boardingRoles'])
+
+    def test_duplicate_target_scopes_survive_excel_import_and_restart(self):
+        prefs=[dict(preference(targets=['登机核验','登机核验']),ordered=True,
+                    targetFlightScopeList=['earlier-overlap','later-overlap'])]
+        self.command('save-handoff-preferences',{'preferences':prefs})
+        exported=self.wb.export_complete_configuration(self.pid)
+        data=import_complete_configuration(exported)
+        self.assertEqual(prefs,data['handoffPreferences'])
+        other=Workbench(Path(self.directory.name)/'duplicate-targets.sqlite3')
+        other.execute(0,'import-complete-configuration',data)
+        self.assertEqual(prefs,Workbench(Path(self.directory.name)/'duplicate-targets.sqlite3').snapshot()['handoffPreferences'])
+        book=load_workbook(BytesIO(exported));book['接续航班范围'].delete_rows(3)
+        incomplete=BytesIO();book.save(incomplete);book.close()
+        with self.assertRaisesRegex(ValueError,'范围表不完整'):
+            import_complete_configuration(incomplete.getvalue())
 
     def test_invalid_rank_type_rejected_without_write(self):
         before=self.wb.backup()
