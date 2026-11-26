@@ -415,6 +415,9 @@ class Workbench:
             flight["roleNames"].append(name)
         elif action == "save-display-preferences":
             state["displayPreferences"] = deepcopy(validate_display_preferences(payload))
+        elif action == "save-relaxed-statistics-flights":
+            state['relaxedShiftSettings'] = validate_relaxed_shift_settings(
+                {**state['relaxedShiftSettings'], 'statisticsFlightNos': payload['flightNos']})
         elif action == "save-roles":
             names = payload["roleNames"]
             count = payload.get("requiredCount")

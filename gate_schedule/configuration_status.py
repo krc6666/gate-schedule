@@ -23,7 +23,7 @@ def generation_context(state, plan):
         '接续兼职': state['handoffPreferences'],
         '大件与岗位限制': state.get('workRules', empty_work_rules()),
         '保岗与均衡': [state['balanceSettings'], state['teamLeaderSettings'],
-                      state['halfRestSettings'], state['relaxedShiftSettings'], state['dutyRoster']],
+                      state['halfRestSettings'], {k:v for k,v in state['relaxedShiftSettings'].items() if k != 'statisticsFlightNos'}, state['dutyRoster']],
         '当天输入': [plan['day'], plan['rotationEnabled'], plan['rotationMinutes']],
     }
     return {'version': 1, 'categories': {name: _digest(value) for name, value in facts.items()}}

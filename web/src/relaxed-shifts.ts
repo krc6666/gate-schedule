@@ -1,10 +1,10 @@
 import { groupFetch, groupUrl } from "./group-api";
 import { html, type State } from './workbench-model';
 
-export type RelaxedSettings = { earlyDepartureCutoffTime: string; afternoonRestStartTime: string; afternoonRestEndTime: string; lateShiftEndTime: string; lateFlightNos: string[]; earlyDepartureBalanceEnabled: boolean; earlyDepartureMaxDifference: number; afternoonRestBalanceEnabled: boolean; afternoonRestMaxDifference: number };
+export type RelaxedSettings = { earlyDepartureCutoffTime: string; afternoonRestStartTime: string; afternoonRestEndTime: string; lateShiftEndTime: string; lateFlightNos: string[]; statisticsFlightNos?: string[]; earlyDepartureBalanceEnabled: boolean; earlyDepartureMaxDifference: number; afternoonRestBalanceEnabled: boolean; afternoonRestMaxDifference: number };
 type SummaryPerson = { memberId: string; memberName: string; lastFlightNo: string; lastEndTime: string; monthlyCount: number };
 export type RelaxedSummary = { date: string; earlyDepartures: SummaryPerson[]; afternoonRest: SummaryPerson[] };
-type Report = { revision: number; month: string; settings: RelaxedSettings; current: RelaxedSummary; rows: { memberId: string; memberName: string; earlyDepartureCount: number; afternoonRestCount: number; lateFlightCount: number; earlyDepartures: { date: string; flightNo: string; endTime: string }[]; afternoonRestDates: string[]; lateFlights: { date: string; flightNo: string }[] }[] };
+type Report = { revision: number; month: string; settings: RelaxedSettings; current: RelaxedSummary; flightScope: {candidates: string[]; selected: string[]}; rows: { memberId: string; memberName: string; earlyDepartureDatesByFlight: Record<string,string[]>; morningFreeDates: string[]; afternoonFreeDates: string[]; afternoonOffDates: string[] }[] };
 
 export function relaxedSummaryHtml(summary?: RelaxedSummary | null): string {
   return `<aside id="schedule-relaxed-shifts" class="relaxed-summary"><h3>当日轻松班次</h3><div class="relaxed-summary-grid">${(['earlyDepartures', 'afternoonRest'] as const).map((key, i) => `<section><h4>${i === 0 ? '提前下班人员' : '下午无航班人员'}</h4><div class="relaxed-people">${summary?.[key].map(p => `<span class="relaxed-person"><strong>${html(p.memberName)}</strong>${i === 0 ? `<small>${html(p.lastFlightNo)} / ${html(p.lastEndTime)}</small>` : ''}<small>本月 ${p.monthlyCount} 次</small></span>`).join('') || '<span class="text-muted">今日暂无</span>'}</div></section>`).join('')}</div><p class="section-note">按已保存班表及规则页设置统计；手工调整保存后同步更新。未安排航班任务的人员不计入。</p></aside>`;
@@ -34,19 +34,37 @@ export function bindRelaxedRules(root: HTMLElement, state: State, changed: (sett
   });
 }
 
-export function bindRelaxedStatistics(root: HTMLElement, state: State, selection: { month: string; query: string }): () => void {
+export function bindRelaxedStatistics(root: HTMLElement, state: State, selection: { month: string; query: string; expanded?: Set<string>; scopeOpen?: boolean }, saveFlights: (numbers: string[]) => Promise<boolean>): () => void {
   const container = root.querySelector<HTMLElement>('#relaxed-statistics-root')!;
   const controller = new AbortController(); let generation = 0;
   const day = state.plans[state.selectedPlanId ?? '']?.day.serviceDate;
   selection.month ||= day?.slice(0, 7) ?? new Date().toISOString().slice(0, 7);
-  container.innerHTML = `<section class="workspace-section"><div class="section-heading"><h3>月度轻松班次统计</h3><div class="button-row"><label>统计月份<input id="relaxed-statistics-month" type="month" value="${html(selection.month)}" /></label><label>人员姓名<input id="relaxed-statistics-name" type="search" value="${html(selection.query)}" placeholder="筛选姓名" /></label></div></div><p class="section-note">本月正式记录加当前所选已保存草稿，同日替换不重复；手工换人、清空、撤销后同步计数。按规则页最新时段及末班范围重算，不代表实际完成工作。</p><div id="relaxed-report" aria-live="polite"></div></section>`;
+  selection.expanded ??= new Set();
+  container.innerHTML = `<section class="workspace-section relaxed-shift-statistics"><div class="section-heading"><div><h3>月度轻松班次统计</h3><span><span id="relaxed-month-label">${html(selection.month)}</span> · 航班列沿用提前下班口径，每人每天最多一次；点击次数查看日期</span></div><div class="late-priority-toolbar"><label>统计月份<input id="relaxed-statistics-month" aria-label="轻松班次统计月份" type="month" value="${html(selection.month)}" /></label></div></div><div id="relaxed-report" aria-live="polite"></div></section>`;
   const report = container.querySelector<HTMLElement>('#relaxed-report')!;
   let data: Report | null = null;
   const active = () => !controller.signal.aborted && container.isConnected;
   const draw = () => {
     if (!data) return;
-    const rows = data.rows.filter(p => p.memberName.includes(selection.query.trim()));
-    report.innerHTML = `${data.current.date?.startsWith(data.month + '-') ? `<p class="section-note">当前班表 ${html(data.current.date)}：提前下班 ${data.current.earlyDepartures.length} 人，下午无航班 ${data.current.afternoonRest.length} 人。</p>` : ''}<div class="table-responsive"><table class="data-table relaxed-statistics-table"><thead><tr><th>常规人员</th><th>提前下班次数</th><th>日期 / 最后航班 / 结束</th><th>下午无航班次数</th><th>下午无航班日期</th><th>末班航班次数</th><th>末班日期 / 航班</th></tr></thead><tbody>${rows.map(p => `<tr><th>${html(p.memberName)}</th><td>${p.earlyDepartureCount}</td><td>${p.earlyDepartures.map(e => `${html(e.date.slice(5))} / ${html(e.flightNo)} / ${html(e.endTime)}`).join('<br/>') || '—'}</td><td>${p.afternoonRestCount}</td><td>${p.afternoonRestDates.map(d => html(d.slice(5))).join('、') || '—'}</td><td>${p.lateFlightCount}</td><td>${p.lateFlights.length ? `<details class="relaxed-flight-details"><summary>${p.lateFlights.length} 条</summary><div>${p.lateFlights.map(e => `${html(e.date.slice(5))} / ${html(e.flightNo)}`).join('<br/>')}</div></details>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">没有符合筛选的人员</td></tr>'}</tbody></table></div>`;
+    const columns = [...data.flightScope.selected, '上午空', '下午空', '下午休'];
+    const dateCell = (person: Report['rows'][number], column: string) => {
+      const dates = column === '上午空' ? person.morningFreeDates : column === '下午空' ? person.afternoonFreeDates : column === '下午休' ? person.afternoonOffDates : person.earlyDepartureDatesByFlight[column] ?? [];
+      const key = JSON.stringify([data!.month, person.memberId, column]);
+      return `<td data-label="${html(column)}"><details class="late-priority-count-detail relaxed-shift-count-detail" data-relaxed-cell="${html(key)}" ${selection.expanded!.has(key) ? 'open' : ''}><summary title="展开${html(column)}日期" aria-label="${html(column)}：${dates.length}次，展开日期">${dates.length}</summary><div><small class="late-priority-detail-list">${dates.length ? dates.map(d => html(d.slice(5))).join('、') : '暂无日期'}</small></div></details></td>`;
+    };
+    const today = data.current.date?.startsWith(data.month + '-') ? `<div class="relaxed-shift-today"><div><strong>今日提前下班</strong><small>任一航班保障结束晚于 ${html(data.settings.lateShiftEndTime)} 不计；否则最后航班任务严格早于 ${html(data.settings.earlyDepartureCutoffTime)}，排除当日值班及所选末班航班</small><div>${data.current.earlyDepartures.map(p => `<span><strong>${html(p.memberName)}</strong> ${html(p.lastFlightNo)} / ${html(p.lastEndTime)} <em>本月 ${p.monthlyCount} 次</em></span>`).join('') || '<span class="is-empty">今日没有符合节点的提前下班人员</span>'}</div></div><div><strong>今日下午无航班</strong><small>${html(data.settings.afternoonRestStartTime)}-${html(data.settings.afternoonRestEndTime)} 个人无已排岗位重叠；值班和备勤照常计入</small><div>${data.current.afternoonRest.map(p => `<span><strong>${html(p.memberName)}</strong> <em>本月 ${p.monthlyCount} 次</em></span>`).join('') || '<span class="is-empty">今日没有下午无航班人员</span>'}</div></div></div>` : '';
+    report.innerHTML = `<details class="relaxed-shift-flight-scope" ${selection.scopeOpen ? 'open' : ''}><summary>调整统计航班（已选 ${data.flightScope.selected.length} 个）</summary><div class="relaxed-flight-choices" role="group" aria-label="轻松班次统计航班"><button type="button" class="btn btn-sm btn-outline-secondary" data-relaxed-scope-all>全选</button><button type="button" class="btn btn-sm btn-outline-secondary" data-relaxed-scope-clear>清空</button>${data.flightScope.candidates.map(n => `<label><input type="checkbox" data-relaxed-flight="${html(n)}" aria-label="轻松班次统计航班：${html(n)}" ${data!.flightScope.selected.includes(n) ? 'checked' : ''} />${html(n)}</label>`).join('')}</div><p id="relaxed-scope-error" role="alert"></p></details><p class="section-note">上午空：12:00前无航班任务，当天其他时段有任务；下午空：${html(data.settings.afternoonRestStartTime)}—${html(data.settings.afternoonRestEndTime)} 无岗位重叠，之后仍有航班；下午休：没有开始时间晚于12:00的任务。仅统计当天实际参加排班的常规人员。</p>${today}<div class="table-responsive"><table class="data-table relaxed-shift-table"><thead><tr><th>人员</th>${columns.map(c => `<th>${html(c)}</th>`).join('')}</tr></thead><tbody>${data.rows.map(p => `<tr><td data-label="人员"><strong>${html(p.memberName)}</strong></td>${columns.map(c => dateCell(p,c)).join('')}</tr>`).join('') || `<tr><td colspan="${columns.length + 1}">暂无人员</td></tr>`}</tbody></table></div>`;
+    const scope = report.querySelector<HTMLDetailsElement>('.relaxed-shift-flight-scope')!;
+    scope.ontoggle = () => { selection.scopeOpen = scope.open; };
+    report.querySelectorAll<HTMLDetailsElement>('[data-relaxed-cell]').forEach(cell => { cell.ontoggle = () => { const key = cell.dataset.relaxedCell!; if (cell.open) selection.expanded!.add(key); else selection.expanded!.delete(key); }; });
+    const save = async (numbers: string[]) => {
+      report.querySelectorAll<HTMLInputElement | HTMLButtonElement>('.relaxed-flight-choices input,.relaxed-flight-choices button').forEach(el => { el.disabled = true; });
+      try { if (!await saveFlights(numbers) && active()) { draw(); report.querySelector('#relaxed-scope-error')!.textContent = '统计航班未保存，请重试；原选择保持。'; } }
+      catch { if (active()) { draw(); report.querySelector('#relaxed-scope-error')!.textContent = '统计航班保存失败，请重试；原选择保持。'; } }
+    };
+    report.querySelector('[data-relaxed-scope-all]')!.addEventListener('click', () => void save(data!.flightScope.candidates));
+    report.querySelector('[data-relaxed-scope-clear]')!.addEventListener('click', () => void save([]));
+    report.querySelectorAll<HTMLInputElement>('[data-relaxed-flight]').forEach(input => { input.onchange = () => void save(input.checked ? [...data!.flightScope.selected,input.dataset.relaxedFlight!] : data!.flightScope.selected.filter(n => n !== input.dataset.relaxedFlight)); });
   };
   const load = async () => {
     const request = ++generation, month = selection.month; data = null; report.textContent = '正在读取轻松班次统计…';
@@ -64,7 +82,6 @@ export function bindRelaxedStatistics(root: HTMLElement, state: State, selection
     }
   };
   const month = container.querySelector<HTMLInputElement>('#relaxed-statistics-month')!;
-  month.onchange = () => { if (/^\d{4}-\d{2}$/.test(month.value)) { selection.month = month.value; void load(); } else month.value = selection.month; };
-  container.querySelector<HTMLInputElement>('#relaxed-statistics-name')!.oninput = event => { selection.query = (event.target as HTMLInputElement).value; draw(); };
+  month.onchange = () => { if (/^\d{4}-(0[1-9]|1[0-2])$/.test(month.value)) { selection.month = month.value; selection.expanded!.clear(); container.querySelector('#relaxed-month-label')!.textContent = month.value; void load(); } else month.value = selection.month; };
   void load(); return () => { generation++; controller.abort(); };
 }

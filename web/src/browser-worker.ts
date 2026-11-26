@@ -22,6 +22,7 @@ async function initialize(): Promise<void> {
     py.unpackArchive(await response.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});
   }
   startupProgress("正在加载排班规则和数据处理组件…");
+  startupProgress("正在加载排班规则和数据处理组件…");
   const source = await fetch(runtime + "gate_schedule.zip?v=" + import.meta.env.VITE_GATE_RUNTIME_VERSION);
   if (!source.ok) throw new Error("排班规则文件缺失");
   py.unpackArchive(await source.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});

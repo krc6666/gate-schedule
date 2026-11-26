@@ -109,7 +109,7 @@ def validate_relaxed_shift_settings(value, base=None):
     from copy import deepcopy
     defaults = default_relaxed_shift_settings()
     balance_keys = {k for k in defaults if k.endswith(('Enabled', 'Difference'))}
-    if not isinstance(value, dict) or set(value) - set(defaults) or set(defaults) - balance_keys - set(value):
+    if not isinstance(value, dict) or set(value) - set(defaults) - {'statisticsFlightNos'} or set(defaults) - balance_keys - set(value):
         raise ValueError('轻松班次设置字段不完整')
     value = {**defaults, **(base or {}), **value}
     for key in balance_keys:
@@ -118,7 +118,7 @@ def validate_relaxed_shift_settings(value, base=None):
                 raise ValueError('轻松班次均衡开关须为是或否')
         elif type(value[key]) is not int or not 0 <= value[key] <= 31:
             raise ValueError('轻松班次目标差距须为0至31的整数')
-    for key in set(value) - {'lateFlightNos'} - balance_keys:
+    for key in set(value) - {'lateFlightNos', 'statisticsFlightNos'} - balance_keys:
         if not isinstance(value[key], str) or not re.fullmatch(r'\d{2}:\d{2}', value[key]):
             raise ValueError('轻松班次时间须为当日HH:MM')
         parse_minutes(value[key])
@@ -127,6 +127,10 @@ def validate_relaxed_shift_settings(value, base=None):
     numbers = value['lateFlightNos']
     if not isinstance(numbers, list) or any(not isinstance(n, str) or not n.strip() or n != n.strip() for n in numbers) or len(numbers) != len(set(numbers)):
         raise ValueError('末班航班号不能为空或重复')
+    if 'statisticsFlightNos' in value:
+        numbers = value['statisticsFlightNos']
+        if not isinstance(numbers, list) or any(not isinstance(n, str) or not n.strip() or n != n.strip() for n in numbers) or len(numbers) != len(set(numbers)):
+            raise ValueError('统计航班号不能为空或重复')
     return deepcopy(value)
 
 
@@ -167,8 +171,14 @@ def relaxed_shift_facts(scenario, assignments, settings, duty_member_id=None):
         late = sorted({flights[i].flight_no for i in worked_flights if flights[i].flight_no in selected_late})
         last = max(work, key=lambda t: (t.end, t.start, t.id))
         last_numbers = sorted({flights[i].flight_no for i in task_flight_ids(last)})
+        afternoon_off = not any(t.start > 720 for t in work)
         result.append({'memberId': member.id, 'memberName': member.name,
             'lastFlightNo': ' / '.join(last_numbers), 'lastEndTime': format_minutes(last.end),
+            'lastFlightNos': last_numbers,
+            'morningFree': not any(t.start < 720 and t.end > 0 for t in work),
+            'afternoonOff': afternoon_off,
+            'afternoonFree': not afternoon_off and not any(t.id in blockers['afternoonRest'] for t in work)
+                and any(t.start >= parse_minutes(settings['afternoonRestEndTime']) for t in work),
             'earlyDeparture': member.id != duty_member_id and not any(t.id in blockers['earlyDeparture'] for t in work),
             'afternoonRest': not any(t.id in blockers['afternoonRest'] for t in work),
             'lateFlightNos': late})

@@ -21,6 +21,78 @@ from tests.test_balance_workflow import small_configuration
 
 
 class RelaxedShiftTests(unittest.TestCase):
+    def test_matrix_daily_boundaries_and_no_double_count(self):
+        morning = self.scenario(start=600, end=720)
+        noon = self.scenario(start=720, end=750)
+        evening = self.scenario(start=1080, end=1140)
+        self.assertFalse(self.fact(morning)[0]['morningFree'])
+        self.assertTrue(self.fact(noon)[0]['morningFree'])
+        self.assertTrue(self.fact(noon)[0]['afternoonOff'], '12:00开始不属于12:00之后开始')
+        self.assertFalse(self.fact(noon)[0]['afternoonFree'])
+        self.assertTrue(self.fact(evening)[0]['afternoonFree'])
+        self.assertFalse(self.fact(evening)[0]['afternoonOff'])
+        self.assertFalse(self.fact(self.scenario(start=1079, end=1140))[0]['afternoonFree'])
+        self.assertTrue(self.fact(evening, duty='a')[0]['morningFree'], '值班不排除上午空')
+        self.assertTrue(self.fact(self.scenario(start=1500,end=1560))[0]['morningFree'])
+        self.assertFalse(self.fact(self.scenario(start=-30,end=1))[0]['morningFree'], '跨午夜任务占用当日上午')
+        combined = replace(evening, tasks=(replace(evening.tasks[0],id='morning',start=600,end=720), evening.tasks[0]))
+        self.assertTrue(self.fact(combined, assignments=(Assignment('morning','a'),Assignment('t','a')))[0]['afternoonFree'])
+        self.assertFalse(self.fact(combined, assignments=(Assignment('morning','a'),Assignment('t','a')))[0]['morningFree'])
+        self.assertEqual([], self.fact(replace(evening, members=(replace(evening.members[0], team_leader=True),))))
+        _, wb = self.workspace()
+        state = self.command(wb, 'import-complete-configuration', small_configuration(None))
+        pid = state['selectedPlanId']
+        self.command(wb, 'edit-cell', {'cellId': 'c0', 'text': '甲'}, pid)
+        self.command(wb, 'adopt', pid=pid)
+        report = wb.relaxed_shift_statistics('2026-08')
+        row = next(r for r in report['rows'] if r['memberName'] == '甲')
+        self.assertEqual(['2026-08-02'], row['earlyDepartureDatesByFlight']['F0'])
+        self.assertEqual(1, row['afternoonOffCount'])
+        self.command(wb, 'clear-draft', pid=pid)
+        row = next(r for r in wb.relaxed_shift_statistics('2026-08')['rows'] if r['memberName'] == '甲')
+        self.assertEqual({}, row['earlyDepartureDatesByFlight'])
+        self.assertEqual(0, row['morningFreeCount'])
+
+    def test_matrix_scope_export_empty_import_restart_and_old_cloud(self):
+        from gate_schedule.browser_runtime import validate_cloud_documents
+        from gate_schedule.group_workspaces import GroupWorkspaces
+        directory, wb = self.workspace()
+        state = self.command(wb, 'import-complete-configuration', small_configuration(None))
+        before = deepcopy(state['plans'])
+        from gate_schedule.configuration_status import generation_context
+        receipt = generation_context(state, state['plans'][state['selectedPlanId']])
+        baseline = relaxed_counts_before(wb.backup()['state'], '2026-08-04')
+        state = self.command(wb, 'save-relaxed-statistics-flights', {'flightNos': ['F0']})
+        self.assertEqual(before, state['plans'])
+        self.assertEqual(receipt, generation_context(state, state['plans'][state['selectedPlanId']]))
+        self.assertEqual(baseline, relaxed_counts_before(wb.backup()['state'], '2026-08-04'))
+        self.assertEqual(['F0'], wb.relaxed_shift_statistics('2026-08')['flightScope']['selected'])
+        imported = import_complete_configuration(wb.export_complete_configuration(state['selectedPlanId']))
+        other = Workbench(directory/'scope.sqlite3')
+        self.command(other, 'import-complete-configuration', imported)
+        other = Workbench(directory/'scope.sqlite3')
+        self.assertEqual(['F0'], other.relaxed_shift_statistics('2026-08')['flightScope']['selected'])
+        self.command(other, 'import-complete-configuration', small_configuration(None))
+        self.assertEqual(['F0'], other.relaxed_shift_statistics('2026-08')['flightScope']['selected'])
+        self.command(other, 'save-relaxed-statistics-flights', {'flightNos': []})
+        empty = import_complete_configuration(other.export_complete_configuration(other.snapshot()['selectedPlanId']))
+        self.assertEqual([], empty['relaxedShiftSettings']['statisticsFlightNos'])
+        original = wb.backup()
+        with self.assertRaises(ValueError):
+            self.command(wb, 'save-relaxed-statistics-flights', {'flightNos': ['F0', 'F0']})
+        self.assertEqual(original, wb.backup())
+        root = GroupWorkspaces(directory/'groups.sqlite3')
+        root.initialize()
+        documents = {GroupWorkspaces.KEY: root.store.read_document(GroupWorkspaces.KEY)}
+        received = deepcopy(documents)
+        validate_cloud_documents(documents)
+        self.assertEqual(received, documents)
+        group = root.workbench('A')
+        group.execute(group.snapshot()['revision'], 'save-relaxed-statistics-flights', {'flightNos': ['CX937']})
+        documents = {GroupWorkspaces.KEY: root.store.read_document(GroupWorkspaces.KEY)}
+        validate_cloud_documents(documents)
+        self.assertNotIn('statisticsFlightNos', root.workbench('B').snapshot()['relaxedShiftSettings'])
+
     def test_large_native_model_finishes_preference_stage_after_rest_balance(self):
         # Distinct qualification pools and monthly ranks require staged goals.
         # A mutated base expression used to reintroduce overflowing weights at

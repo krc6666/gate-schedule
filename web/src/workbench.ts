@@ -35,7 +35,7 @@ let displayedRevision = 0;
 let deferredMoveRender = 0;
 let message = "";
 let dialogError = "";
-const relaxedSelection = { month: "", query: "" };
+const relaxedSelection = { month: "", query: "", expanded: new Set<string>(), scopeOpen: false };
 let disposeRelaxedStatistics = () => {};
 const dutySelection = { month: "" };
 let disposeDutyStatistics = () => {};
@@ -260,7 +260,7 @@ function render(): void {
   if (section === "history") bindHistory();
   if (section === "statistics") {
     disposePriorityStatistics = bindPriorityStatistics(root,state,priorityStatisticsSelection,run);
-    disposeRelaxedStatistics = bindRelaxedStatistics(root,state,relaxedSelection);
+    disposeRelaxedStatistics = bindRelaxedStatistics(root,state,relaxedSelection, numbers => run('save-relaxed-statistics-flights', {flightNos: numbers}));
     disposeRoleStatistics = bindRoleStatistics(root,state,roleStatisticsSelection);
     disposeDutyStatistics = bindDutyStatistics(root,()=>state,edits.settings.dutyRoster??null,dutySelection,selectedDate,run,value=>{edits.settings.dutyRoster=value;updateSaveStatus();},()=>edits.save(),canLeave);
   }
@@ -318,7 +318,7 @@ function bindShared(): void {
       message = `已切换到 ${next} 组`; warningMessage = false; editToast = false;
       selectedDate = state.selectedPlanId ? state.plans[state.selectedPlanId].day.serviceDate : selectedDate;
       priorityStatisticsSelection.month = ""; priorityStatisticsSelection.flightNo = ""; priorityStatisticsSelection.roleName = "";
-      roleStatisticsSelection.month = ""; relaxedSelection.month = ""; dutySelection.month = "";
+      roleStatisticsSelection.month = ""; relaxedSelection.month = ""; relaxedSelection.expanded.clear(); relaxedSelection.scopeOpen = false; dutySelection.month = "";
       resetEditable(); previousSection = null;
     } catch (error) { message = String(error); }
     finally { busy = false; render(); }

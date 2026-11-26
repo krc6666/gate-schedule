@@ -114,6 +114,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
   await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await call("Page.navigate", { url: baseUrl });
   await waitElement('[data-view="config"]');
+  if (!process.env.GATE_TEST_RELAXED_ONLY) {
   await t.test('A/B切换、空B独立建人、未保存保护、记住当前组和窄屏', async () => {
     const aBefore = await state();
     const switchGroup = async group => {
@@ -1490,7 +1491,8 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.match(await evaluate('document.querySelector(".half-rest-summary").textContent'),/甲（上午半休，当天无安排，保留休息）/);
 
   });
-  await t.test('末班规则统一保存；轻松班次常显、手改正式切换、月份姓名筛选与重启', async()=>{
+  }
+  await t.test('末班规则统一保存；轻松矩阵航班选择、次数展开收起、上午空、切月与重启', async()=>{
     const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;c=small_configuration(None);c["day"]["serviceDate"]="2044-02-02";c["day"]["flights"][1].update(windowStart="14:00",windowEnd="14:30");print(json.dumps(c))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
     let pid;
     const command=async(action,payload={})=>{const response=await fetch(`${baseUrl}/api/workspace/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,planId:pid,expectedRevision:(await state()).revision})});assert.ok(response.ok,await response.clone().text());return response.json();};
@@ -1534,27 +1536,48 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
       assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
       await writeFile(join(temporaryRoot,`relaxed-schedule-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
     }
-    await click('[data-view="statistics"]');await waitElement('.relaxed-statistics-table');
-    await value('#relaxed-statistics-month','2044-02');await waitElement('.relaxed-statistics-table');
-    await evaluate('(()=>{const el=document.querySelector("#relaxed-statistics-name");el.value="甲";el.dispatchEvent(new InputEvent("input",{bubbles:true}));})()');
-    assert.equal(await evaluate('document.querySelectorAll(".relaxed-statistics-table tbody tr").length'),1);
-    assert.deepEqual(await evaluate('[...document.querySelectorAll(".relaxed-statistics-table tbody tr:first-child td")].slice(0,6).map(el=>el.querySelector("summary")?.textContent ?? el.textContent)'),['0','—','1','02-02','1','1 条']);
-    assert.equal(await evaluate('document.querySelector(".relaxed-flight-details").open'),false,'末班日期与航班明细默认折叠');
-    await evaluate('document.querySelector(".relaxed-flight-details").open=true');
-    assert.match(await evaluate('document.querySelector(".relaxed-flight-details").textContent'),/02-02 \/ F0/);
+    await click('[data-view="statistics"]');await waitElement('.relaxed-shift-table');
+    await value('#relaxed-statistics-month','2044-02');await waitElement('.relaxed-shift-table');
+    assert.equal(await evaluate('document.querySelector(".relaxed-shift-flight-scope").open'),false);
+    await click('.relaxed-shift-flight-scope>summary');
+    await mutate(()=>click('[data-relaxed-scope-all]'));await waitElement('[data-relaxed-flight]');
+    assert.equal(await evaluate('document.querySelector(".relaxed-shift-flight-scope").open'),true,'修改选择后保留航班展开状态');
+    assert.ok((await state()).relaxedShiftSettings.statisticsFlightNos.length>=2);
+    await mutate(()=>click('[data-relaxed-scope-clear]'));await waitElement('[data-relaxed-flight]');
+    assert.deepEqual((await state()).relaxedShiftSettings.statisticsFlightNos,[]);
+    await mutate(()=>click('[data-relaxed-flight="F0"]'));await waitElement('[data-relaxed-flight]');
+    await mutate(()=>click('[data-relaxed-flight="F1"]'));await waitElement('[data-relaxed-flight]');
+    assert.deepEqual((await state()).relaxedShiftSettings.statisticsFlightNos,['F0','F1']);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll(".relaxed-shift-table thead th")].map(el=>el.textContent)'),['人员','F0','F1','上午空','下午空','下午休']);
+    const matrixRows=await evaluate('[...document.querySelectorAll(".relaxed-shift-table tbody tr")].map(row=>[...row.querySelectorAll("td")].map(el=>el.querySelector("summary")?.textContent??el.textContent))');
+    assert.deepEqual(matrixRows.find(row=>row[0]==='甲'),['甲','0','0','0','0','1']);
+    assert.deepEqual(matrixRows.find(row=>row[0]==='乙'),['乙','0','1','1','0','0']);
+    assert.equal(await evaluate('document.querySelector(".relaxed-shift-count-detail").open'),false);
+    await evaluate('document.querySelector(".relaxed-shift-count-detail>summary").click()');
+    assert.equal(await evaluate('document.querySelector(".relaxed-shift-count-detail").open'),true);
+    assert.match(await evaluate('document.querySelector(".relaxed-shift-count-detail").textContent'),/暂无日期/);
+    await evaluate('document.querySelector(".relaxed-shift-count-detail>summary").click()');
+    assert.equal(await evaluate('document.querySelector(".relaxed-shift-count-detail").open'),false);
+    await evaluate('[...document.querySelectorAll(".relaxed-shift-table tbody tr")].find(row=>row.querySelector("strong").textContent==="甲").querySelector("td[data-label=下午休] summary").click()');
+    assert.match(await evaluate('document.querySelector("td[data-label=下午休] details[open]").textContent'),/02-02/);
     for(const width of [1440,390]){
       await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
       await evaluate('document.querySelector("#relaxed-statistics-root").scrollIntoView({block:"center"})');
       assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
       await writeFile(join(temporaryRoot,`relaxed-statistics-${width}.png`),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
     }
-    await value('#relaxed-statistics-month','2044-03');await waitElement('.relaxed-statistics-table');
-    assert.equal(await evaluate('document.querySelector(".relaxed-statistics-table tbody tr td").textContent'),'0');
+    await value('#relaxed-statistics-month','2044-03');await waitElement('.relaxed-shift-table');
+    assert.equal(await evaluate('document.querySelectorAll(".relaxed-shift-count-detail[open]").length'),0);
+    assert.ok(await evaluate('[...document.querySelectorAll(".relaxed-shift-count-detail>summary")].every(el=>el.textContent==="0")'));
+    assert.equal(await evaluate('document.querySelectorAll(".relaxed-shift-today").length'),0);
     await stopServer();await launchServer();await call('Page.navigate',{url:baseUrl});await waitElement('[data-view="rules"]');await click('[data-view="rules"]');
     assert.ok(await evaluate('document.querySelector("[data-late-flight][value=F0]").checked'));
     assert.equal(await evaluate('document.querySelector("[data-relaxed-time=earlyDepartureCutoffTime]").value'),'15:00');
+    await click('[data-view="statistics"]');await waitElement('.relaxed-shift-table');
+    assert.deepEqual((await state()).relaxedShiftSettings.statisticsFlightNos,['F0','F1']);
     await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   });
+  if (!process.env.GATE_TEST_RELAXED_ONLY) {
   await t.test('航班差值只在整体提示显示；两种班表布局不整片标红，其他本格问题仍报警', async()=>{
     const config=JSON.parse(execFileSync(python,['-B','-c','import json;from tests.test_balance_workflow import small_configuration;print(json.dumps(small_configuration(0)))'],{cwd:repo,windowsHide:true,encoding:'utf8'}));
     config.day.memberConfigs.find(m=>m.memberName==='乙').eligibleRoleNames=[];
@@ -1932,6 +1955,7 @@ test("真实后端 Chrome：空白手排、未完成恢复、预览取消、采�
     assert.ok(forced.plans[dedicated].issues.some(issue=>issue.code==='exclusive_same_flight'),'最终校验发现人工专岗兼任');
     assert.equal(forced.plans[dedicated].valid,false);
   });
+  }
   assert.deepEqual(runtimeErrors, []);
 });
 

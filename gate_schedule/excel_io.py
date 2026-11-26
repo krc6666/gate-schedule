@@ -1305,7 +1305,7 @@ def export_complete_configuration(data, *, history_schedules=None):
         relaxed.append(["项目", "内容"])
         settings = validate_relaxed_shift_settings(data['relaxedShiftSettings'])
         for key in settings:
-            if key != 'lateFlightNos':
+            if key not in {'lateFlightNos', 'statisticsFlightNos'}:
                 relaxed.append([{'earlyDepartureCutoffTime': '提前下班节点', 'afternoonRestStartTime': '下午统计开始',
                     'afternoonRestEndTime': '下午统计结束', 'lateShiftEndTime': '晚航班结束界线',
                     'earlyDepartureBalanceEnabled': '启用提前下班均衡', 'earlyDepartureMaxDifference': '提前下班目标差距',
@@ -1315,6 +1315,11 @@ def export_complete_configuration(data, *, history_schedules=None):
         late.append(['航班号'])
         for number in data['relaxedShiftSettings']['lateFlightNos']:
             late.append([number])
+        if 'statisticsFlightNos' in data['relaxedShiftSettings']:
+            scope = book.create_sheet('轻松统计航班')
+            scope.append(['航班号'])
+            for number in data['relaxedShiftSettings']['statisticsFlightNos']:
+                scope.append([number])
     if "halfRestSettings" in data:
         rest = book.create_sheet("半休设置")
         rest.append(["项目", "内容"])
@@ -1771,6 +1776,8 @@ def import_complete_configuration(content):
                 if key in entries:
                     data['relaxedShiftSettings'][field] = yes_no(entries[key]) if field.endswith('Enabled') else entries[key]
             data['relaxedShiftSettings']['lateFlightNos'] = [_text(r[0]) for r in rows('末班航班范围', ['航班号'])]
+            if '轻松统计航班' in book.sheetnames:
+                data['relaxedShiftSettings']['statisticsFlightNos'] = [_text(r[0]) for r in rows('轻松统计航班', ['航班号'])]
         if "半休设置" in book.sheetnames:
             rest = pairs("半休设置")
             if set(rest) != {"半休人员不参与航班数比较"}: raise ValueError("半休设置需保留航班数比较项目")
