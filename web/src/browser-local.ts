@@ -1,5 +1,6 @@
 export type Documents = Record<string, unknown>;
 export type BrowserRuntime = {snapshot: () => Promise<Documents>; dispose: () => void};
+export type StartupProgress = (message: string) => void;
 type WireResponse = {status: number; headers: Record<string, string>; body: string};
 type Output = {response: WireResponse; documents: Documents};
 type Run = Record<string, unknown> & {id: string; status: string; canKeep: boolean; stop: Int32Array; group: string};
@@ -51,32 +52,56 @@ export async function readLegacyDocuments(): Promise<Documents> {
   try { return await read(database); } finally { database.close(); }
 }
 
-export async function installLocalRuntime(cloud?: {documents: Documents | null; changed: () => void}): Promise<BrowserRuntime> {
+function startupError(error: unknown): Error {
+  const message = String(error);
+  if (/missing|网页运行文件缺失/i.test(message)) return new Error("网页运行文件不完整，请刷新网页；若仍失败，请联系管理员重新部署。");
+  if (/fetch|networkerror|网络|timeout|超时|load failed|\b[45]\d\d\b/i.test(message)) return new Error("排班运行文件下载失败。请检查当前网络后重试；如果单位网络持续拦截，请联系管理员检查服务器资源是否可访问。");
+  return new Error("排班运行环境启动失败：" + message + "。请更新 Chrome 或 Edge 后重试；若仍失败，请把此提示发给管理员。");
+}
+
+export async function installLocalRuntime(cloud?: {documents: Documents | null; changed: () => void}, onStartupProgress?: StartupProgress): Promise<BrowserRuntime> {
   if (!crossOriginIsolated || typeof SharedArrayBuffer === "undefined") throw new Error("网页正在准备本机运行环境，请稍后刷新；需要通过 HTTPS 或本机网址打开");
   if (typeof (WebAssembly as unknown as {Suspending?: unknown}).Suspending !== "function") throw new Error("请用更新后的 Chrome 或 Edge 打开此网页，再导入配置");
   if (!navigator.locks) throw new Error("当前浏览器不支持安全保存，请使用更新后的 Chrome 或 Edge");
   const database = cloud ? null : await openStorage();
   let memory = structuredClone(cloud?.documents ?? {});
   let alive = true;
-  const worker = new Worker(new URL("./browser-worker.ts", import.meta.url), {type: "module"});
+  let worker: Worker | null = null;
   try {
-  await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error("运行文件加载超时，请检查网络后刷新")), 120000);
-    worker.onerror = event => { clearTimeout(timer); reject(new Error(event.message || "运行文件加载失败")); };
-    worker.onmessage = event => {
-      const message = event.data;
-      if (message.kind === "ready") { clearTimeout(timer); resolve(); return; }
-      if (message.kind === "startup-error") { clearTimeout(timer); reject(new Error(message.error)); return; }
-      const request = pending.get(message.id);
-      if (!request) return;
-      if (message.kind === "progress") { request.progress?.(message.payload); return; }
-      pending.delete(message.id);
-      if (message.kind === "result") request.resolve(JSON.parse(message.payload));
-      else request.reject(new Error(message.error));
-    };
-  });
-  } catch (error) { worker.terminate(); database?.close(); throw error; }
-  worker.onerror = event => {
+  let startupFailure: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    onStartupProgress?.(attempt === 1 ? "正在准备排班运行环境…" : `下载遇到波动，正在第 ${attempt}/3 次重试…`);
+    worker = new Worker(new URL("./browser-worker.ts", import.meta.url), {type: "module"});
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error("运行文件加载超时")), 120000);
+        worker!.onerror = event => { clearTimeout(timer); reject(new Error(event.message || "运行文件加载失败")); };
+        worker!.onmessage = event => {
+          const message = event.data;
+          if (message.kind === "startup-progress") { onStartupProgress?.(message.stage); return; }
+          if (message.kind === "ready") { clearTimeout(timer); resolve(); return; }
+          if (message.kind === "startup-error") { clearTimeout(timer); reject(new Error(message.error)); return; }
+          const request = pending.get(message.id);
+          if (!request) return;
+          if (message.kind === "progress") { request.progress?.(message.payload); return; }
+          pending.delete(message.id);
+          if (message.kind === "result") request.resolve(JSON.parse(message.payload));
+          else request.reject(new Error(message.error));
+        };
+      });
+      startupFailure = null;
+      break;
+    } catch (error) {
+      startupFailure = error;
+      worker.terminate(); worker = null;
+      if (attempt < 3) await new Promise(resolve => window.setTimeout(resolve, attempt * 1000));
+    }
+  }
+  if (startupFailure) throw startupError(startupFailure);
+  if (!worker) throw startupError(new Error("运行文件加载失败"));
+  } catch (error) { worker?.terminate(); database?.close(); throw error; }
+  const activeWorker = worker;
+  activeWorker.onerror = event => {
     for (const request of pending.values()) request.reject(new Error(event.message || "计算中断，当前操作未保存，请刷新重试"));
     pending.clear();
   };
@@ -85,7 +110,7 @@ export async function installLocalRuntime(cloud?: {documents: Documents | null; 
     const id = ++sequence;
     return await new Promise<Output>((resolve, reject) => {
       pending.set(id, {resolve, reject, progress: run ? value => Object.assign(run, value) : undefined});
-      worker.postMessage({id, input: JSON.stringify({url, method, headers, body, documents, run: !!run}), stopBuffer: run?.stop.buffer});
+      activeWorker.postMessage({id, input: JSON.stringify({url, method, headers, body, documents, run: !!run}), stopBuffer: run?.stop.buffer});
     });
   };
   const validate = async (documents: Documents): Promise<void> => {
@@ -93,7 +118,7 @@ export async function installLocalRuntime(cloud?: {documents: Documents | null; 
     if (!result.ok) throw new Error("数据校验：" + (await result.json()).detail);
   };
   if (cloud?.documents) {
-    try { await validate(memory); } catch (error) { worker.terminate(); throw error; }
+    try { await validate(memory); } catch (error) { activeWorker.terminate(); throw error; }
   }
   const transaction = async (url: string, method: string, headers: Record<string, string>, body: string, run?: Run): Promise<Response> =>
     await navigator.locks.request("gate-schedule-browser-workspace-v1", async () => {
@@ -145,7 +170,7 @@ export async function installLocalRuntime(cloud?: {documents: Documents | null; 
           const keep = JSON.parse(new TextDecoder().decode(bytes)).keep === true;
           if (keep && !run.canKeep) return json(409, {detail: "尚无通过校验的安排，请稍候或选择停止不采用"});
           Atomics.store(run.stop, 0, keep ? 2 : 1);
-          worker.postMessage({kind: "interrupt"});
+          activeWorker.postMessage({kind: "interrupt"});
         }
         return runResponse(run);
       }
@@ -161,7 +186,7 @@ export async function installLocalRuntime(cloud?: {documents: Documents | null; 
       return complete;
     }),
     dispose: () => {
-      alive = false; worker.terminate(); database?.close(); window.fetch = networkFetch;
+      alive = false; activeWorker.terminate(); database?.close(); window.fetch = networkFetch;
       for (const request of pending.values()) request.reject(new Error("会话已结束"));
       pending.clear(); runs.clear(); memory = {};
     },

@@ -13,7 +13,7 @@ async function start(): Promise<void> {
     }) : null;
     if (import.meta.env.VITE_CLOUD_REQUIRED && !configuration) throw new Error("此云端版本尚未配置Supabase，未回退为本机保存。");
     if (configuration) { await (await import("./cloud-entry")).startCloud(configuration); return; }
-    await installLocalRuntime();
+    await installLocalRuntime(undefined, message => { root.textContent = message; });
     document.documentElement.dataset.gateLocal = "true";
     await import("./workbench");
   } catch (error) {

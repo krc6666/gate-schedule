@@ -7,14 +7,21 @@ let py: PyodideInterface;
 let activeStop: Int32Array | null = null;
 let activeId: number | null = null;
 
+function startupProgress(stage: string): void {
+  self.postMessage({kind: "startup-progress", stage});
+}
+
 async function initialize(): Promise<void> {
+  startupProgress("正在加载浏览器排班引擎…");
   py = await loadPyodide({indexURL: runtime + "pyodide/"});
+  startupProgress("正在加载排班计算依赖…");
   await py.loadPackage(["sqlite3", "fastapi"]);
   for (const name of ["et_xmlfile-2.0.0-py3-none-any.whl", "openpyxl-3.1.5-py2.py3-none-any.whl"]) {
     const response = await fetch(runtime + "pyodide/" + name);
     if (!response.ok) throw new Error("网页运行文件缺失：" + name);
     py.unpackArchive(await response.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});
   }
+  startupProgress("正在加载排班规则和数据处理组件…");
   const source = await fetch(runtime + "gate_schedule.zip?v=" + import.meta.env.VITE_GATE_RUNTIME_VERSION);
   if (!source.ok) throw new Error("排班规则文件缺失");
   py.unpackArchive(await source.arrayBuffer(), "zip", {extractDir: "/lib/python3.13/site-packages"});

@@ -12,8 +12,8 @@ const repo=fileURLToPath(new URL("../../",import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label,ms=90000){const end=Date.now()+ms;while(Date.now()<end){const x=await fn();if(x)return x;await delay(100)}throw Error("等待超时："+label)}
 
-test("静态子路径网页：无后台启动、自动排班、文件迁移与本机保存",{timeout:300000},async t=>{
-  const requests=[],errors=[];
+test("静态子路径网页：运行文件失败后自动重试并完成排班和本机保存",{timeout:300000},async t=>{
+  const requests=[],errors=[];let failedRuntimeOnce=false;
   const mime={".html":"text/html",".js":"application/javascript",".wasm":"application/wasm",".css":"text/css",".json":"application/json",".zip":"application/zip"};
   const server=createServer(async(req,res)=>{
     requests.push(req.url);
@@ -21,6 +21,7 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
       const url=new URL(req.url,"http://localhost");
       assert.ok(url.pathname.startsWith("/gate-schedule/"),"静态资源必须留在项目子路径："+url.pathname);
       const name=decodeURIComponent(url.pathname.slice("/gate-schedule/".length))||"index.html";
+      if(!process.env.GATE_TEST_URL&&!failedRuntimeOnce&&name.endsWith("runtime/pyodide/openpyxl-3.1.5-py2.py3-none-any.whl")){failedRuntimeOnce=true;res.statusCode=503;res.end("temporary runtime download failure");return}
       const path=resolve(repo,"build/browser",name);
       assert.ok(path.startsWith(resolve(repo,"build/browser")+(/[\\/]$/.test(resolve(repo,"build/browser"))?"":process.platform==="win32"?"\\":"/")));
       res.setHeader("Content-Type",mime[extname(path)]??"application/octet-stream");
@@ -63,6 +64,8 @@ test("静态子路径网页：无后台启动、自动排班、文件迁移与�
     catch(error) { throw Error(String(error)+'; '+await evaluate("JSON.stringify({pending:window.__reloadPending,local:document.documentElement?.dataset.gateLocal,isolated:crossOriginIsolated,text:document.body.innerText})")); }
   };
   await ready();
+  if(!process.env.GATE_TEST_URL){assert.equal(failedRuntimeOnce,true,"测试应注入一次运行文件下载失败");assert.ok(requests.filter(path=>path.endsWith("runtime/pyodide/openpyxl-3.1.5-py2.py3-none-any.whl")).length>=2,"运行文件失败后应自动重新下载")}
+  assert.equal(await evaluate("document.body.innerText.includes('Python')"),false,"用户无需安装 Python");
   assert.equal(await evaluate("crossOriginIsolated"),true);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.app-nav [data-view]')].map(x=>x.textContent.trim())"),["配置","航班","排班","规则","统计","历史"]);
   const state=group=>evaluate("fetch('/api/groups/"+group+"/workspace').then(r=>r.json())");

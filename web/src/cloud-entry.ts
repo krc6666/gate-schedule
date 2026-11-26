@@ -90,7 +90,7 @@ export async function startCloud(configuration: {url: string; key: string}): Pro
       try { return await backend.save(expected, docs); } catch (error) { if (String(error).includes("SESSION_EXPIRED")) session.pause(error); throw error; }
     }, refresh, message => alert("保存到云端失败\n\n" + message));
     cloudBridge.workspace = cloud;
-    runtime = await installLocalRuntime({documents, changed: () => cloud.changed()});
+    runtime = await installLocalRuntime({documents, changed: () => cloud.changed()}, message => { root.textContent = message; });
     if (ended) { runtime.dispose(); return; }
     toolbar.innerHTML = '<div class="cloud-toolbar-inner"><button id="cloud-save" class="btn btn-primary">保存到云端</button><button id="cloud-status" class="cloud-status" aria-live="polite"></button><details class="cloud-more"><summary aria-label="更多操作（…）">…</summary><div><button id="cloud-reload">重新读取云端</button><button id="cloud-logout">退出登录</button></div></details></div>';
     root.before(toolbar);
